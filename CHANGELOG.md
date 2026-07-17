@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0] - 2026-07-17
+
+### Fixed
+- Parameterized `StateKey[T]` and `StateRecord[T]` construction on Python 3.12 when using frozen slotted dataclasses.
+
+### Added
+- Accepted RFC-0007 and ADR-0014/0015.
+- Typed namespaced state keys, immutable records, snapshots, contexts, and statistics.
+- Deterministic safe JSON codec with explicit `SecretValue` rejection.
+- In-memory State Store with optimistic versions, TTL, deterministic listing, and lifecycle hooks.
+- Serializable atomic transactions with automatic rollback and competing-writer serialization.
+- Replace and merge snapshot restoration with fresh live versions.
+- Named State Store Registry with deterministic startup and reverse shutdown.
+- Correlated Event Bus facts, structured diagnostics, spans, and operation metrics.
+- Optional State service ownership in `RuntimeAssembler`.
+- Nova 3.x state and persistence migration guidance and executable example.
+
 ## [0.6.0] - 2026-07-17
 
 ### Added
