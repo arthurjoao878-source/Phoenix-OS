@@ -38,10 +38,20 @@ Nova 3.x remains outside the Phoenix core. Migration is incremental:
     protocol; keep migrations, connection pools, encryption, and retries in those adapters.
 22. Use a `StateStoreRegistry` when Nova needs isolated stores such as `primary`, `session`, or
     `cache`, and pass it to `RuntimeAssembler` as the `state` service.
-23. Never import Nova UI, database drivers, AI clients, credentials, configuration parsing, Windows
+23. Group related Nova adapters into immutable `PluginManifest` units with explicit dependencies,
+    permissions, and exports.
+24. Use `HookPlugin` for incremental migration of existing setup/start/stop callbacks.
+25. Approve only the plugin permissions required by the deployment and keep the default permission
+    set empty.
+26. Discover package entry points as metadata first; load only names present in a deployment-specific
+    allowlist.
+27. Resolve plugin-published services through `PluginManager.service()` instead of mutating global
+    registries or Runtime services.
+28. Never treat the plugin system as a sandbox. Isolate untrusted packages in external processes.
+29. Never import Nova UI, database drivers, AI clients, credentials, configuration parsing, Windows
     automation, or telemetry vendors into `phoenix_os.kernel`, `phoenix_os.events`,
-    `phoenix_os.capabilities`, `phoenix_os.runtime`, `phoenix_os.observability`, or
-    `phoenix_os.state`.
+    `phoenix_os.capabilities`, `phoenix_os.runtime`, `phoenix_os.observability`,
+    `phoenix_os.state`, or `phoenix_os.plugins`.
 
 Example mapping:
 
@@ -60,6 +70,8 @@ Nova contador global         -> observability.metric(..., kind=COUNTER)
 Nova dict de sessão          -> StateKey("session", user_id, dict)
 Nova UPDATE com versão       -> state.put(..., expected_version=record.version)
 Nova cache temporário        -> state.put(..., ttl=timedelta(...))
+Nova módulo opcional          -> HookPlugin + PluginManifest
+Nova descoberta automática    -> allowlisted EntryPointPluginDiscovery
 ```
 
 A service definition makes dependencies and lifecycle explicit:
@@ -101,3 +113,24 @@ updated = await state.put(
 
 Legacy database rows should be migrated by an external adapter or one-time migration tool. Do not
 load pickle blobs or arbitrary Python objects through the Phoenix state boundary.
+
+
+A Nova adapter can begin as callbacks while preserving explicit authority:
+
+```python
+plugin = HookPlugin(
+    PluginManifest(
+        "nova.voice",
+        "Nova Voice Adapter",
+        "1.0.0",
+        permissions=frozenset({PluginPermission.PUBLISH_SERVICES}),
+        exports=PluginExports(services=frozenset({"nova.voice"})),
+    ),
+    setup=register_voice_service,
+    start=start_voice,
+    stop=stop_voice,
+)
+```
+
+Package discovery should remain separate from loading. Review manifest permissions and exports,
+pin the distribution, and add only the approved entry-point name to the host allowlist.

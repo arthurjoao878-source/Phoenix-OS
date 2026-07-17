@@ -69,6 +69,10 @@ class StateStoreRegistry:
         return self._closed
 
     @property
+    def started(self) -> bool:
+        return self._started
+
+    @property
     def default_name(self) -> str | None:
         return self._default
 

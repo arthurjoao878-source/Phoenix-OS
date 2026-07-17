@@ -20,11 +20,21 @@ from phoenix_os.configuration.errors import (
 from phoenix_os.events import EventBus
 from phoenix_os.kernel import Kernel
 from phoenix_os.observability import EventObserver, ObservabilityHub
+from phoenix_os.plugins import PluginManager
 from phoenix_os.runtime import ComponentSpec, LifecycleComponent, PhoenixRuntime
 from phoenix_os.state import StateStore, StateStoreRegistry
 
 _RESERVED_DEFINITION_NAMES = frozenset(
-    {"kernel", "events", "capabilities", "configuration", "observability", "state", "runtime"}
+    {
+        "kernel",
+        "events",
+        "capabilities",
+        "configuration",
+        "observability",
+        "plugins",
+        "state",
+        "runtime",
+    }
 )
 
 
@@ -189,6 +199,7 @@ class RuntimeAssembler:
         definitions: Iterable[ServiceDefinition] = (),
         observability: ObservabilityHub | None = None,
         state: StateStore | StateStoreRegistry | None = None,
+        plugins: PluginManager | None = None,
         observe_events: bool = True,
         metadata: Mapping[str, str] | None = None,
         source: str = "phoenix.runtime",
@@ -199,6 +210,7 @@ class RuntimeAssembler:
         self._configuration = configuration
         self._observability = observability
         self._state = state
+        self._plugins = plugins
         self._observe_events = observe_events
         self._composer = ServiceComposer(definitions)
         self._metadata = {} if metadata is None else dict(metadata)
@@ -215,10 +227,15 @@ class RuntimeAssembler:
             base_services["observability"] = self._observability
         if self._state is not None:
             base_services["state"] = self._state
+        if self._plugins is not None:
+            base_services["plugins"] = self._plugins
         container = await self._composer.compose(
             self._configuration,
             base_services=base_services,
         )
+        if self._plugins is not None:
+            self._plugins.bind_services(container.services)
+            await self._plugins.prepare()
         custom_services = {
             name: service
             for name, service in container.services.items()
@@ -240,6 +257,8 @@ class RuntimeAssembler:
         if self._state is not None:
             components.append(ComponentSpec("state", cast(LifecycleComponent, self._state)))
         components.extend(container.components)
+        if self._plugins is not None:
+            components.append(ComponentSpec("plugins", self._plugins))
         return PhoenixRuntime(
             kernel=self._kernel,
             events=self._events,

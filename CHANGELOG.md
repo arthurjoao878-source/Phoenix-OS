@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0] - 2026-07-17
+
+### Added
+- Accepted RFC-0008 and ADR-0016/0017.
+- Immutable plugin manifests, semantic versions, version ranges, dependencies, exports, and snapshots.
+- Deterministic dependency resolution, lifecycle ordering, startup rollback, and aggregate shutdown.
+- Least-authority Plugin SDK for declared capabilities, state stores, and plugin-owned services.
+- Explicit host permission approval and exact export-name enforcement.
+- Side-effect-free entry-point discovery with explicit allowlisted loading.
+- Synchronous/asynchronous `HookPlugin` adapter for Nova 3.x migration.
+- Event Bus and Observability lifecycle signals, spans, logs, and metrics.
+- Optional Plugin Manager composition and lifecycle ownership in `RuntimeAssembler`.
+
 ## [0.7.0] - 2026-07-17
 
 ### Fixed
