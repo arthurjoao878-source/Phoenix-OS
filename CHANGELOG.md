@@ -1,17 +1,29 @@
 # Changelog
 
+## [0.6.0] - 2026-07-17
+
+### Added
+- Accepted RFC-0006 and ADR-0012/0013.
+- Immutable structured log, metric, span, registration, export-report, and snapshot contracts.
+- Deterministic synchronous and asynchronous sink delivery with explicit failure policies.
+- Recursive structured redaction with conventional secret-key and `SecretValue` protection.
+- Asynchronous nested span context with trace, parent, correlation, and causation propagation.
+- Event Bus wildcard observer with severity mapping and redacted event attributes.
+- Bounded `InMemorySink` for tests and local diagnostics.
+- Optional observability ownership and event bridge in `RuntimeAssembler`.
+- Nova 3.x observability migration guidance and executable example.
+
 ## [0.5.0] - 2026-07-17
 
 ### Added
 - Accepted RFC-0005 and ADR-0010/0011.
-- Immutable typed configuration schemas, fields, values, origins, and secret wrappers.
-- Deterministic mapping, JSON, and environment sources with later-source precedence.
-- Strict unknown-key, missing-value, decoding, validation, and source failure handling.
-- Redacted secret inspection with explicit reveal operations.
-- Deterministic synchronous/asynchronous singleton dependency composition.
+- Immutable configuration schemas, fields, origins, resolved values, and secret wrappers.
+- Strict decoders, validators, source precedence, provenance, and unknown-key policy.
+- Mapping, JSON file, and environment configuration sources.
+- Deterministic asynchronous singleton dependency composition.
 - Missing-dependency and cycle detection before Runtime startup.
 - Lifecycle-service adaptation and `RuntimeAssembler` integration.
-- Nova 3.x configuration migration guidance and executable configuration example.
+- Nova 3.x configuration and service-composition migration guidance.
 
 ## [0.4.0] - 2026-07-17
 
