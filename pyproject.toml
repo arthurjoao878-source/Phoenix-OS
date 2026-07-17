@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "phoenix-os"
-version = "0.8.0"
-description = "A deterministic asynchronous runtime with a secure plugin and adapter SDK."
+version = "0.9.0"
+description = "A deterministic asynchronous runtime with centralized policy and security contexts."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "Phoenix contributors" }]
-keywords = ["orchestration", "runtime", "plugins", "adapters", "state", "observability"]
+keywords = ["orchestration", "runtime", "policy", "security", "plugins", "state", "observability"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "License :: OSI Approved :: MIT License",

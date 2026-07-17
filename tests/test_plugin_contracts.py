@@ -94,7 +94,7 @@ def test_manifest_normalizes_and_freezes_public_data() -> None:
     assert manifest.name == "Nova Tools"
     assert manifest.version == SemanticVersion(1, 2, 3)
     assert manifest.api_version == PLUGIN_API_VERSION
-    assert PHOENIX_VERSION == "0.8.0"
+    assert PHOENIX_VERSION == "0.9.0"
     assert isinstance(manifest.metadata, MappingProxyType)
     with pytest.raises(TypeError):
         manifest.metadata["author"] = "other"  # type: ignore[index]

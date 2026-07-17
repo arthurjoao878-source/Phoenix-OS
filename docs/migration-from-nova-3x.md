@@ -134,3 +134,22 @@ plugin = HookPlugin(
 
 Package discovery should remain separate from loading. Review manifest permissions and exports,
 pin the distribution, and add only the approved entry-point name to the host allowlist.
+
+## Security and authorization migration
+
+Do not copy Nova 3.x authorization booleans or global permission lists into handlers. Translate
+authenticated identity facts into an immutable `SecurityContext`, then ask the Policy Engine about a
+normalized action and resource.
+
+Recommended migration sequence:
+
+1. identify every privileged Nova operation;
+2. assign stable actions such as `capability.invoke`, `state.write`, or `plugin.start`;
+3. define namespaced resources;
+4. register explicit deny-by-default rules;
+5. use Capability, State, and Plugin policy adapters;
+6. preserve confirmation as a trusted context fact;
+7. audit decisions through Event Bus and Observability without logging credentials or secret values.
+
+Authentication, token validation, and process isolation remain external adapters. Never infer trust
+from caller-supplied roles, permissions, scopes, or confirmation flags.

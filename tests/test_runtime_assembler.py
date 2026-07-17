@@ -77,3 +77,31 @@ async def test_runtime_assembler_exposes_configuration_and_composed_services() -
     assert response.status == 200
     assert calls == ["start:9000", "stop:9000"]
     assert runtime.state is RuntimeState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_exposes_policy_engine_as_lifecycle_service() -> None:
+    from phoenix_os import PolicyEffect, PolicyEngine, PolicyRequest, PolicyRule
+
+    configuration = await ConfigLoader(ConfigSchema(()), (MappingConfigSource({}),)).load()
+    events = EventBus()
+    router = Router()
+    router.add("system.echo", echo)
+    kernel = Kernel(router=router, authorizer=AllowAllAuthorizer(), events=events)
+    capabilities = CapabilityRegistry(events=events)
+    policy = PolicyEngine((PolicyRule("allow", PolicyEffect.ALLOW),), events=events)
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=policy,
+    ).assemble()
+
+    assert runtime.service("policy") is policy
+    await runtime.start()
+    decision = await policy.evaluate(PolicyRequest("runtime.read", "runtime:self"))
+    assert decision.effect is PolicyEffect.ALLOW
+    await runtime.stop()
+    assert policy.closed

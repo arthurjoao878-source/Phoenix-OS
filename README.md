@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.8.0` implements eight accepted specifications:
+Version `0.9.0` implements nine accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -19,9 +19,11 @@ Version `0.8.0` implements eight accepted specifications:
   optimistic versions, TTL, serializable transactions, snapshots, and named-store lifecycle.
 - **RFC-0008 — Plugin System and Adapter SDK:** immutable manifests, semantic compatibility,
   dependency ordering, least-authority exports, allowlisted discovery, rollback, and Runtime lifecycle.
+- **RFC-0009 — Policy Engine and Security Context:** immutable identities, declarative rules,
+  default-deny decisions, confirmation, explanations, and subsystem enforcement adapters.
 
 The core intentionally contains no AI model, durable database driver, semantic-memory engine,
-concrete tool, credential store, telemetry vendor, UI, or operating-system automation. Durable
+concrete tool, identity provider, credential store, telemetry vendor, UI, or operating-system automation. Durable
 storage belongs behind the State Store protocol; other integrations belong behind capability
 providers, lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
 The plugin system is an authority boundary for SDK contributions, not a sandbox for hostile code.
@@ -46,6 +48,27 @@ On Windows:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
+
+## Policy example
+
+```python
+from phoenix_os import PolicyEffect, PolicyEngine, PolicyRequest, PolicyRule
+
+policy = PolicyEngine((
+    PolicyRule(
+        "allow-profile",
+        PolicyEffect.ALLOW,
+        actions=frozenset({"state.read"}),
+        resources=frozenset({"state:profile:*"}),
+    ),
+))
+decision = await policy.evaluate(
+    PolicyRequest("state.read", "state:profile:arthur"),
+)
+```
+
+The engine is deny-by-default. Capability, State Store, Plugin, and Runtime adapters keep policy
+centralized without coupling the Kernel to the authorization implementation.
 
 ## Plugin example
 
@@ -80,8 +103,8 @@ updated = await store.put(
 ```
 
 See `examples/` and `docs/` for complete contracts, configuration, dependency composition, Runtime
-integration, plugin manifests, dependency resolution, state transactions, snapshots, trace context,
-redaction, and architectural decisions.
+integration, policy rules, security contexts, plugin manifests, dependency resolution, state
+transactions, snapshots, trace context, redaction, and architectural decisions.
 
 ## License
 
