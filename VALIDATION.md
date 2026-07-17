@@ -1,4 +1,4 @@
-# Validation — Phoenix OS v0.5.0
+# Validation — Phoenix OS v0.6.0
 
 Validation completed on 2026-07-17.
 
@@ -8,20 +8,24 @@ Validation completed on 2026-07-17.
 - Supported project baseline: Python 3.12+
 - Ruff: 0.15.22
 - mypy: 2.3.0, strict mode
-- pytest: 9.x
+- pytest: 9.0.2
 
 ## Static validation
 
 - `ruff check .` — passed
-- `ruff format --check .` — passed
-- `mypy` — passed, 50 source files checked
+- `ruff format --check .` — passed, 65 files checked
+- `mypy` — passed, 65 source, test, and example files checked
 - `python -m compileall -q src tests examples` — passed
 
 ## Test suite
 
-- `pytest` — 161 tests passed
-- Kernel, Event Bus, Capability Registry, Runtime, Configuration, sources, decoders,
-  dependency composition, Runtime assembly, and package-version tests included
+- `pytest` — 202 tests passed
+- Existing Kernel, Event Bus, Capability Registry, Runtime, Configuration, dependency composition,
+  Runtime assembly, and package-version tests remain green
+- New observability coverage includes immutable contracts, metric validation, deterministic sink
+  priority, synchronous and asynchronous sinks, failure collection, strict export errors,
+  cancellation, recursive redaction, bounded memory storage, nested spans, context reset,
+  correlation and causation inheritance, Event Bus observation, and Runtime ownership
 
 ## Executable examples
 
@@ -32,23 +36,25 @@ The following examples completed successfully:
 - `examples/capability_registry.py`
 - `examples/runtime.py`
 - `examples/configuration.py`
+- `examples/observability.py`
 
-The configuration example confirmed:
+The observability example confirmed:
 
-- later environment-source precedence;
-- typed integer and boolean decoding;
-- secret redaction in snapshots;
-- explicit dependency composition;
-- lifecycle startup and reverse shutdown through `PhoenixRuntime`.
+- Runtime-owned observability and Event Bus bridging;
+- structured logs, counter metrics, and completed spans;
+- nested correlation context;
+- recursive redaction of `api_key` and password attributes;
+- lifecycle observations during startup and shutdown;
+- bounded in-memory diagnostic snapshots.
 
 ## Distribution
 
-- built artifact: `dist/phoenix_os-0.5.0-py3-none-any.whl`
+- built artifact: `dist/phoenix_os-0.6.0-py3-none-any.whl`
 - wheel installed successfully in a clean virtual environment
-- isolated `phoenix_os.__version__` smoke test returned `0.5.0`
-- isolated configuration decoding smoke test passed
+- isolated `phoenix_os.__version__` smoke test returned `0.6.0`
+- isolated metric and span correlation smoke test passed
 
 ## Result
 
-Phoenix OS v0.5.0 satisfies the RFC-0005 acceptance criteria and preserves the validated public
-contracts from v0.4.0.
+Phoenix OS v0.6.0 satisfies the RFC-0006 acceptance criteria and preserves the validated public
+contracts from v0.5.0.

@@ -19,10 +19,11 @@ from phoenix_os.configuration.errors import (
 )
 from phoenix_os.events import EventBus
 from phoenix_os.kernel import Kernel
+from phoenix_os.observability import EventObserver, ObservabilityHub
 from phoenix_os.runtime import ComponentSpec, LifecycleComponent, PhoenixRuntime
 
 _RESERVED_DEFINITION_NAMES = frozenset(
-    {"kernel", "events", "capabilities", "configuration", "runtime"}
+    {"kernel", "events", "capabilities", "configuration", "observability", "runtime"}
 )
 
 
@@ -185,6 +186,8 @@ class RuntimeAssembler:
         capabilities: CapabilityRegistry,
         configuration: Configuration,
         definitions: Iterable[ServiceDefinition] = (),
+        observability: ObservabilityHub | None = None,
+        observe_events: bool = True,
         metadata: Mapping[str, str] | None = None,
         source: str = "phoenix.runtime",
     ) -> None:
@@ -192,6 +195,8 @@ class RuntimeAssembler:
         self._events = events
         self._capabilities = capabilities
         self._configuration = configuration
+        self._observability = observability
+        self._observe_events = observe_events
         self._composer = ServiceComposer(definitions)
         self._metadata = {} if metadata is None else dict(metadata)
         self._source = source
@@ -203,6 +208,8 @@ class RuntimeAssembler:
             "capabilities": self._capabilities,
             "configuration": self._configuration,
         }
+        if self._observability is not None:
+            base_services["observability"] = self._observability
         container = await self._composer.compose(
             self._configuration,
             base_services=base_services,
@@ -212,11 +219,25 @@ class RuntimeAssembler:
             for name, service in container.services.items()
             if name not in {"kernel", "events", "capabilities"}
         }
+        components: list[ComponentSpec] = []
+        if self._observability is not None:
+            components.append(ComponentSpec("observability", self._observability))
+            if self._observe_events:
+                components.append(
+                    ComponentSpec(
+                        "observability.events",
+                        EventObserver(
+                            events=self._events,
+                            observability=self._observability,
+                        ),
+                    )
+                )
+        components.extend(container.components)
         return PhoenixRuntime(
             kernel=self._kernel,
             events=self._events,
             capabilities=self._capabilities,
-            components=container.components,
+            components=components,
             services=custom_services,
             metadata=self._metadata,
             source=self._source,

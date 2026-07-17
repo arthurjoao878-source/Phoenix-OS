@@ -1,22 +1,25 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.5.0` implements five accepted specifications:
+Version `0.6.0` implements six accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
-- **RFC-0002 — Event Bus:** immutable events, deterministic asynchronous delivery,
-  priorities, one-shot and wildcard subscriptions, failure isolation, and explicit shutdown.
+- **RFC-0002 — Event Bus:** immutable events, deterministic asynchronous delivery, priorities,
+  one-shot and wildcard subscriptions, failure isolation, and explicit shutdown.
 - **RFC-0003 — Capability Registry:** immutable capability contracts, trusted contexts,
   permissions, confirmation, deadlines, safe provider execution, discovery, and Kernel adapters.
-- **RFC-0004 — Phoenix Runtime:** immutable service composition, deterministic component startup,
-  rollback, request draining, reverse shutdown, lifecycle states, deadlines, and context management.
-- **RFC-0005 — Configuration System:** typed immutable configuration, ordered mapping/JSON/
-  environment sources, provenance, secret redaction, dependency graphs, and Runtime assembly.
+- **RFC-0004 — Phoenix Runtime:** deterministic component startup, rollback, request draining,
+  reverse shutdown, lifecycle states, deadlines, and context management.
+- **RFC-0005 — Configuration System:** typed immutable configuration, ordered sources, provenance,
+  explicit secrets, dependency composition, and Runtime assembly.
+- **RFC-0006 — Observability and Diagnostics:** structured logs and metrics, asynchronous spans,
+  deterministic sinks, recursive redaction, Event Bus observation, and Runtime ownership.
 
 The core intentionally contains no AI model, database, memory implementation, concrete tool,
-credential store, UI, or operating-system automation. Those belong behind capability providers,
-lifecycle services, named dependencies, and external adapters.
+credential store, telemetry vendor, persistence backend, UI, or operating-system automation. Those
+belong behind capability providers, lifecycle components, named services, sinks, and external
+adapters.
 
 ## Install for development
 
@@ -39,47 +42,30 @@ On Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
-## Configuration and Runtime assembly
+## Observability example
 
 ```python
-from phoenix_os import (
-    ConfigField,
-    ConfigLoader,
-    ConfigSchema,
-    EnvironmentConfigSource,
-    MappingConfigSource,
-    RuntimeAssembler,
-    as_boolean,
-    as_integer,
-)
+from phoenix_os import InMemorySink, MetricKind, ObservabilityHub
 
-schema = ConfigSchema(
-    (
-        ConfigField("runtime.port", as_integer, default=8080),
-        ConfigField("runtime.debug", as_boolean, default=False),
+sink = InMemorySink(capacity=1000)
+observability = ObservabilityHub((sink,))
+
+async with observability.span("request", source="application"):
+    await observability.log(
+        "request.started",
+        source="application",
+        message="request accepted",
     )
-)
-configuration = await ConfigLoader(
-    schema,
-    (
-        MappingConfigSource({"runtime.port": 8000}, name="defaults"),
-        EnvironmentConfigSource(),
-    ),
-).load()
-
-runtime = await RuntimeAssembler(
-    kernel=kernel,
-    events=events,
-    capabilities=capabilities,
-    configuration=configuration,
-).assemble()
-
-async with runtime:
-    ...
+    await observability.metric(
+        "requests.total",
+        1,
+        source="application",
+        kind=MetricKind.COUNTER,
+    )
 ```
 
-See `examples/` and `docs/` for complete contracts, source precedence, secret handling, dependency
-composition, request handling, lifecycle components, and architectural decisions.
+See `examples/` and `docs/` for complete contracts, configuration, dependency composition, Runtime
+integration, trace context, redaction, and architectural decisions.
 
 ## License
 
