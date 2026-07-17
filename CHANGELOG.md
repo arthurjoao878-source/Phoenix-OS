@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0] - 2026-07-17
+
+### Added
+- Accepted RFC-0005 and ADR-0010/0011.
+- Immutable typed configuration schemas, fields, values, origins, and secret wrappers.
+- Deterministic mapping, JSON, and environment sources with later-source precedence.
+- Strict unknown-key, missing-value, decoding, validation, and source failure handling.
+- Redacted secret inspection with explicit reveal operations.
+- Deterministic synchronous/asynchronous singleton dependency composition.
+- Missing-dependency and cycle detection before Runtime startup.
+- Lifecycle-service adaptation and `RuntimeAssembler` integration.
+- Nova 3.x configuration migration guidance and executable configuration example.
+
 ## [0.4.0] - 2026-07-17
 
 ### Added
