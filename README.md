@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.4.0` implements four accepted specifications:
+Version `0.5.0` implements five accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -11,10 +11,12 @@ Version `0.4.0` implements four accepted specifications:
   permissions, confirmation, deadlines, safe provider execution, discovery, and Kernel adapters.
 - **RFC-0004 — Phoenix Runtime:** immutable service composition, deterministic component startup,
   rollback, request draining, reverse shutdown, lifecycle states, deadlines, and context management.
+- **RFC-0005 — Configuration System:** typed immutable configuration, ordered mapping/JSON/
+  environment sources, provenance, secret redaction, dependency graphs, and Runtime assembly.
 
 The core intentionally contains no AI model, database, memory implementation, concrete tool,
 credential store, UI, or operating-system automation. Those belong behind capability providers,
-lifecycle components, named services, and external adapters.
+lifecycle services, named dependencies, and external adapters.
 
 ## Install for development
 
@@ -37,30 +39,47 @@ On Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
-## Runtime example
+## Configuration and Runtime assembly
 
 ```python
 from phoenix_os import (
-    AllowAllAuthorizer,
-    CapabilityRegistry,
-    EventBus,
-    Kernel,
-    PhoenixRuntime,
-    Router,
+    ConfigField,
+    ConfigLoader,
+    ConfigSchema,
+    EnvironmentConfigSource,
+    MappingConfigSource,
+    RuntimeAssembler,
+    as_boolean,
+    as_integer,
 )
 
-events = EventBus()
-router = Router()
-kernel = Kernel(router=router, authorizer=AllowAllAuthorizer(), events=events)
-capabilities = CapabilityRegistry(events=events)
-runtime = PhoenixRuntime(kernel=kernel, events=events, capabilities=capabilities)
+schema = ConfigSchema(
+    (
+        ConfigField("runtime.port", as_integer, default=8080),
+        ConfigField("runtime.debug", as_boolean, default=False),
+    )
+)
+configuration = await ConfigLoader(
+    schema,
+    (
+        MappingConfigSource({"runtime.port": 8000}, name="defaults"),
+        EnvironmentConfigSource(),
+    ),
+).load()
+
+runtime = await RuntimeAssembler(
+    kernel=kernel,
+    events=events,
+    capabilities=capabilities,
+    configuration=configuration,
+).assemble()
 
 async with runtime:
     ...
 ```
 
-See `examples/` and `docs/` for complete contracts, request handling, lifecycle components, Kernel
-integration, and architectural decisions.
+See `examples/` and `docs/` for complete contracts, source precedence, secret handling, dependency
+composition, request handling, lifecycle components, and architectural decisions.
 
 ## License
 
