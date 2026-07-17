@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-ruff check .
-ruff format --check .
-mypy
-pytest
+python -m ruff check .
+python -m ruff format --check .
+python -m mypy
+python -m pytest

@@ -17,6 +17,10 @@
               v
          Phoenix Runtime
  composition | lifecycle | request drain
+              |
+              v
+          Policy Engine
+ identity | rules | explainable decisions
        |          |                 |
        |          |                 +-----------------------------+
        |          v                                               v
@@ -51,8 +55,8 @@ secrets so ordinary inspection remains redacted.
 
 `ServiceComposer` builds named singleton dependencies from explicit declarations. It detects
 missing dependencies and cycles before startup. `RuntimeAssembler` exposes Kernel, Event Bus,
-Capability Registry, resolved configuration, and optional Observability and State services to
-factories, then creates `PhoenixRuntime` with composed services and lifecycle components.
+Capability Registry, resolved configuration, and optional Observability, Policy, State, and Plugin
+services to factories, then creates `PhoenixRuntime` with composed services and lifecycle components.
 
 `PhoenixRuntime` remains the lifecycle owner. It owns the Kernel, Event Bus, Capability Registry,
 external lifecycle components, immutable named services, request admission, graceful draining, and
@@ -84,6 +88,21 @@ metric aggregation, telemetry vendor protocols, AI, semantic memory, credential 
 operating-system automation, remote configuration, hot reload, and UI remain external adapters.
 
 
+## Policy Engine and Security Context
+
+`PolicyEngine` centralizes authorization questions from subsystem adapters. Immutable
+`SecurityContext` values carry trusted principal, role, permission, scope, correlation, and
+confirmation facts. Declarative rules match normalized actions and resources with explicit priority.
+No match means deny. At equal priority, deny precedes confirmation and confirmation precedes allow.
+
+`PolicyPermissionPolicy` and `PolicyConfirmationPolicy` protect capabilities. `PolicyStateStore`
+decorates any State Store, including transactions. `PolicyProtectedPlugin` authorizes plugin setup and
+startup but never blocks cleanup. The Runtime may own the engine as the named `policy` service. The
+Kernel does not import or depend on policy internals.
+
+The Policy Engine is not an identity provider, credential verifier, secret store, or sandbox. Hosts
+must construct security contexts from authenticated and trusted deployment inputs.
+
 ## Plugin System and Adapter SDK
 
 `PluginManager` is the extension composition boundary. It validates immutable manifests, Phoenix and
@@ -100,6 +119,6 @@ Entry-point discovery returns metadata without imports. Loading requires an expl
 allowlist. Loaded Python code still executes with normal process authority; untrusted plugins require
 external process isolation.
 
-With full assembly, lifecycle order is Observability, Event Observer, State, composed lifecycle
-services, and Plugins. Reverse shutdown stops plugins while host services and diagnostics remain
+With full assembly, lifecycle order is Observability, Event Observer, Policy, State, composed
+lifecycle services, and Plugins. Reverse shutdown stops plugins while host services and diagnostics remain
 available, then closes state, observation, capabilities, and events through existing owners.

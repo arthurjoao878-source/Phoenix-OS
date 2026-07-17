@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.0] - 2026-07-17
+
+### Added
+- Accepted RFC-0009 and ADR-0018/0019.
+- Immutable security contexts, policy requests, rules, decisions, registrations, and snapshots.
+- Deterministic deny-by-default Policy Engine with explicit priority and restriction precedence.
+- Explainable allow, deny, and confirmation outcomes with structured enforcement errors.
+- Capability permission and confirmation adapters backed by central policy.
+- Policy-protected State Store operations and transactions.
+- Policy-protected plugin setup and startup while preserving unconditional cleanup.
+- Event Bus and Observability decision signals without exporting permissions, scopes, or request attributes.
+- Optional Policy Engine service and lifecycle ownership in `RuntimeAssembler`.
+- Nova 3.x security migration guidance and executable example.
+
 ## [0.8.0] - 2026-07-17
 
 ### Added
