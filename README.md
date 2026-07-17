@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.6.0` implements six accepted specifications:
+Version `0.7.0` implements seven accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -15,11 +15,13 @@ Version `0.6.0` implements six accepted specifications:
   explicit secrets, dependency composition, and Runtime assembly.
 - **RFC-0006 — Observability and Diagnostics:** structured logs and metrics, asynchronous spans,
   deterministic sinks, recursive redaction, Event Bus observation, and Runtime ownership.
+- **RFC-0007 — State Store and Persistence:** typed namespaced keys, safe JSON serialization,
+  optimistic versions, TTL, serializable transactions, snapshots, and named-store lifecycle.
 
-The core intentionally contains no AI model, database, memory implementation, concrete tool,
-credential store, telemetry vendor, persistence backend, UI, or operating-system automation. Those
-belong behind capability providers, lifecycle components, named services, sinks, and external
-adapters.
+The core intentionally contains no AI model, durable database driver, semantic-memory engine,
+concrete tool, credential store, telemetry vendor, UI, or operating-system automation. Durable
+storage belongs behind the State Store protocol; other integrations belong behind capability
+providers, lifecycle components, named services, sinks, and external adapters.
 
 ## Install for development
 
@@ -42,30 +44,27 @@ On Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
-## Observability example
+## State example
 
 ```python
-from phoenix_os import InMemorySink, MetricKind, ObservabilityHub
+from phoenix_os import ABSENT_VERSION, MemoryStateStore, StateKey
 
-sink = InMemorySink(capacity=1000)
-observability = ObservabilityHub((sink,))
-
-async with observability.span("request", source="application"):
-    await observability.log(
-        "request.started",
-        source="application",
-        message="request accepted",
-    )
-    await observability.metric(
-        "requests.total",
-        1,
-        source="application",
-        kind=MetricKind.COUNTER,
-    )
+store = MemoryStateStore()
+profile = StateKey("profile", "arthur", dict)
+record = await store.put(
+    profile,
+    {"level": 1},
+    expected_version=ABSENT_VERSION,
+)
+updated = await store.put(
+    profile,
+    {"level": 2},
+    expected_version=record.version,
+)
 ```
 
 See `examples/` and `docs/` for complete contracts, configuration, dependency composition, Runtime
-integration, trace context, redaction, and architectural decisions.
+integration, state transactions, snapshots, trace context, redaction, and architectural decisions.
 
 ## License
 

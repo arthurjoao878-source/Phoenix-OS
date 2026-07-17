@@ -21,9 +21,10 @@ from phoenix_os.events import EventBus
 from phoenix_os.kernel import Kernel
 from phoenix_os.observability import EventObserver, ObservabilityHub
 from phoenix_os.runtime import ComponentSpec, LifecycleComponent, PhoenixRuntime
+from phoenix_os.state import StateStore, StateStoreRegistry
 
 _RESERVED_DEFINITION_NAMES = frozenset(
-    {"kernel", "events", "capabilities", "configuration", "observability", "runtime"}
+    {"kernel", "events", "capabilities", "configuration", "observability", "state", "runtime"}
 )
 
 
@@ -187,6 +188,7 @@ class RuntimeAssembler:
         configuration: Configuration,
         definitions: Iterable[ServiceDefinition] = (),
         observability: ObservabilityHub | None = None,
+        state: StateStore | StateStoreRegistry | None = None,
         observe_events: bool = True,
         metadata: Mapping[str, str] | None = None,
         source: str = "phoenix.runtime",
@@ -196,6 +198,7 @@ class RuntimeAssembler:
         self._capabilities = capabilities
         self._configuration = configuration
         self._observability = observability
+        self._state = state
         self._observe_events = observe_events
         self._composer = ServiceComposer(definitions)
         self._metadata = {} if metadata is None else dict(metadata)
@@ -210,6 +213,8 @@ class RuntimeAssembler:
         }
         if self._observability is not None:
             base_services["observability"] = self._observability
+        if self._state is not None:
+            base_services["state"] = self._state
         container = await self._composer.compose(
             self._configuration,
             base_services=base_services,
@@ -232,6 +237,8 @@ class RuntimeAssembler:
                         ),
                     )
                 )
+        if self._state is not None:
+            components.append(ComponentSpec("state", cast(LifecycleComponent, self._state)))
         components.extend(container.components)
         return PhoenixRuntime(
             kernel=self._kernel,
