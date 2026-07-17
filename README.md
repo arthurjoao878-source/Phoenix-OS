@@ -1,15 +1,18 @@
 # Phoenix OS
 
-Phoenix OS is an experimental, headless orchestration foundation written for Python 3.12+.
-Version `0.2.0` implements two accepted specifications:
+Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
+Version `0.3.0` implements three accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
 - **RFC-0002 — Event Bus:** immutable events, deterministic asynchronous delivery,
   priorities, one-shot and wildcard subscriptions, failure isolation, and explicit shutdown.
+- **RFC-0003 — Capability Registry:** immutable capability contracts, trusted contexts,
+  permissions, confirmation, deadlines, safe provider execution, discovery, and Kernel adapters.
 
-The Kernel intentionally contains no AI model, database, memory, tool implementation, UI,
-or operating-system automation. Those capabilities belong behind adapters.
+The core intentionally contains no AI model, database, memory implementation, concrete tool,
+credential store, UI, or operating-system automation. Those belong behind capability providers and
+external adapters.
 
 ## Install for development
 
@@ -26,22 +29,30 @@ mypy
 pytest
 ```
 
-## Minimal example
+On Windows:
 
-```python
-from phoenix_os import AllowAllAuthorizer, Kernel, Request, Response, Router
-
-router = Router()
-
-async def ping(request: Request) -> Response:
-    return Response(status=200, body={"reply": "pong"})
-
-router.add("system.ping", ping)
-kernel = Kernel(router=router, authorizer=AllowAllAuthorizer())
-response = await kernel.handle(Request(action="system.ping"))
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
-See `examples/` and `docs/` for complete contracts and decisions.
+## Capability example
+
+```python
+from collections.abc import Mapping
+
+from phoenix_os import CapabilityDescriptor, CapabilityInvocation, CapabilityRegistry
+
+registry = CapabilityRegistry()
+
+async def ping(invocation: CapabilityInvocation) -> Mapping[str, object]:
+    return {"reply": "pong", "principal": invocation.context.principal}
+
+await registry.register(CapabilityDescriptor("system.ping"), ping)
+result = await registry.invoke("system.ping")
+```
+
+See `examples/` and `docs/` for complete contracts, Kernel integration, and architectural
+decisions.
 
 ## License
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0] - 2026-07-17
+
+### Added
+- Accepted RFC-0003 and ADR-0006/0007.
+- Immutable capability descriptors, contexts, invocations, results, and registrations.
+- Deterministic Capability Registry with discovery and safe unregistration.
+- Default required-permissions and descriptor-confirmation policies.
+- Synchronous and asynchronous provider support with deadlines and cancellation.
+- Safe policy/provider error translation and registry lifecycle management.
+- Correlated capability lifecycle events through the Event Bus.
+- `CapabilityHandler` adapter for Kernel integration without Kernel coupling.
+- Nova 3.x provider migration guidance and capability example.
+
 ## [0.2.0] - 2026-07-17
 
 ### Added
