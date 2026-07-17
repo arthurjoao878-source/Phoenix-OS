@@ -1,70 +1,106 @@
-# Validation — Phoenix OS v0.7.0
+# Validation — Phoenix OS v0.8.0
 
-Validation completed on 2026-07-17.
-
-## Environment
-
-- Python: 3.13.5
-- Supported project baseline: Python 3.12+
-- Ruff: 0.15.22
-- mypy: 2.3.0, strict mode
-- pytest: 9.0.2
+- **Milestone:** RFC-0008 — Plugin System and Adapter SDK
+- **Date:** 2026-07-17
+- **Package target:** Python 3.12+
+- **Validation interpreter:** CPython 3.13.5
+- **Static-analysis target:** Python 3.12
 
 ## Static validation
 
-- `ruff check .` — passed
-- `ruff format --check .` — passed, 77 files checked
-- `mypy` — passed, 77 source, test, and example files checked
-- `python -m compileall -q src tests examples` — passed
-- `scripts/check.sh` — passed end to end after editable development installation
+```text
+ruff check .
+All checks passed!
+
+ruff format --check .
+88 files already formatted
+
+mypy
+Success: no issues found in 88 source files
+```
+
+The strict mypy configuration keeps `python_version = "3.12"`, so the public API and all examples are
+checked against the project's minimum language target even though the available validation interpreter
+was CPython 3.13.5.
 
 ## Test suite
 
-- `pytest` — 249 tests passed
-- Existing Kernel, Event Bus, Capability Registry, Runtime, Configuration, dependency composition,
-  Runtime assembly, Observability, and package-version tests remain green
-- New State Store coverage includes key and timestamp validation, deterministic JSON serialization,
-  secret rejection, typed reads, storage isolation, optimistic conflicts, create-only writes,
-  versioned deletes, deterministic namespace listing, TTL expiration, explicit purge, atomic
-  transaction commit, automatic rollback, explicit rollback, competing-writer serialization,
-  snapshots, replace and merge restoration, events, correlation metadata, logs, metrics, spans,
-  closed diagnostic channels, lifecycle closure, named registry resolution, deterministic registry
-  lifecycle, registration constraints, store isolation, and Runtime ownership
+```text
+pytest
+288 passed
+```
+
+Coverage includes all previous Kernel, Event Bus, Capability Registry, Runtime, Configuration,
+Observability, and State Store behavior plus:
+
+- strict semantic-version parsing and range boundaries;
+- immutable manifest, dependency, export, context, failure, and snapshot contracts;
+- duplicate, missing, incompatible, optional, and cyclic dependency behavior;
+- Plugin API and Phoenix package compatibility checks;
+- default-deny host permission approval;
+- exact declared capability, state-store, and service exports;
+- deterministic prepare/start/stop order;
+- setup and startup rollback;
+- aggregate shutdown failures;
+- contribution cleanup;
+- dependency service resolution;
+- side-effect-free entry-point discovery;
+- explicit allowlisted plugin loading;
+- class, factory, and asynchronous factory loading;
+- Event Bus and Observability lifecycle signals;
+- RuntimeAssembler lifecycle and host-service integration.
 
 ## Executable examples
 
-The following seven examples completed successfully:
+All eight examples executed successfully:
 
-- `examples/event_bus.py`
 - `examples/kernel.py`
+- `examples/event_bus.py`
 - `examples/capability_registry.py`
 - `examples/runtime.py`
 - `examples/configuration.py`
 - `examples/observability.py`
 - `examples/state_store.py`
+- `examples/plugin_system.py`
 
-The State Store example confirmed:
+## Compilation and package build
 
-- create-only optimistic writes;
-- atomic transaction update and additional-key creation;
-- typed state reads;
-- logical snapshot creation and replace restoration;
-- correlated Event Bus and Observability diagnostics.
+```text
+python -m compileall -q src tests examples
+python -m build --wheel --no-isolation
+Successfully built phoenix_os-0.8.0-py3-none-any.whl
+```
 
-## Distribution
+Wheel SHA-256:
 
-- built artifact: `dist/phoenix_os-0.7.0-py3-none-any.whl`
-- wheel installed successfully in a clean virtual environment
-- isolated `phoenix_os.__version__` smoke test returned `0.7.0`
-- isolated typed write, optimistic transaction update, and read smoke test passed
+```text
+90d2ea8455118886609bc7464fdaaf684174f2c8b72102f1b671803f4b779568
+```
 
-## Compatibility regression
+## Isolated installation
 
-- Added direct construction coverage for parameterized `StateKey[object]` and `StateRecord[object]`.
-- Reserved the `__orig_class__` slot on both frozen generic contracts so Python 3.12 typing assignment is rejected through `FrozenInstanceError`/`AttributeError` rather than the slotted-dataclass `TypeError` path.
-- Full local validation in this corrected package was rerun on Python 3.13.5; the original failure was reported on Python 3.12.0 and must also be confirmed by the downstream Windows validation command.
+The wheel was installed without dependencies into a new virtual environment. The isolated smoke test
+confirmed:
+
+- `phoenix_os.__version__ == "0.8.0"`;
+- plugin manifest and manager imports;
+- plugin preparation and startup;
+- active-plugin snapshot;
+- deterministic plugin shutdown.
+
+```text
+isolated plugin smoke test passed 0.8.0
+```
+
+## Archive integrity
+
+The release ZIP was built from a clean tree without caches, bytecode, or temporary build directories.
+`unzip -t` completed without errors. SHA-256 hashes for the ZIP, wheel, RFC, release notes, and
+validation report are provided separately.
 
 ## Result
 
-Phoenix OS v0.7.0 satisfies the RFC-0007 acceptance criteria and preserves the validated public
-contracts from v0.6.0.
+Phoenix OS v0.8.0 satisfies the RFC-0008 acceptance criteria while preserving all previously
+validated public contracts. The Plugin System constrains SDK contributions through manifests,
+permissions, exports, compatibility checks, and deterministic lifecycle ownership. It is explicitly
+not represented as a sandbox for hostile Python code.

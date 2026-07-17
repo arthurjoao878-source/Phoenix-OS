@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.7.0` implements seven accepted specifications:
+Version `0.8.0` implements eight accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -17,11 +17,14 @@ Version `0.7.0` implements seven accepted specifications:
   deterministic sinks, recursive redaction, Event Bus observation, and Runtime ownership.
 - **RFC-0007 — State Store and Persistence:** typed namespaced keys, safe JSON serialization,
   optimistic versions, TTL, serializable transactions, snapshots, and named-store lifecycle.
+- **RFC-0008 — Plugin System and Adapter SDK:** immutable manifests, semantic compatibility,
+  dependency ordering, least-authority exports, allowlisted discovery, rollback, and Runtime lifecycle.
 
 The core intentionally contains no AI model, durable database driver, semantic-memory engine,
 concrete tool, credential store, telemetry vendor, UI, or operating-system automation. Durable
 storage belongs behind the State Store protocol; other integrations belong behind capability
-providers, lifecycle components, named services, sinks, and external adapters.
+providers, lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
+The plugin system is an authority boundary for SDK contributions, not a sandbox for hostile code.
 
 ## Install for development
 
@@ -44,6 +47,19 @@ On Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
+## Plugin example
+
+```python
+from phoenix_os import HookPlugin, PluginManifest
+
+plugin = HookPlugin(
+    PluginManifest("nova.voice", "Nova Voice Adapter", "1.0.0"),
+)
+```
+
+Plugins are loaded explicitly, validated before setup, and owned by `PluginManager`. See
+`examples/plugin_system.py` for capability and service exports.
+
 ## State example
 
 ```python
@@ -64,7 +80,8 @@ updated = await store.put(
 ```
 
 See `examples/` and `docs/` for complete contracts, configuration, dependency composition, Runtime
-integration, state transactions, snapshots, trace context, redaction, and architectural decisions.
+integration, plugin manifests, dependency resolution, state transactions, snapshots, trace context,
+redaction, and architectural decisions.
 
 ## License
 

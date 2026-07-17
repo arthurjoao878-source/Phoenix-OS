@@ -82,3 +82,24 @@ and Event Bus.
 Remote brokers, durable database implementations, distributed transactions, replication, retries,
 metric aggregation, telemetry vendor protocols, AI, semantic memory, credential stores, sandboxing,
 operating-system automation, remote configuration, hot reload, and UI remain external adapters.
+
+
+## Plugin System and Adapter SDK
+
+`PluginManager` is the extension composition boundary. It validates immutable manifests, Phoenix and
+Plugin API compatibility, requested permissions, declared exports, and dependency graphs before any
+plugin setup hook runs. Setup and startup follow deterministic dependency order; rollback and shutdown
+reverse it.
+
+Plugins receive a restricted `PluginRegistrar`, not mutable access to Runtime internals. The registrar
+can contribute only manifest-declared capabilities, named state stores, and plugin-owned services for
+which the host approved the corresponding permission. Plugin services remain behind
+`PluginManager.service()` so Runtime's frozen service mapping does not change after assembly.
+
+Entry-point discovery returns metadata without imports. Loading requires an explicit deployment
+allowlist. Loaded Python code still executes with normal process authority; untrusted plugins require
+external process isolation.
+
+With full assembly, lifecycle order is Observability, Event Observer, State, composed lifecycle
+services, and Plugins. Reverse shutdown stops plugins while host services and diagnostics remain
+available, then closes state, observation, capabilities, and events through existing owners.
