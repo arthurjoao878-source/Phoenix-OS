@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0] - 2026-07-17
+
+### Added
+- Accepted RFC-0004 and ADR-0008/0009.
+- One-shot Phoenix Runtime composition root and immutable named services.
+- Deterministic component startup, reverse shutdown, and startup rollback.
+- Graceful request rejection and draining during shutdown.
+- Retryable aggregate shutdown failures with active-component snapshots.
+- Lifecycle deadlines, cancellation propagation, and async context management.
+- Correlated Runtime lifecycle events and final core-service ownership.
+- Nova 3.x lifecycle-component migration guidance and Runtime example.
+
 ## [0.3.0] - 2026-07-17
 
 ### Added

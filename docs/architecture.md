@@ -4,6 +4,10 @@
 interfaces / integrations / Nova 3.x adapters
                     |
                     v
+             Phoenix Runtime
+ composition | lifecycle | request drain
+                    |
+                    v
              Phoenix Kernel
         routing | authorization
                     |
@@ -17,14 +21,24 @@ interfaces / integrations / Nova 3.x adapters
                     v
         capability providers
 
-Kernel and capability lifecycle observations flow through the in-process Event Bus.
+      lifecycle and request facts
+                    |
+                    v
+                Event Bus
 ```
 
-Commands enter through `Kernel.handle()`. Events report facts and lifecycle transitions; they are
-not a command channel. The Kernel does not import the Capability Registry. Instead, a
-`CapabilityHandler` is registered as an ordinary route handler.
+`PhoenixRuntime` is the composition root. It owns the Kernel, Event Bus, Capability Registry,
+external lifecycle components, immutable named services, request admission, graceful draining, and
+ordered shutdown. It does not move provider, database, AI, UI, or operating-system logic into the
+core.
 
-The registry owns discovery and the safe invocation boundary, but not implementation details.
-Persistence, remote brokers, retries, schemas, metrics exporters, AI, memory, databases,
-credentials, sandboxing, operating-system automation, and UI remain outside the Kernel, Event Bus,
-and Registry.
+Commands enter through `PhoenixRuntime.handle()`, which accepts work only while the Runtime is
+running and delegates admitted requests to `Kernel.handle()`. Events report facts and lifecycle
+transitions; they are not a command channel. The Kernel does not import the Capability Registry.
+Instead, a `CapabilityHandler` is registered as an ordinary route handler.
+
+Lifecycle components start in explicit registration order and stop in reverse order. The Runtime
+closes the Capability Registry after external components and closes the Event Bus last. Persistence,
+remote brokers, retries, schemas, metrics exporters, AI, memory, databases, credentials,
+sandboxing, operating-system automation, configuration parsing, and UI remain outside the Kernel,
+Event Bus, Registry, and Runtime.
