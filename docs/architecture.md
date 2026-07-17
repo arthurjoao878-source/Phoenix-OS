@@ -8,12 +8,23 @@ interfaces / integrations / Nova 3.x adapters
         routing | authorization
                     |
                     v
-                 handlers
+          CapabilityHandler
+                    |
+                    v
+         Capability Registry
+   permission | confirmation | timeout
+                    |
+                    v
+        capability providers
 
-All lifecycle observations flow through the in-process Event Bus.
+Kernel and capability lifecycle observations flow through the in-process Event Bus.
 ```
 
-The Event Bus is an observer mechanism, not a command channel. Commands enter through
-`Kernel.handle()`. Events report facts that already occurred or lifecycle transitions.
+Commands enter through `Kernel.handle()`. Events report facts and lifecycle transitions; they are
+not a command channel. The Kernel does not import the Capability Registry. Instead, a
+`CapabilityHandler` is registered as an ordinary route handler.
+
+The registry owns discovery and the safe invocation boundary, but not implementation details.
 Persistence, remote brokers, retries, schemas, metrics exporters, AI, memory, databases,
-tools, and UI remain outside both Kernel and Event Bus.
+credentials, sandboxing, operating-system automation, and UI remain outside the Kernel, Event Bus,
+and Registry.
