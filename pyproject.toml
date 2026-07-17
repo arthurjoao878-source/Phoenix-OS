@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "phoenix-os"
-version = "0.3.0"
-description = "A headless asynchronous kernel with deterministic events and secure capability invocation."
+version = "0.4.0"
+description = "A deterministic asynchronous runtime for Phoenix Kernel, events, and secure capabilities."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "Phoenix contributors" }]
-keywords = ["orchestration", "kernel", "event-bus", "capabilities", "asyncio"]
+keywords = ["orchestration", "runtime", "lifecycle", "kernel", "event-bus", "capabilities"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "License :: OSI Approved :: MIT License",
