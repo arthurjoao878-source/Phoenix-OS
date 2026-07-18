@@ -294,3 +294,39 @@ Nova copied archive directory   -> verify_chain after transfer
 
 Archive rotation does not truncate the live SQLite ledger. Use an external `AuditStore` or reviewed
 operational procedure when active-store compaction is required.
+
+## Durable jobs and scheduling migration
+
+Do not persist Nova Python callables, module paths, pickles, shell commands, or full request objects as
+scheduled work. Register a reviewed Phoenix capability and persist only its stable name, JSON-safe
+arguments, trusted context, schedule, retry policy, and deadline.
+
+Recommended sequence:
+
+1. inventory delayed tasks, retry loops, timers, and startup recovery scripts;
+2. map every task to a stable registered capability;
+3. separate non-sensitive job metadata from potentially sensitive arguments;
+4. choose one-time or fixed-interval scheduling and a bounded retry policy;
+5. use `InMemoryJobRepository` only for tests or disposable process-local jobs;
+6. use `StateJobRepository` or a reviewed external adapter when jobs must survive restart;
+7. configure bounded worker polling, batch size, execution deadlines, and lease TTL;
+8. make external side effects idempotent because execution is at least once;
+9. observe safe `job.*` facts and investigate dead-letter records without logging arguments or output;
+10. keep shell execution, cron/calendar parsing, hosted queues, and distributed consensus behind
+    reviewed external capability or repository adapters.
+
+Example mapping:
+
+```text
+Nova threading.Timer(callable)    -> JobSpec(capability=..., schedule=JobSchedule(...))
+Nova while True + sleep           -> Runtime-owned JobWorker with bounded polling
+Nova retry loop                   -> RetryPolicy with deterministic backoff
+Nova pickle of function           -> registered CapabilityDescriptor + JSON-safe arguments
+Nova status="processing"          -> atomic JobLease fencing token
+Nova failed_tasks.json            -> StateJobRepository dead-letter records
+Nova cron / Celery / cloud queue  -> external scheduling or JobRepository adapter
+```
+
+Repository fencing rejects stale completion but cannot reverse an external effect performed before a
+worker loses its lease. Pass stable domain idempotency keys to capabilities whenever duplicates would
+be harmful.

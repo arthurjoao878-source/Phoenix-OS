@@ -27,6 +27,8 @@ _CATEGORY_PREFIXES: tuple[tuple[str, AuditCategory], ...] = (
     ("identity.authentication.", AuditCategory.AUTHENTICATION),
     ("identity.session.", AuditCategory.AUTHENTICATION),
     ("identity.", AuditCategory.IDENTITY),
+    ("job.", AuditCategory.JOB),
+    ("jobs.", AuditCategory.JOB),
     ("authentication.", AuditCategory.AUTHENTICATION),
     ("session.", AuditCategory.AUTHENTICATION),
     ("policy.", AuditCategory.AUTHORIZATION),
@@ -171,13 +173,23 @@ def _derive_outcome(name: str, payload: Mapping[str, object]) -> AuditOutcome:
         return AuditOutcome.DENIED
     if normalized in {"require_confirmation", "restricted", "challenge", "challenged"}:
         return AuditOutcome.RESTRICTED
-    if normalized in {"failed", "failure", "error", "cancelled"}:
+    if normalized in {
+        "failed",
+        "failure",
+        "error",
+        "cancelled",
+        "retrying",
+        "dead_letter",
+        "dead_lettered",
+    }:
         return AuditOutcome.FAILED
     if normalized in {"allow", "allowed", "success", "succeeded", "active", "ok"}:
         return AuditOutcome.SUCCEEDED
     if any(token in name for token in (".denied", ".rejected", ".unauthorized")):
         return AuditOutcome.DENIED
-    if any(token in name for token in (".failed", ".failure", ".error")):
+    if any(
+        token in name for token in (".failed", ".failure", ".error", ".retrying", ".dead_lettered")
+    ):
         return AuditOutcome.FAILED
     return AuditOutcome.SUCCEEDED
 
