@@ -51,8 +51,11 @@ Audit records may contain identity, authorization, resource, timing, and inciden
 deployment. Redaction reduces accidental disclosure but cannot determine every domain-specific
 sensitive field.
 
-`InMemoryAuditStore` is not durable, write-once, independently clocked, or resistant to an attacker
-with process-memory access. A SHA-256 chain without protected signatures detects ordinary mutation
-when the complete history is available, but a privileged attacker can replace and rehash an entire
-unsigned ledger. Use reviewed external storage and `AuditSigner` implementations when stronger
-evidence, retention, availability, or non-repudiation properties are required.
+`InMemoryAuditStore` is not durable. `SQLiteAuditStore` is locally durable and blocks ordinary SQL
+record mutation, but it is not write-once, independently clocked, encrypted at rest, remotely
+available, or resistant to privileged file replacement. Protect the database and WAL together. A
+SHA-256 chain without protected signatures detects ordinary mutation when the complete history is
+available, but a privileged attacker can replace and rehash an entire unsigned ledger or roll back to
+an older valid copy. Use reviewed external storage, independent checkpoints, and `AuditSigner`
+implementations when stronger evidence, retention, availability, or non-repudiation properties are
+required.

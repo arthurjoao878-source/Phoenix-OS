@@ -35,7 +35,8 @@
        | permission | confirmation       logs | metrics | spans   chain | verify
        |          |                                  |                  |
        |          v                                  v                  v
-       | capability providers                 external sinks   external AuditStore
+       | capability providers                 external sinks    AuditStore protocol
+       |                                                     memory | SQLite | external
        |                                                            + AuditSigner
        v
  State Store Registry
@@ -85,9 +86,11 @@ before Policy, State, Identity, Secrets, custom services, and Plugins. Shutdown 
 before the observer unsubscribes and the hub closes. The Runtime then closes the Capability Registry
 and Event Bus.
 
-Remote brokers, durable database implementations, distributed transactions, replication, retries,
-metric aggregation, telemetry vendor protocols, AI, semantic memory, credential stores, sandboxing,
-operating-system automation, remote configuration, hot reload, and UI remain external adapters.
+Remote brokers, remote or distributed database implementations, replication, cross-service
+transactions, retries, metric aggregation, telemetry vendor protocols, AI, semantic memory,
+credential stores, sandboxing, operating-system automation, remote configuration, hot reload, and
+UI remain external adapters. The local SQLite audit backend is the only durable database reference
+implementation included in the core.
 
 
 ## Audit Ledger and Security Journal
@@ -97,11 +100,13 @@ before persistence. `AuditStore` implementations atomically assign positive sequ
 `AuditRecord` hashes deterministic UTF-8 JSON containing the complete redacted event, sequence,
 recording time, and previous digest. The first record references a fixed all-zero genesis digest.
 
-`InMemoryAuditStore` provides deterministic process-local append, bounded query, complete-chain
-verification, and optional external signatures. `AuditSigner` receives only record digests and
-provider-neutral `KeyRef` metadata; raw signing keys and concrete algorithms remain external. An
-unsigned chain detects mutation, reordering, and gaps when verified, but it is not independently
-tamper-proof and is not durable.
+`InMemoryAuditStore` provides deterministic process-local append for tests and ephemeral services.
+`SQLiteAuditStore` provides a durable local reference adapter with a versioned schema, WAL, full
+synchronous commits, atomic record/head transactions, append-only SQL guards, and complete-chain
+verification before resume. `AuditSigner` receives only record digests and provider-neutral `KeyRef`
+metadata; raw signing keys and concrete algorithms remain external. An unsigned chain detects
+mutation, reordering, and gaps when verified, but it is not independently tamper-proof and cannot
+independently detect replacement with an older internally valid database.
 
 Historical `audit.read` and `audit.verify` operations require authenticated `SecurityContext` values
 and central Policy Engine authorization or exact fallback permissions. Trusted append avoids

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.13.0] - 2026-07-18
+
+### Added
+- Accepted RFC-0013 and ADR-0026/0027.
+- Durable standard-library `SQLiteAuditStore` with WAL and full synchronous commits.
+- Atomic append transactions that persist records and chain-head metadata together.
+- Versioned schema validation and fail-closed recovery verification before append.
+- SQL append-only guards for update, delete, sequence continuity, and previous-digest linkage.
+- Persistent bounded audit queries, optional signature recovery, and forensic reads after close.
+- Runtime lifecycle recovery integration, durable example, migration guidance, and regression tests.
+
 ## [0.12.0] - 2026-07-18
 
 ### Added

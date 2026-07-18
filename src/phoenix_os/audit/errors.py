@@ -21,5 +21,21 @@ class AuditSignerError(PhoenixAuditError):
     """Raised when an external signing provider fails."""
 
 
+class AuditPersistenceError(PhoenixAuditError):
+    """Raised when durable audit storage cannot complete an operation."""
+
+
+class AuditSchemaError(AuditPersistenceError):
+    """Raised when a durable audit schema is missing or incompatible."""
+
+
+class AuditStoreCorruptionError(AuditPersistenceError):
+    """Raised when persisted audit data cannot be decoded safely."""
+
+
+class AuditRecoveryError(AuditPersistenceError):
+    """Raised when a durable ledger cannot safely resume appending."""
+
+
 class SecurityJournalStateError(PhoenixAuditError):
     """Raised when the Security Journal lifecycle is used incorrectly."""

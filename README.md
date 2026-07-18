@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.12.0` implements twelve accepted specifications:
+Version `0.13.0` implements thirteen accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -27,12 +27,15 @@ Version `0.12.0` implements twelve accepted specifications:
   policy enforcement, bounded leases, rotation, revocation, and external cryptographic boundaries.
 - **RFC-0012 — Audit Ledger and Security Journal:** immutable redacted security facts, canonical
   hash chaining, optional external signatures, policy-protected inspection, and Event Bus journaling.
+- **RFC-0013 — Durable Audit Storage and Recovery:** SQLite WAL persistence, atomic append
+  transactions, append-only SQL guards, schema validation, and verify-before-resume recovery.
 
-The core intentionally contains no AI model, durable database driver, semantic-memory engine,
+The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key or audit
-signature provider, durable audit archive, telemetry vendor, UI, or operating-system automation.
-Durable storage belongs behind the State Store protocol; other integrations belong behind capability
-providers, lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
+signature provider, remote audit archive, telemetry vendor, UI, or operating-system automation. The
+standard-library SQLite adapter is a local reference implementation; stronger storage remains behind
+the State Store and Audit Store protocols. Other integrations belong behind capability providers,
+lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
 The plugin system is an authority boundary for SDK contributions, not a sandbox for hostile code.
 
 ## Install for development
@@ -73,9 +76,11 @@ records = await audit.read(AuditQuery(limit=100), security_context)
 verification = await audit.verify(security_context)
 ```
 
-Audit details are redacted before hashing. The in-memory ledger is non-durable, and an unsigned
-SHA-256 chain is tamper-evident rather than tamper-proof. Production retention and signatures belong
-behind external `AuditStore` and `AuditSigner` adapters.
+Audit details are redacted before hashing. `InMemoryAuditStore` remains ephemeral. For local durable
+recovery, construct `SQLiteAuditStore("var/phoenix/audit.sqlite3")`; it verifies an existing chain
+before resuming appends by default. An unsigned SHA-256 chain remains tamper-evident rather than
+tamper-proof, and stronger retention or origin guarantees belong behind reviewed `AuditStore` and
+`AuditSigner` adapters.
 
 ## Secrets example
 
@@ -174,8 +179,7 @@ updated = await store.put(
 ```
 
 See `examples/` and `docs/` for complete contracts, configuration, dependency composition, Runtime
-integration, authentication providers, sessions, secret references, leases, key providers, policy rules, security contexts, plugin manifests, dependency resolution, state
-transactions, snapshots, trace context, redaction, and architectural decisions.
+integration, authentication providers, sessions, secret references, leases, key providers, policy rules, security contexts, plugin manifests, dependency resolution, durable audit recovery, state transactions, snapshots, trace context, redaction, and architectural decisions.
 
 ## License
 

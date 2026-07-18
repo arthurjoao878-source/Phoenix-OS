@@ -4,6 +4,7 @@
 - Target: Phoenix OS 0.12.0
 - Authors: Phoenix contributors
 - Updated: 2026-07-18
+- Superseded in part: durable local storage non-goal by RFC-0013
 
 ## Summary
 

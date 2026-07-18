@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 
@@ -171,8 +172,12 @@ class AuditLedger:
         await self._store.close()
 
     async def start(self, context: object) -> None:
-        del context
         self._ensure_open()
+        start = getattr(self._store, "start", None)
+        if callable(start):
+            result = start(context)
+            if inspect.isawaitable(result):
+                await result
 
     async def stop(self, context: object) -> None:
         del context
