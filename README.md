@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.11.0` implements eleven accepted specifications:
+Version `0.12.0` implements twelve accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -25,10 +25,13 @@ Version `0.11.0` implements eleven accepted specifications:
   adapters, opaque bearer sessions, hashed persistence, expiry, revocation, and context propagation.
 - **RFC-0011 — Secrets Vault and Key Management:** versioned secret references, authenticated
   policy enforcement, bounded leases, rotation, revocation, and external cryptographic boundaries.
+- **RFC-0012 — Audit Ledger and Security Journal:** immutable redacted security facts, canonical
+  hash chaining, optional external signatures, policy-protected inspection, and Event Bus journaling.
 
 The core intentionally contains no AI model, durable database driver, semantic-memory engine,
-concrete tool, concrete identity provider, password database, cloud vault, cryptographic key provider, telemetry vendor, UI, or operating-system automation. Durable
-storage belongs behind the State Store protocol; other integrations belong behind capability
+concrete tool, concrete identity provider, password database, cloud vault, cryptographic key or audit
+signature provider, durable audit archive, telemetry vendor, UI, or operating-system automation.
+Durable storage belongs behind the State Store protocol; other integrations belong behind capability
 providers, lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
 The plugin system is an authority boundary for SDK contributions, not a sandbox for hostile code.
 
@@ -53,6 +56,26 @@ On Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
+
+## Audit example
+
+```python
+from phoenix_os import AuditCategory, AuditLedger, AuditQuery
+
+await audit.record_security(
+    "policy.evaluated",
+    category=AuditCategory.AUTHORIZATION,
+    action="secret.read",
+    resource="secret:production/database-password",
+    context=security_context,
+)
+records = await audit.read(AuditQuery(limit=100), security_context)
+verification = await audit.verify(security_context)
+```
+
+Audit details are redacted before hashing. The in-memory ledger is non-durable, and an unsigned
+SHA-256 chain is tamper-evident rather than tamper-proof. Production retention and signatures belong
+behind external `AuditStore` and `AuditSigner` adapters.
 
 ## Secrets example
 

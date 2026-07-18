@@ -26,6 +26,7 @@ from phoenix_os.runtime import ComponentSpec, LifecycleComponent, PhoenixRuntime
 from phoenix_os.state import StateStore, StateStoreRegistry
 
 if TYPE_CHECKING:
+    from phoenix_os.audit import AuditLedger
     from phoenix_os.identity import AuthenticationManager
     from phoenix_os.secrets import SecretsManager
 
@@ -34,6 +35,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "kernel",
         "events",
         "identity",
+        "audit",
         "capabilities",
         "configuration",
         "observability",
@@ -211,7 +213,9 @@ class RuntimeAssembler:
         policy: PolicyEngine | None = None,
         identity: AuthenticationManager | None = None,
         secrets: SecretsManager | None = None,
+        audit: AuditLedger | None = None,
         observe_events: bool = True,
+        journal_events: bool = True,
         metadata: Mapping[str, str] | None = None,
         source: str = "phoenix.runtime",
     ) -> None:
@@ -225,7 +229,9 @@ class RuntimeAssembler:
         self._policy = policy
         self._identity = identity
         self._secrets = secrets
+        self._audit = audit
         self._observe_events = observe_events
+        self._journal_events = journal_events
         self._composer = ServiceComposer(definitions)
         self._metadata = {} if metadata is None else dict(metadata)
         self._source = source
@@ -239,6 +245,8 @@ class RuntimeAssembler:
         }
         if self._observability is not None:
             base_services["observability"] = self._observability
+        if self._audit is not None:
+            base_services["audit"] = self._audit
         if self._policy is not None:
             base_services["policy"] = self._policy
         if self._identity is not None:
@@ -272,6 +280,17 @@ class RuntimeAssembler:
                             events=self._events,
                             observability=self._observability,
                         ),
+                    )
+                )
+        if self._audit is not None:
+            components.append(ComponentSpec("audit", self._audit))
+            if self._journal_events:
+                from phoenix_os.audit import SecurityJournal
+
+                components.append(
+                    ComponentSpec(
+                        "audit.events",
+                        SecurityJournal(events=self._events, ledger=self._audit),
                     )
                 )
         if self._policy is not None:

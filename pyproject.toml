@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "phoenix-os"
-version = "0.11.0"
-description = "A deterministic asynchronous runtime with identity-aware secrets vault and key-management boundaries."
+version = "0.12.0"
+description = "A deterministic asynchronous runtime with identity-aware secrets and a tamper-evident audit ledger."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "Phoenix contributors" }]
-keywords = ["orchestration", "runtime", "identity", "secrets", "vault", "policy", "security"]
+keywords = ["orchestration", "runtime", "identity", "secrets", "audit", "policy", "security"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "License :: OSI Approved :: MIT License",
