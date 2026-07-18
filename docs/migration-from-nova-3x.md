@@ -188,3 +188,39 @@ Issue a session through `AuthenticationManager`, return the bearer only through 
 and resolve it at the trusted ingress boundary. Use `AuthenticatedKernel` for simple in-process
 adoption or build a transport adapter that binds `session_scope()` before calling Runtime. Do not log
 credentials, bearers, token digests, personal profile data, permissions, or scopes.
+
+## Secrets and key-management migration
+
+Do not migrate Nova API keys, passwords, refresh tokens, or certificates as plain configuration
+values. Replace each raw value with a stable `SecretRef`, then resolve a short-lived lease only at the
+trusted adapter that needs the material.
+
+Recommended sequence:
+
+1. inventory every secret and its current consumers;
+2. assign a namespace and stable secret name;
+3. replace configuration values with `namespace/name` references;
+4. define `secret.create`, `secret.rotate`, `secret.read`, and `secret.revoke` policy rules;
+5. authenticate the calling service or user before requesting a lease;
+6. keep lease lifetimes short and do not cache revealed values globally;
+7. rotate by creating a new immutable version and update consumers to use latest or an exact version;
+8. revoke compromised versions and affected sessions immediately;
+9. implement production storage, encryption, KMS/HSM access, backup, and recovery in external
+   adapters;
+10. never place secret values, wrapping keys, vault credentials, or leases in events, logs, metrics,
+    exceptions, source control, or State Store records.
+
+Example mapping:
+
+```text
+Nova os.getenv("OPENAI_KEY")       -> SecretRef("openai-key", "ai")
+Nova senha em config.json          -> parse_secret_ref("database/password")
+Nova variável global de token      -> bounded SecretLease
+Nova atualizar credencial          -> secrets.rotate(...)
+Nova invalidar chave comprometida  -> secrets.revoke(...)
+Nova Azure/AWS/Vault SDK direto    -> external SecretStore/SecretProtector adapter
+Nova identificador de KMS          -> KeyRef(provider, name, version)
+```
+
+`InMemorySecretStore` is only a migration and test aid. It does not encrypt process memory or provide
+durable recovery. Use a reviewed provider adapter before moving production credentials.

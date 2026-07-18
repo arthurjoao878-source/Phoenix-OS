@@ -27,6 +27,7 @@ from phoenix_os.state import StateStore, StateStoreRegistry
 
 if TYPE_CHECKING:
     from phoenix_os.identity import AuthenticationManager
+    from phoenix_os.secrets import SecretsManager
 
 _RESERVED_DEFINITION_NAMES = frozenset(
     {
@@ -40,6 +41,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "policy",
         "state",
         "runtime",
+        "secrets",
     }
 )
 
@@ -208,6 +210,7 @@ class RuntimeAssembler:
         plugins: PluginManager | None = None,
         policy: PolicyEngine | None = None,
         identity: AuthenticationManager | None = None,
+        secrets: SecretsManager | None = None,
         observe_events: bool = True,
         metadata: Mapping[str, str] | None = None,
         source: str = "phoenix.runtime",
@@ -221,6 +224,7 @@ class RuntimeAssembler:
         self._plugins = plugins
         self._policy = policy
         self._identity = identity
+        self._secrets = secrets
         self._observe_events = observe_events
         self._composer = ServiceComposer(definitions)
         self._metadata = {} if metadata is None else dict(metadata)
@@ -241,6 +245,8 @@ class RuntimeAssembler:
             base_services["identity"] = self._identity
         if self._state is not None:
             base_services["state"] = self._state
+        if self._secrets is not None:
+            base_services["secrets"] = self._secrets
         if self._plugins is not None:
             base_services["plugins"] = self._plugins
         container = await self._composer.compose(
@@ -274,6 +280,8 @@ class RuntimeAssembler:
             components.append(ComponentSpec("state", cast(LifecycleComponent, self._state)))
         if self._identity is not None:
             components.append(ComponentSpec("identity", self._identity))
+        if self._secrets is not None:
+            components.append(ComponentSpec("secrets", self._secrets))
         components.extend(container.components)
         if self._plugins is not None:
             components.append(ComponentSpec("plugins", self._plugins))

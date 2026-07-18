@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.0] - 2026-07-18
+
+### Added
+- Accepted RFC-0011 and ADR-0022/0023.
+- Immutable secret, key-reference, metadata, lease, store, and snapshot contracts.
+- Identity-required, deny-by-default `SecretsManager` with Policy Engine integration.
+- Immutable version creation, rotation ancestry, exact lookup, latest-active lookup, and revocation.
+- Principal-bound bounded leases with expiry, explicit revocation, purge, and secret-revocation invalidation.
+- Deterministic process-local `InMemorySecretStore` for tests and ephemeral deployments.
+- Provider-neutral `SecretStore` and `SecretProtector` boundaries with explicit `KeyRef` metadata.
+- Typed Configuration secret-reference decoder and on-demand lease resolver.
+- Event Bus, Observability, and RuntimeAssembler integration without material disclosure.
+- Nova 3.x secrets migration guidance and executable example.
+
 ## [0.10.0] - 2026-07-18
 
 ### Added

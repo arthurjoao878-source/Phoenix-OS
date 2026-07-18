@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.10.0` implements ten accepted specifications:
+Version `0.11.0` implements eleven accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -23,9 +23,11 @@ Version `0.10.0` implements ten accepted specifications:
   default-deny decisions, confirmation, explanations, and subsystem enforcement adapters.
 - **RFC-0010 — Identity, Authentication and Sessions:** redacted credentials, trusted provider
   adapters, opaque bearer sessions, hashed persistence, expiry, revocation, and context propagation.
+- **RFC-0011 — Secrets Vault and Key Management:** versioned secret references, authenticated
+  policy enforcement, bounded leases, rotation, revocation, and external cryptographic boundaries.
 
 The core intentionally contains no AI model, durable database driver, semantic-memory engine,
-concrete tool, concrete identity provider, password database, credential store, telemetry vendor, UI, or operating-system automation. Durable
+concrete tool, concrete identity provider, password database, cloud vault, cryptographic key provider, telemetry vendor, UI, or operating-system automation. Durable
 storage belongs behind the State Store protocol; other integrations belong behind capability
 providers, lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
 The plugin system is an authority boundary for SDK contributions, not a sandbox for hostile code.
@@ -51,6 +53,26 @@ On Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
+
+## Secrets example
+
+```python
+from phoenix_os import KeyRef, SecretRef, SecretsManager, SecretValue
+
+manager = SecretsManager(policy=policy)
+ref = SecretRef("database-password", "production")
+await manager.create(
+    ref,
+    SecretValue(password),
+    security_context,
+    protection_key=KeyRef("primary", "external-kms", 1),
+)
+lease = await manager.lease(ref, security_context)
+```
+
+Configuration should contain `SecretRef` values rather than raw credentials. The reference in-memory
+store is not encrypted at rest; production encryption and key custody belong to reviewed external
+`SecretStore` and `SecretProtector` adapters.
 
 ## Identity example
 
@@ -129,7 +151,7 @@ updated = await store.put(
 ```
 
 See `examples/` and `docs/` for complete contracts, configuration, dependency composition, Runtime
-integration, authentication providers, sessions, policy rules, security contexts, plugin manifests, dependency resolution, state
+integration, authentication providers, sessions, secret references, leases, key providers, policy rules, security contexts, plugin manifests, dependency resolution, state
 transactions, snapshots, trace context, redaction, and architectural decisions.
 
 ## License
