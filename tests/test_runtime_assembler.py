@@ -105,3 +105,30 @@ async def test_runtime_assembler_exposes_policy_engine_as_lifecycle_service() ->
     assert decision.effect is PolicyEffect.ALLOW
     await runtime.stop()
     assert policy.closed
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_exposes_identity_manager_as_lifecycle_service() -> None:
+    from phoenix_os import AuthenticationManager
+
+    configuration = await ConfigLoader(ConfigSchema(()), (MappingConfigSource({}),)).load()
+    events = EventBus()
+    router = Router()
+    router.add("system.echo", echo)
+    kernel = Kernel(router=router, authorizer=AllowAllAuthorizer(), events=events)
+    capabilities = CapabilityRegistry(events=events)
+    identity = AuthenticationManager(events=events)
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        identity=identity,
+    ).assemble()
+
+    assert runtime.service("identity") is identity
+    await runtime.start()
+    assert not identity.closed
+    await runtime.stop()
+    assert identity.closed

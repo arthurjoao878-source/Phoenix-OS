@@ -6,7 +6,7 @@ import inspect
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from phoenix_os.capabilities import CapabilityRegistry
 from phoenix_os.configuration.contracts import Configuration
@@ -25,10 +25,14 @@ from phoenix_os.policy import PolicyEngine
 from phoenix_os.runtime import ComponentSpec, LifecycleComponent, PhoenixRuntime
 from phoenix_os.state import StateStore, StateStoreRegistry
 
+if TYPE_CHECKING:
+    from phoenix_os.identity import AuthenticationManager
+
 _RESERVED_DEFINITION_NAMES = frozenset(
     {
         "kernel",
         "events",
+        "identity",
         "capabilities",
         "configuration",
         "observability",
@@ -203,6 +207,7 @@ class RuntimeAssembler:
         state: StateStore | StateStoreRegistry | None = None,
         plugins: PluginManager | None = None,
         policy: PolicyEngine | None = None,
+        identity: AuthenticationManager | None = None,
         observe_events: bool = True,
         metadata: Mapping[str, str] | None = None,
         source: str = "phoenix.runtime",
@@ -215,6 +220,7 @@ class RuntimeAssembler:
         self._state = state
         self._plugins = plugins
         self._policy = policy
+        self._identity = identity
         self._observe_events = observe_events
         self._composer = ServiceComposer(definitions)
         self._metadata = {} if metadata is None else dict(metadata)
@@ -231,6 +237,8 @@ class RuntimeAssembler:
             base_services["observability"] = self._observability
         if self._policy is not None:
             base_services["policy"] = self._policy
+        if self._identity is not None:
+            base_services["identity"] = self._identity
         if self._state is not None:
             base_services["state"] = self._state
         if self._plugins is not None:
@@ -264,6 +272,8 @@ class RuntimeAssembler:
             components.append(ComponentSpec("policy", self._policy))
         if self._state is not None:
             components.append(ComponentSpec("state", cast(LifecycleComponent, self._state)))
+        if self._identity is not None:
+            components.append(ComponentSpec("identity", self._identity))
         components.extend(container.components)
         if self._plugins is not None:
             components.append(ComponentSpec("plugins", self._plugins))

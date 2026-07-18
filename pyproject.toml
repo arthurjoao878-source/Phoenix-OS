@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "phoenix-os"
-version = "0.9.0"
-description = "A deterministic asynchronous runtime with centralized policy and security contexts."
+version = "0.10.0"
+description = "A deterministic asynchronous runtime with identity, authentication, sessions, and policy."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "Phoenix contributors" }]
-keywords = ["orchestration", "runtime", "policy", "security", "plugins", "state", "observability"]
+keywords = ["orchestration", "runtime", "identity", "authentication", "sessions", "policy", "security"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "License :: OSI Approved :: MIT License",

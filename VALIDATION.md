@@ -1,107 +1,100 @@
-# Validation — Phoenix OS v0.9.0
+# Validation — Phoenix OS v0.10.0
 
-Validation date: 2026-07-17
+Validation date: 2026-07-18
 
 ## Environment
 
-- Runtime used for release validation: CPython 3.13.5 on Linux.
-- Declared and type-checked minimum runtime: Python 3.12.
-- Ruff: 0.15.22.
-- mypy: 2.3.0, strict mode.
-- pytest: 9.1.1 in the clean development environment.
+- Platform: Linux
+- Runtime: CPython 3.13.5
+- Declared minimum: Python 3.12
+- Ruff: 0.15.22
+- mypy: 2.3.0
+- pytest: 9.1.1
+- pytest-asyncio: 1.4.0
 
-The project intentionally uses only Python 3.12 language features. Final execution of
-`scripts/check.ps1` on the maintainer's Python 3.12 Windows environment remains the release-side
-runtime confirmation for that exact interpreter.
+The mypy target and Ruff target remain Python 3.12. Runtime execution in this validation environment
+used CPython 3.13.5. The Windows `check.ps1` run remains the final confirmation on the maintainer's
+Python 3.12 installation.
 
-## Complete quality gate
-
-Executed from a fresh virtual environment after an editable install with development dependencies:
+## Quality pipeline
 
 ```text
 All checks passed!
-97 files already formatted
-Success: no issues found in 97 source files
-325 passed
+110 files already formatted
+Success: no issues found in 110 source files
+367 passed
 ```
 
-The gate ran:
+Commands:
 
-```text
+```bash
 python -m ruff check .
 python -m ruff format --check .
 python -m mypy
 python -m pytest
 ```
 
-## Test coverage areas
+## RFC-0010 coverage
 
-The 325 tests include the existing Kernel, Event Bus, Capability Registry, Runtime, Configuration,
-Observability, State Store, and Plugin System suites plus RFC-0009 coverage for:
+The suite includes coverage for:
 
-- immutable security contexts and normalized policy requests;
-- declarative rule contracts and frozen metadata;
-- default-deny evaluation;
-- priority ordering and equal-priority restriction precedence;
-- principal, identity type, authentication, role, permission, scope, glob, and attribute matching;
-- explicit confirmation and confirmed resolution;
-- explainable decisions and structured enforcement exceptions;
-- rule registration, lookup, removal, snapshots, lifecycle, and closure;
-- Event Bus and Observability signals;
-- Capability permission and confirmation adapters;
-- protected State Store operations and transactions;
-- protected plugin setup and startup;
-- RuntimeAssembler service and lifecycle integration.
+- credential redaction and immutable authentication contracts;
+- identity normalization and SecurityContext derivation;
+- provider registration, ordering, removal, rejection, cancellation-safe execution, and safe errors;
+- bearer issuance, digest lookup, token collision handling, resolution, and session snapshots;
+- absolute and idle expiration, touches, limits, revocation, identity-wide revocation, and purge;
+- in-memory and State Store-backed repositories;
+- persistence round trips without raw bearer storage;
+- task-local session and security-context propagation;
+- Capability and State context adapters;
+- authenticated Kernel forwarding;
+- Event Bus and Observability signals without credentials or bearer tokens;
+- RuntimeAssembler identity service and lifecycle ordering;
+- all RFC-0001 through RFC-0009 regression suites.
 
-## Compilation and examples
+## Examples
 
-`compileall` completed successfully for `src`, `tests`, and `examples`.
+Ten examples executed successfully:
 
-Nine executable examples completed successfully:
+```text
+capability_registry.py
+configuration.py
+event_bus.py
+identity_authentication.py
+kernel.py
+observability.py
+plugin_system.py
+policy_engine.py
+runtime.py
+state_store.py
+```
 
-- Kernel;
-- Event Bus;
-- Capability Registry;
-- Runtime;
-- Configuration;
-- Observability;
-- State Store;
-- Plugin System;
-- Policy Engine.
+## Compilation
+
+```bash
+python -m compileall -q src tests examples
+```
+
+Completed successfully.
 
 ## Wheel
 
 Built artifact:
 
 ```text
-phoenix_os-0.9.0-py3-none-any.whl
+phoenix_os-0.10.0-py3-none-any.whl
 ```
 
-SHA-256:
+The wheel was installed into a clean virtual environment without the source tree on `PYTHONPATH`.
+An isolated smoke test authenticated an identity, issued and resolved a bearer session, revoked it,
+and closed the manager:
 
 ```text
-5b822d21f03518be5e36e8441321b9986f2c6c1e69e87b4fede938bc7535cdec
+isolated identity smoke test passed 0.10.0
 ```
 
-The wheel was installed without dependencies into a clean virtual environment. The isolated smoke
-test confirmed:
+## Result
 
-- `phoenix_os.__version__ == "0.9.0"`;
-- `PHOENIX_VERSION == "0.9.0"`;
-- public Policy Engine imports;
-- system-principal matching;
-- successful `PolicyEngine.enforce()`;
-- clean Policy Engine shutdown.
-
-Result:
-
-```text
-isolated policy smoke test passed 0.9.0
-```
-
-## Conclusion
-
-Phoenix OS v0.9.0 satisfies the RFC-0009 acceptance criteria while preserving all previously
-accepted public contracts. Authorization is centralized, deterministic, explainable, and deny by
-default. Authentication, credential validation, secret storage, remote policy distribution, and
-hostile-code isolation remain external adapter responsibilities.
+Phoenix OS v0.10.0 satisfies the RFC-0010 acceptance criteria while preserving all previously
+validated public contracts. No claim is made that the core implements a concrete password, OAuth,
+OIDC, LDAP, SAML, passkey, or operating-system identity provider.

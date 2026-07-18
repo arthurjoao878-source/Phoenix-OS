@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.9.0` implements nine accepted specifications:
+Version `0.10.0` implements ten accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -21,9 +21,11 @@ Version `0.9.0` implements nine accepted specifications:
   dependency ordering, least-authority exports, allowlisted discovery, rollback, and Runtime lifecycle.
 - **RFC-0009 — Policy Engine and Security Context:** immutable identities, declarative rules,
   default-deny decisions, confirmation, explanations, and subsystem enforcement adapters.
+- **RFC-0010 — Identity, Authentication and Sessions:** redacted credentials, trusted provider
+  adapters, opaque bearer sessions, hashed persistence, expiry, revocation, and context propagation.
 
 The core intentionally contains no AI model, durable database driver, semantic-memory engine,
-concrete tool, identity provider, credential store, telemetry vendor, UI, or operating-system automation. Durable
+concrete tool, concrete identity provider, password database, credential store, telemetry vendor, UI, or operating-system automation. Durable
 storage belongs behind the State Store protocol; other integrations belong behind capability
 providers, lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
 The plugin system is an authority boundary for SDK contributions, not a sandbox for hostile code.
@@ -48,6 +50,30 @@ On Windows:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
+
+
+## Identity example
+
+```python
+from phoenix_os import (
+    AuthenticationCredential,
+    AuthenticationManager,
+    CallableAuthenticationProvider,
+    Identity,
+    SecretValue,
+)
+
+provider = CallableAuthenticationProvider(authenticate_nova_user)
+identity = AuthenticationManager((("nova", provider),))
+grant = await identity.authenticate(
+    "nova",
+    AuthenticationCredential("password", SecretValue(password)),
+)
+session = await identity.resolve(grant.token)
+```
+
+Only a one-way digest is retained by the session repository. Password hashing, OAuth, LDAP, OIDC,
+and external token verification belong inside trusted provider adapters.
 
 ## Policy example
 
@@ -103,7 +129,7 @@ updated = await store.put(
 ```
 
 See `examples/` and `docs/` for complete contracts, configuration, dependency composition, Runtime
-integration, policy rules, security contexts, plugin manifests, dependency resolution, state
+integration, authentication providers, sessions, policy rules, security contexts, plugin manifests, dependency resolution, state
 transactions, snapshots, trace context, redaction, and architectural decisions.
 
 ## License
