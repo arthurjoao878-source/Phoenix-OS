@@ -142,3 +142,24 @@ The Policy Engine continues to decide authorization and never validates credenti
 
 Runtime assembly starts State before Identity and stops Identity before State. Plugins stop first, so
 cleanup remains possible while identity and persistence services are available.
+
+## Secrets Vault and Key Management
+
+`SecretsManager` is the authenticated and authorized boundary for secret creation, rotation,
+metadata lookup, temporary material access, and revocation. Names are carried as immutable
+`SecretRef` values; external wrapping keys are identified only by `KeyRef`. Neither reference
+contains sensitive material.
+
+Every manager operation requires an authenticated `SecurityContext`. The Policy Engine evaluates
+normalized `secret.*` actions and `secret:<namespace>/<name>` resources. When no engine is supplied,
+explicit context permissions remain deny-by-default.
+
+Material leaves a store only inside a bounded `SecretLease` whose `SecretValue` is redacted by
+default. Leases belong to one principal, expire, may be revoked, and are invalidated when their exact
+secret version is revoked. Runtime shutdown clears lease memory before the store closes.
+
+`InMemorySecretStore` is deterministic, non-durable, and not encrypted at rest. Production vaults,
+HSMs, cloud KMS, operating-system keyrings, envelope encryption, provider authentication, retries,
+and disaster recovery remain behind external `SecretStore` and `SecretProtector` implementations.
+Runtime assembly starts Secrets after Identity and stops it before Identity, State, Observability,
+and Events close.

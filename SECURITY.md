@@ -30,3 +30,15 @@ storage. Revoke affected sessions immediately after suspected disclosure.
 external token validation, MFA, account status checks, and provider-specific rate limiting. Do not
 use SHA-256 directly for human passwords. Use a suitable password KDF or the security controls of the
 external identity provider.
+
+## Secrets and key management
+
+`SecretValue`, `SecretRef`, leases, and policy checks reduce accidental disclosure but do not make the
+Python process a hardware-backed vault. `InMemorySecretStore` is neither durable nor encrypted at
+rest. Never use it as the sole protection for production credentials.
+
+Production deployments should use independently reviewed external `SecretStore` and
+`SecretProtector` adapters, protect provider credentials, use short leases, restrict policy rules,
+and revoke affected versions and sessions after suspected disclosure. Do not place secret material,
+wrapping keys, lease values, vault credentials, or decrypted payloads in logs, events, metrics,
+exceptions, source control, State Store, or configuration files.

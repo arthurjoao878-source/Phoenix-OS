@@ -1,4 +1,4 @@
-# Validation — Phoenix OS v0.10.0
+# Validation — Phoenix OS v0.11.0
 
 Validation date: 2026-07-18
 
@@ -9,20 +9,20 @@ Validation date: 2026-07-18
 - Declared minimum: Python 3.12
 - Ruff: 0.15.22
 - mypy: 2.3.0
-- pytest: 9.1.1
-- pytest-asyncio: 1.4.0
+- pytest: 9.0.2
+- pytest-asyncio: 1.3.0
 
-The mypy target and Ruff target remain Python 3.12. Runtime execution in this validation environment
-used CPython 3.13.5. The Windows `check.ps1` run remains the final confirmation on the maintainer's
+The mypy and Ruff targets remain Python 3.12. Runtime execution in this validation environment used
+CPython 3.13.5. The Windows `check.ps1` run remains the final confirmation on the maintainer's exact
 Python 3.12 installation.
 
 ## Quality pipeline
 
 ```text
 All checks passed!
-110 files already formatted
-Success: no issues found in 110 source files
-367 passed
+122 files already formatted
+Success: no issues found in 122 source files
+417 passed
 ```
 
 Commands:
@@ -34,27 +34,30 @@ python -m mypy
 python -m pytest
 ```
 
-## RFC-0010 coverage
+## RFC-0011 coverage
 
 The suite includes coverage for:
 
-- credential redaction and immutable authentication contracts;
-- identity normalization and SecurityContext derivation;
-- provider registration, ordering, removal, rejection, cancellation-safe execution, and safe errors;
-- bearer issuance, digest lookup, token collision handling, resolution, and session snapshots;
-- absolute and idle expiration, touches, limits, revocation, identity-wide revocation, and purge;
-- in-memory and State Store-backed repositories;
-- persistence round trips without raw bearer storage;
-- task-local session and security-context propagation;
-- Capability and State context adapters;
-- authenticated Kernel forwarding;
-- Event Bus and Observability signals without credentials or bearer tokens;
-- RuntimeAssembler identity service and lifecycle ordering;
-- all RFC-0001 through RFC-0009 regression suites.
+- normalized and immutable secret and external-key references;
+- metadata, material, lease, store, and diagnostic contracts;
+- redacted representations for stored material and leases;
+- deterministic version allocation and rotation ancestry;
+- exact-version and latest-active resolution;
+- deterministic listing and namespace filtering;
+- version and lease revocation;
+- store snapshots, material clearing, and closed-state behavior;
+- authenticated identity requirements and deny-by-default local permissions;
+- Policy Engine allow, deny, and confirmation enforcement;
+- lease bounds, principal ownership, expiry, purge, and secret-revocation invalidation;
+- Event Bus and Observability signals without material disclosure;
+- typed Configuration reference decoding and lease resolution;
+- provider-neutral `KeyRef`, `SecretStore`, and `SecretProtector` boundaries;
+- RuntimeAssembler service exposure and lifecycle shutdown;
+- all RFC-0001 through RFC-0010 regression suites.
 
 ## Examples
 
-Ten examples executed successfully:
+Eleven examples executed successfully:
 
 ```text
 capability_registry.py
@@ -66,6 +69,7 @@ observability.py
 plugin_system.py
 policy_engine.py
 runtime.py
+secrets_vault.py
 state_store.py
 ```
 
@@ -82,19 +86,19 @@ Completed successfully.
 Built artifact:
 
 ```text
-phoenix_os-0.10.0-py3-none-any.whl
+phoenix_os-0.11.0-py3-none-any.whl
 ```
 
 The wheel was installed into a clean virtual environment without the source tree on `PYTHONPATH`.
-An isolated smoke test authenticated an identity, issued and resolved a bearer session, revoked it,
-and closed the manager:
+An isolated smoke test created and rotated a versioned secret, issued a lease, verified the material,
+revoked the active version, and closed the manager:
 
 ```text
-isolated identity smoke test passed 0.10.0
+isolated secrets smoke test passed 0.11.0
 ```
 
 ## Result
 
-Phoenix OS v0.10.0 satisfies the RFC-0010 acceptance criteria while preserving all previously
-validated public contracts. No claim is made that the core implements a concrete password, OAuth,
-OIDC, LDAP, SAML, passkey, or operating-system identity provider.
+Phoenix OS v0.11.0 satisfies the RFC-0011 acceptance criteria while preserving all previously
+validated public contracts. No claim is made that the core supplies encryption at rest, a concrete
+cloud vault, HSM, KMS, TPM, keychain, transport, backup, or disaster-recovery provider.
