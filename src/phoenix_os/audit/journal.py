@@ -29,6 +29,8 @@ _CATEGORY_PREFIXES: tuple[tuple[str, AuditCategory], ...] = (
     ("identity.", AuditCategory.IDENTITY),
     ("job.", AuditCategory.JOB),
     ("jobs.", AuditCategory.JOB),
+    ("workflow.", AuditCategory.WORKFLOW),
+    ("workflows.", AuditCategory.WORKFLOW),
     ("authentication.", AuditCategory.AUTHENTICATION),
     ("session.", AuditCategory.AUTHENTICATION),
     ("policy.", AuditCategory.AUTHORIZATION),

@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.15.0` implements fifteen accepted specifications:
+Version `0.16.0` implements sixteen accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -33,6 +33,9 @@ Version `0.15.0` implements fifteen accepted specifications:
   compression, chained manifests, verification, and confirmed prefix-only retention.
 - **RFC-0015 — Durable Jobs and Workflow Scheduling:** capability-only jobs, deterministic schedules,
   lease fencing, retries, dead-letter state, State Store recovery, and Runtime-owned bounded workers.
+- **RFC-0016 — Durable Workflow Graphs and Orchestration:** immutable DAG definitions, deterministic
+  fan-out/fan-in planning, durable job-backed steps, restart recovery, failure propagation, and
+  Runtime-owned reconciliation.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -64,6 +67,27 @@ On Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
+
+## Durable workflow example
+
+```python
+from phoenix_os import WorkflowDefinition, WorkflowStep
+
+definition = WorkflowDefinition(
+    "release",
+    (
+        WorkflowStep("prepare", "release.prepare"),
+        WorkflowStep("test", "release.test", dependencies=frozenset({"prepare"})),
+        WorkflowStep("publish", "release.publish", dependencies=frozenset({"test"})),
+    ),
+)
+workflow = await orchestrator.start(definition)
+```
+
+Workflow definitions are validated directed acyclic graphs. Independent steps fan out in declaration
+order, dependent steps wait at fan-in barriers, and every runnable step becomes a durable Phoenix
+job. `StateWorkflowRepository` persists definitions and execution state; `WorkflowWorker` reconciles
+non-terminal instances under Runtime ownership without storing Python callables or shell commands.
 
 ## Durable jobs example
 
