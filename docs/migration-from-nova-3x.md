@@ -261,3 +261,36 @@ Nova leitura irrestrita de logs   -> audit.read policy rule
 `SQLiteAuditStore` survives restart and verifies before resuming by default, but it is not WORM, does
 not encrypt database pages, and cannot independently detect rollback to an older valid copy. An
 unsigned hash chain remains tamper-evident rather than tamper-proof.
+
+## Audit archive and retention migration
+
+Do not rotate Nova audit logs by renaming files without a verifiable handoff. Export Phoenix records
+through `AuditArchiveManager`, preserve exact sequence ranges, and verify every manifest chain before
+moving bundles to long-term storage.
+
+Recommended sequence:
+
+1. choose a bounded segment size appropriate for investigation and transfer;
+2. export only complete contiguous ranges, or explicitly include a final partial segment;
+3. retain manifest and artifact files together;
+4. verify payload, artifact, record, head, and manifest continuity after every transfer;
+5. independently record important latest manifest digests when rollback detection is required;
+6. use protected archive identifiers for incident, legal-hold, or investigation material;
+7. review the retention plan and separately confirm its exact digest before deletion;
+8. apply filesystem permissions, encryption, backup, object lock, privacy, and regulatory controls
+   outside the Phoenix process;
+9. never treat local retention deletion as proof that remote copies or backups were removed.
+
+Example mapping:
+
+```text
+Nova rename audit.log           -> AuditArchiveManager.rotate(...)
+Nova zip with current timestamp -> deterministic gzip with payload/artifact digests
+Nova checksum.txt               -> chained AuditArchiveManifest
+Nova delete older_than(days)    -> plan_retention + exact digest confirmation
+Nova legal hold spreadsheet     -> protected_archive_ids plus external governance
+Nova copied archive directory   -> verify_chain after transfer
+```
+
+Archive rotation does not truncate the live SQLite ledger. Use an external `AuditStore` or reviewed
+operational procedure when active-store compaction is required.

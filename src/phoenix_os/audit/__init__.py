@@ -1,5 +1,17 @@
 """Phoenix audit ledger and security journal public API."""
 
+from phoenix_os.audit.archive import (
+    AuditArchiveCompression,
+    AuditArchiveManager,
+    AuditArchiveManifest,
+    AuditArchiveResult,
+    AuditArchiveVerification,
+    AuditRetentionPlan,
+    AuditRetentionPolicy,
+    AuditRetentionResult,
+    canonical_archive_manifest_bytes,
+    compute_archive_manifest_digest,
+)
 from phoenix_os.audit.codec import canonical_audit_bytes, compute_audit_digest
 from phoenix_os.audit.contracts import (
     AUDIT_GENESIS_DIGEST,
@@ -19,9 +31,13 @@ from phoenix_os.audit.contracts import (
 )
 from phoenix_os.audit.errors import (
     AuditAccessDeniedError,
+    AuditArchiveError,
+    AuditArchiveExistsError,
+    AuditArchiveVerificationError,
     AuditLedgerClosedError,
     AuditPersistenceError,
     AuditRecoveryError,
+    AuditRetentionConfirmationError,
     AuditSchemaError,
     AuditSignerError,
     AuditStoreClosedError,
@@ -37,6 +53,14 @@ from phoenix_os.audit.sqlite import SQLiteAuditStore
 __all__ = [
     "AUDIT_GENESIS_DIGEST",
     "AuditAccessDeniedError",
+    "AuditArchiveCompression",
+    "AuditArchiveError",
+    "AuditArchiveExistsError",
+    "AuditArchiveManager",
+    "AuditArchiveManifest",
+    "AuditArchiveResult",
+    "AuditArchiveVerification",
+    "AuditArchiveVerificationError",
     "AuditCategory",
     "AuditEvent",
     "AuditLedger",
@@ -47,6 +71,10 @@ __all__ = [
     "AuditQuery",
     "AuditRecord",
     "AuditRecoveryError",
+    "AuditRetentionConfirmationError",
+    "AuditRetentionPlan",
+    "AuditRetentionPolicy",
+    "AuditRetentionResult",
     "AuditSchemaError",
     "AuditSeal",
     "AuditSeverity",
@@ -64,7 +92,9 @@ __all__ = [
     "SecurityJournal",
     "SecurityJournalSnapshot",
     "SecurityJournalStateError",
+    "canonical_archive_manifest_bytes",
     "canonical_audit_bytes",
+    "compute_archive_manifest_digest",
     "compute_audit_digest",
     "default_journal_event",
 ]

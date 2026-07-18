@@ -37,5 +37,21 @@ class AuditRecoveryError(AuditPersistenceError):
     """Raised when a durable ledger cannot safely resume appending."""
 
 
+class AuditArchiveError(PhoenixAuditError):
+    """Raised when an audit archive cannot be created or inspected safely."""
+
+
+class AuditArchiveExistsError(AuditArchiveError):
+    """Raised when export would overwrite an existing archive bundle."""
+
+
+class AuditArchiveVerificationError(AuditArchiveError):
+    """Raised when an operation requires a valid archive chain."""
+
+
+class AuditRetentionConfirmationError(AuditArchiveError):
+    """Raised when a destructive retention plan is stale or not confirmed exactly."""
+
+
 class SecurityJournalStateError(PhoenixAuditError):
     """Raised when the Security Journal lifecycle is used incorrectly."""

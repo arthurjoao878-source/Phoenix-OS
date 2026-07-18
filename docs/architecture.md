@@ -118,6 +118,14 @@ actors, actions, and resources, preserves correlation, and appends redacted reco
 keeps the journal and ledger alive while later security services stop, then closes the journal before
 the ledger and Event Bus.
 
+`AuditArchiveManager` reads exact contiguous ranges through the provider-neutral `AuditStore`
+boundary. It publishes canonical NDJSON payloads and immutable manifests with payload, artifact,
+record-head, and prior-manifest digests. Rotation exports not-yet-archived history in bounded
+segments without mutating the live ledger. Retention is split into a non-destructive plan and a
+separate exact-digest-confirmed apply step; only an oldest contiguous prefix can be selected.
+Retained suffixes preserve explicit external anchors. WORM, object lock, remote replication,
+encryption at rest, and independent timestamping remain deployment or external-adapter concerns.
+
 ## Policy Engine and Security Context
 
 `PolicyEngine` centralizes authorization questions from subsystem adapters. Immutable

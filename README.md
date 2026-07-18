@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.13.0` implements thirteen accepted specifications:
+Version `0.14.0` implements fourteen accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -29,6 +29,8 @@ Version `0.13.0` implements thirteen accepted specifications:
   hash chaining, optional external signatures, policy-protected inspection, and Event Bus journaling.
 - **RFC-0013 — Durable Audit Storage and Recovery:** SQLite WAL persistence, atomic append
   transactions, append-only SQL guards, schema validation, and verify-before-resume recovery.
+- **RFC-0014 — Audit Retention, Rotation and Archival:** canonical NDJSON segments, deterministic
+  compression, chained manifests, verification, and confirmed prefix-only retention.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key or audit
@@ -78,9 +80,10 @@ verification = await audit.verify(security_context)
 
 Audit details are redacted before hashing. `InMemoryAuditStore` remains ephemeral. For local durable
 recovery, construct `SQLiteAuditStore("var/phoenix/audit.sqlite3")`; it verifies an existing chain
-before resuming appends by default. An unsigned SHA-256 chain remains tamper-evident rather than
-tamper-proof, and stronger retention or origin guarantees belong behind reviewed `AuditStore` and
-`AuditSigner` adapters.
+before resuming appends by default. `AuditArchiveManager` exports canonical NDJSON segments, verifies
+manifest and record continuity, and requires digest-confirmed retention plans before deletion. An
+unsigned SHA-256 chain remains tamper-evident rather than tamper-proof; protected storage and
+independent anchoring remain deployment responsibilities.
 
 ## Secrets example
 

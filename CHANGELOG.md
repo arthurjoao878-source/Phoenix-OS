@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0] - 2026-07-18
+
+### Added
+- Accepted RFC-0014 and ADR-0028/0029.
+- Canonical UTF-8 NDJSON audit archive segments with deterministic optional gzip.
+- Dual payload/artifact SHA-256 digests and chained immutable manifests.
+- Exact-range export, bounded rotation, atomic publication, and overwrite refusal.
+- Individual archive and complete cross-segment verification with optional seal checks.
+- Non-destructive retention plans with age, newest-count, and protected-archive constraints.
+- Exact digest confirmation, current-chain validation, stale-plan checks, and prefix-only deletion.
+- Audit archival example, migration guidance, validation notes, and regression tests.
+
 ## [0.13.0] - 2026-07-18
 
 ### Added
