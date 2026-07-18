@@ -17,7 +17,7 @@ _PLUGIN_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$")
 _VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 PLUGIN_API_VERSION = 1
-PHOENIX_VERSION = "0.9.0"
+PHOENIX_VERSION = "0.10.0"
 
 
 def normalize_plugin_id(value: str) -> str:

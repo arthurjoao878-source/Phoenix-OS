@@ -48,10 +48,16 @@ Nova 3.x remains outside the Phoenix core. Migration is incremental:
 27. Resolve plugin-published services through `PluginManager.service()` instead of mutating global
     registries or Runtime services.
 28. Never treat the plugin system as a sandbox. Isolate untrusted packages in external processes.
-29. Never import Nova UI, database drivers, AI clients, credentials, configuration parsing, Windows
-    automation, or telemetry vendors into `phoenix_os.kernel`, `phoenix_os.events`,
-    `phoenix_os.capabilities`, `phoenix_os.runtime`, `phoenix_os.observability`,
-    `phoenix_os.state`, or `phoenix_os.plugins`.
+29. Adapt Nova login, API-token, service-account, or operating-system verification behind an
+    `AuthenticationProvider`; never verify credentials in Kernel handlers.
+30. Return only trusted roles, permissions, scopes, and attributes from the provider result.
+31. Resolve a bearer session before creating `SecurityContext`, `CapabilityContext`, or
+    `StateOperationContext`.
+32. Persist sessions through `StateSessionRepository` or another `SessionRepository`; never write raw
+    bearer tokens to a database.
+33. Revoke sessions on logout, credential reset, account disablement, or suspected compromise.
+34. Never import Nova UI, database drivers, AI clients, password libraries, OAuth clients,
+    configuration parsing, Windows automation, or telemetry vendors into Phoenix core modules.
 
 Example mapping:
 
@@ -72,6 +78,9 @@ Nova UPDATE com versão       -> state.put(..., expected_version=record.version)
 Nova cache temporário        -> state.put(..., ttl=timedelta(...))
 Nova módulo opcional          -> HookPlugin + PluginManifest
 Nova descoberta automática    -> allowlisted EntryPointPluginDiscovery
+Nova validar_login()          -> CallableAuthenticationProvider
+Nova token em banco           -> StateSessionRepository com digest
+Nova usuário global           -> session_scope + current_security_context
 ```
 
 A service definition makes dependencies and lifecycle explicit:
@@ -151,5 +160,31 @@ Recommended migration sequence:
 6. preserve confirmation as a trusted context fact;
 7. audit decisions through Event Bus and Observability without logging credentials or secret values.
 
-Authentication, token validation, and process isolation remain external adapters. Never infer trust
-from caller-supplied roles, permissions, scopes, or confirmation flags.
+Authentication protocols, password verification, external token validation, and process isolation
+remain provider or deployment adapters. The Phoenix manager owns only provider registration and
+session lifecycle. Never infer trust from caller-supplied roles, permissions, scopes, confirmation
+flags, or unverified session identifiers.
+
+
+## Identity and session migration
+
+Convert one Nova authentication path at a time. A provider should reveal `AuthenticationCredential`
+only inside its verification hook and return an `Identity` only after successful verification.
+
+```python
+async def verify_nova_user(request: AuthenticationRequest) -> Identity:
+    password = request.credential.secret.reveal(str)
+    user = await nova_accounts.verify(password)
+    if user is None:
+        raise AuthenticationRejectedError("invalid credentials")
+    return Identity(
+        user.id,
+        roles=frozenset(user.roles),
+        permissions=frozenset(user.permissions),
+    )
+```
+
+Issue a session through `AuthenticationManager`, return the bearer only through a secure transport,
+and resolve it at the trusted ingress boundary. Use `AuthenticatedKernel` for simple in-process
+adoption or build a transport adapter that binds `session_scope()` before calling Runtime. Do not log
+credentials, bearers, token digests, personal profile data, permissions, or scopes.

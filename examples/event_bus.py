@@ -15,7 +15,7 @@ async def main() -> None:
     report = await bus.emit(
         "demo.started",
         source="examples.event_bus",
-        payload={"version": "0.9.0"},
+        payload={"version": "0.10.0"},
     )
     print(f"delivered={report.delivered} succeeded={report.succeeded}")
     await bus.close()

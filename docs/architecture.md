@@ -119,6 +119,26 @@ Entry-point discovery returns metadata without imports. Loading requires an expl
 allowlist. Loaded Python code still executes with normal process authority; untrusted plugins require
 external process isolation.
 
-With full assembly, lifecycle order is Observability, Event Observer, Policy, State, composed
+With full assembly, lifecycle order is Observability, Event Observer, Policy, State, Identity, composed
 lifecycle services, and Plugins. Reverse shutdown stops plugins while host services and diagnostics remain
 available, then closes state, observation, capabilities, and events through existing owners.
+
+
+## Identity, Authentication, and Sessions
+
+`AuthenticationManager` is the trusted bridge from provider-specific credentials to immutable
+`Identity` and `Session` values. Providers remain external adapters; the core does not implement
+password databases, OAuth, OIDC, LDAP, SAML, passkeys, or operating-system authentication.
+
+New sessions return an opaque bearer inside `SecretValue`. Only a SHA-256 digest is retained by
+`SessionRepository`. `InMemorySessionRepository` supports ephemeral execution and
+`StateSessionRepository` persists JSON-safe records through the existing State Store boundary.
+Absolute expiry, idle expiry, touch intervals, session limits, revocation, and identity-wide
+revocation are owned by the manager.
+
+A resolved session derives the central `SecurityContext`. `session_scope()` propagates it with
+`contextvars`; adapters translate the same trusted facts to Kernel, Capability, and State boundaries.
+The Policy Engine continues to decide authorization and never validates credentials itself.
+
+Runtime assembly starts State before Identity and stops Identity before State. Plugins stop first, so
+cleanup remains possible while identity and persistence services are available.

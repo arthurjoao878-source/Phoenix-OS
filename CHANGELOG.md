@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.0] - 2026-07-18
+
+### Added
+- Accepted RFC-0010 and ADR-0020/0021.
+- Immutable redacted credential, identity, session, grant, repository, registration, and snapshot contracts.
+- Explicit synchronous/asynchronous authentication provider registry with safe rejection and failure handling.
+- Opaque high-entropy bearer sessions with persisted SHA-256 digests only.
+- Absolute and idle expiry, touch intervals, per-identity limits, revocation, and identity-wide logout.
+- In-memory and State Store-backed session repositories.
+- Session-derived Security, Capability, and State contexts plus task-local propagation.
+- Authenticated Kernel adapter and optional Identity lifecycle ownership in `RuntimeAssembler`.
+- Correlated events, logs, metrics, and spans without credential or bearer export.
+- Nova 3.x identity migration guidance and executable example.
+
 ## [0.9.0] - 2026-07-17
 
 ### Added
