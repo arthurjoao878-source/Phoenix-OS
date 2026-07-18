@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from phoenix_os import (
@@ -14,6 +16,7 @@ from phoenix_os import (
     Router,
     RuntimeAssembler,
     ServiceDefinition,
+    SQLiteAuditStore,
 )
 
 
@@ -64,3 +67,26 @@ async def test_runtime_can_disable_event_journal_while_owning_ledger() -> None:
 def test_audit_is_a_reserved_service_name() -> None:
     with pytest.raises(ValueError, match="reserved"):
         ServiceDefinition("audit", lambda resolver, config: object())
+
+
+@pytest.mark.asyncio
+async def test_runtime_reopens_durable_audit_history(tmp_path: Path) -> None:
+    configuration = await ConfigLoader(ConfigSchema(()), (MappingConfigSource({}),)).load()
+    events = EventBus()
+    path = tmp_path / "runtime-audit.sqlite3"
+    runtime = await RuntimeAssembler(
+        kernel=Kernel(router=Router(), authorizer=AllowAllAuthorizer(), events=events),
+        events=events,
+        capabilities=CapabilityRegistry(events=events),
+        configuration=configuration,
+        audit=AuditLedger(SQLiteAuditStore(path), events=events),
+    ).assemble()
+
+    await runtime.start()
+    await runtime.stop()
+
+    reopened = SQLiteAuditStore(path)
+    records = await reopened.read(AuditQuery(limit=1000))
+    assert any(record.event.name == "runtime.started" for record in records)
+    assert any(record.event.name == "runtime.stopping" for record in records)
+    assert (await reopened.verify()).valid

@@ -20,14 +20,19 @@ from phoenix_os.audit.contracts import (
 from phoenix_os.audit.errors import (
     AuditAccessDeniedError,
     AuditLedgerClosedError,
+    AuditPersistenceError,
+    AuditRecoveryError,
+    AuditSchemaError,
     AuditSignerError,
     AuditStoreClosedError,
+    AuditStoreCorruptionError,
     PhoenixAuditError,
     SecurityJournalStateError,
 )
 from phoenix_os.audit.journal import JournalEventMapper, SecurityJournal, default_journal_event
 from phoenix_os.audit.ledger import AuditLedger
 from phoenix_os.audit.memory import InMemoryAuditStore
+from phoenix_os.audit.sqlite import SQLiteAuditStore
 
 __all__ = [
     "AUDIT_GENESIS_DIGEST",
@@ -38,19 +43,24 @@ __all__ = [
     "AuditLedgerClosedError",
     "AuditLedgerSnapshot",
     "AuditOutcome",
+    "AuditPersistenceError",
     "AuditQuery",
     "AuditRecord",
+    "AuditRecoveryError",
+    "AuditSchemaError",
     "AuditSeal",
     "AuditSeverity",
     "AuditSigner",
     "AuditSignerError",
     "AuditStore",
     "AuditStoreClosedError",
+    "AuditStoreCorruptionError",
     "AuditStoreSnapshot",
     "AuditVerification",
     "InMemoryAuditStore",
     "JournalEventMapper",
     "PhoenixAuditError",
+    "SQLiteAuditStore",
     "SecurityJournal",
     "SecurityJournalSnapshot",
     "SecurityJournalStateError",

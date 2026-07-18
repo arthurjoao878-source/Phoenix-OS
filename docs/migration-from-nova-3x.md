@@ -241,7 +241,7 @@ Recommended sequence:
 4. enable `SecurityJournal` for broad Event Bus capture and inspect dispatch failures;
 5. grant `audit.read` and `audit.verify` only to authenticated operational identities;
 6. verify the complete chain during export, investigation, startup checks, or scheduled operations;
-7. deploy an external `AuditStore` for retention, backup, write protection, and independent clocks;
+7. use `SQLiteAuditStore` for local durable recovery or an external `AuditStore` for stronger retention, backup, write protection, and independent clocks;
 8. supply an external `AuditSigner` and protected `KeyRef` when origin authentication is required;
 9. document retention, legal hold, privacy, access review, and incident-response procedures outside
    the Phoenix core.
@@ -251,11 +251,13 @@ Example mapping:
 ```text
 Nova logger.info("login ok")       -> AuditEvent(category=AUTHENTICATION, outcome=SUCCEEDED)
 Nova logger.warning("access")     -> policy Event Bus fact -> SecurityJournal
-Nova arquivo audit.log            -> external AuditStore adapter
+Nova arquivo audit.log            -> SQLiteAuditStore or external AuditStore adapter
 Nova checksum isolado             -> previous-digest chained AuditRecord
 Nova assinatura local improvisada -> reviewed external AuditSigner + KeyRef
 Nova leitura irrestrita de logs   -> audit.read policy rule
 ```
 
-`InMemoryAuditStore` is a test and migration aid only. Its records disappear with the process, and an
-unsigned hash chain is tamper-evident rather than tamper-proof.
+`InMemoryAuditStore` is a test and migration aid only. Its records disappear with the process.
+`SQLiteAuditStore` survives restart and verifies before resuming by default, but it is not WORM, does
+not encrypt database pages, and cannot independently detect rollback to an older valid copy. An
+unsigned hash chain remains tamper-evident rather than tamper-proof.
