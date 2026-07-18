@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.15.0] - 2026-07-18
+
+### Added
+- Accepted RFC-0015 and ADR-0030/0031.
+- Immutable durable-job, schedule, retry, lease, run, worker, repository, and snapshot contracts.
+- Capability-only one-time and fixed-interval execution with deterministic bounded ticks.
+- Atomic lease fencing, stale-result rejection, retries, cancellation, and dead-letter transitions.
+- In-memory and State Store-backed repositories with restart and expired-lease recovery.
+- Runtime-owned bounded worker lifecycle, safe Event Bus facts, and Audit Ledger job categorization.
+- Public API, migration guidance, executable example, validation notes, and regression tests.
+
 ## [0.14.0] - 2026-07-18
 
 ### Added

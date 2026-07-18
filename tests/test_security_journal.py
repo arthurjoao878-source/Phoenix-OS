@@ -151,3 +151,27 @@ async def test_mapper_failure_is_visible_in_dispatch_report() -> None:
     report = await events.publish(Event("system.changed", "test"))
     assert len(report.failures) == 1
     assert (await journal.snapshot()).failures == 1
+
+
+@pytest.mark.asyncio
+async def test_journal_maps_job_dead_letter_as_failed_job_category() -> None:
+    events = EventBus()
+    store = InMemoryAuditStore()
+    journal = SecurityJournal(events=events, ledger=AuditLedger(store, events=events))
+    await journal.start(object())
+
+    await events.emit(
+        "job.dead_lettered",
+        source="phoenix.jobs",
+        payload={
+            "job_id": "12345678-1234-5678-1234-567812345678",
+            "capability": "test.echo",
+            "status": "dead_letter",
+            "attempt": 3,
+        },
+    )
+
+    record = (await store.read(AuditQuery()))[0]
+    assert record.event.category is AuditCategory.JOB
+    assert record.event.outcome is AuditOutcome.FAILED
+    assert record.event.severity is AuditSeverity.ERROR

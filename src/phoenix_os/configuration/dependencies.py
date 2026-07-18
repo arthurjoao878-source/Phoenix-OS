@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -28,6 +29,7 @@ from phoenix_os.state import StateStore, StateStoreRegistry
 if TYPE_CHECKING:
     from phoenix_os.audit import AuditLedger
     from phoenix_os.identity import AuthenticationManager
+    from phoenix_os.jobs import JobScheduler
     from phoenix_os.secrets import SecretsManager
 
 _RESERVED_DEFINITION_NAMES = frozenset(
@@ -35,6 +37,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "kernel",
         "events",
         "identity",
+        "jobs",
         "audit",
         "capabilities",
         "configuration",
@@ -214,6 +217,11 @@ class RuntimeAssembler:
         identity: AuthenticationManager | None = None,
         secrets: SecretsManager | None = None,
         audit: AuditLedger | None = None,
+        jobs: JobScheduler | None = None,
+        job_poll_interval: float = 1.0,
+        job_lease_ttl: timedelta = timedelta(seconds=30),
+        job_batch_size: int = 100,
+        job_worker: str = "phoenix.scheduler",
         observe_events: bool = True,
         journal_events: bool = True,
         metadata: Mapping[str, str] | None = None,
@@ -230,6 +238,11 @@ class RuntimeAssembler:
         self._identity = identity
         self._secrets = secrets
         self._audit = audit
+        self._jobs = jobs
+        self._job_poll_interval = job_poll_interval
+        self._job_lease_ttl = job_lease_ttl
+        self._job_batch_size = job_batch_size
+        self._job_worker = job_worker
         self._observe_events = observe_events
         self._journal_events = journal_events
         self._composer = ServiceComposer(definitions)
@@ -257,6 +270,8 @@ class RuntimeAssembler:
             base_services["secrets"] = self._secrets
         if self._plugins is not None:
             base_services["plugins"] = self._plugins
+        if self._jobs is not None:
+            base_services["jobs"] = self._jobs
         container = await self._composer.compose(
             self._configuration,
             base_services=base_services,
@@ -304,6 +319,21 @@ class RuntimeAssembler:
         components.extend(container.components)
         if self._plugins is not None:
             components.append(ComponentSpec("plugins", self._plugins))
+        if self._jobs is not None:
+            from phoenix_os.jobs import JobWorker
+
+            components.append(
+                ComponentSpec(
+                    "jobs",
+                    JobWorker(
+                        self._jobs,
+                        poll_interval=self._job_poll_interval,
+                        lease_ttl=self._job_lease_ttl,
+                        batch_size=self._job_batch_size,
+                        worker=self._job_worker,
+                    ),
+                )
+            )
         return PhoenixRuntime(
             kernel=self._kernel,
             events=self._events,

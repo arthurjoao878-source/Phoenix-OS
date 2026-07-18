@@ -70,6 +70,7 @@ class AuditCategory(StrEnum):
     CAPABILITY = "capability"
     CONFIGURATION = "configuration"
     IDENTITY = "identity"
+    JOB = "job"
     PLUGIN = "plugin"
     RUNTIME = "runtime"
     SECRETS = "secrets"

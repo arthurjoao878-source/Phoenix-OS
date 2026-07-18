@@ -21,16 +21,19 @@ from phoenix_os.jobs.errors import (
     JobPersistenceError,
     JobRepositoryClosedError,
     JobSchedulerClosedError,
+    JobWorkerStateError,
     PhoenixJobError,
 )
 from phoenix_os.jobs.memory import InMemoryJobRepository
 from phoenix_os.jobs.scheduler import JobScheduler
 from phoenix_os.jobs.state import StateJobRepository
+from phoenix_os.jobs.worker import JobClock, JobWorker, JobWorkerSnapshot, JobWorkerState
 
 __all__ = [
     "InMemoryJobRepository",
     "JobAlreadyExistsError",
     "JobArguments",
+    "JobClock",
     "JobId",
     "JobLease",
     "JobLeaseLostError",
@@ -47,6 +50,10 @@ __all__ = [
     "JobSchedulerSnapshot",
     "JobSpec",
     "JobStatus",
+    "JobWorker",
+    "JobWorkerSnapshot",
+    "JobWorkerState",
+    "JobWorkerStateError",
     "PhoenixJobError",
     "RetryPolicy",
     "StateJobRepository",

@@ -56,8 +56,8 @@ secrets so ordinary inspection remains redacted.
 
 `ServiceComposer` builds named singleton dependencies from explicit declarations. It detects
 missing dependencies and cycles before startup. `RuntimeAssembler` exposes Kernel, Event Bus,
-Capability Registry, resolved configuration, and optional Observability, Audit, Policy, State,
-Identity, Secrets, and Plugin services to factories, then creates `PhoenixRuntime` with composed services and lifecycle components.
+Capability Registry, resolved configuration, and optional Observability, Audit, Policy, State, Identity, Secrets, Jobs, and Plugin services to
+factories, then creates `PhoenixRuntime` with composed services and lifecycle components.
 
 `PhoenixRuntime` remains the lifecycle owner. It owns the Kernel, Event Bus, Capability Registry,
 external lifecycle components, immutable named services, request admission, graceful draining, and
@@ -87,7 +87,8 @@ before the observer unsubscribes and the hub closes. The Runtime then closes the
 and Event Bus.
 
 Remote brokers, remote or distributed database implementations, replication, cross-service
-transactions, retries, metric aggregation, telemetry vendor protocols, AI, semantic memory,
+transactions, hosted job queues, distributed scheduling consensus, metric aggregation, telemetry
+vendor protocols, AI, semantic memory,
 credential stores, sandboxing, operating-system automation, remote configuration, hot reload, and
 UI remain external adapters. The local SQLite audit backend is the only durable database reference
 implementation included in the core.
@@ -125,6 +126,25 @@ segments without mutating the live ledger. Retention is split into a non-destruc
 separate exact-digest-confirmed apply step; only an oldest contiguous prefix can be selected.
 Retained suffixes preserve explicit external anchors. WORM, object lock, remote replication,
 encryption at rest, and independent timestamping remain deployment or external-adapter concerns.
+
+## Durable Jobs and Workflow Scheduling
+
+`JobScheduler` persists immutable capability-backed job records through the `JobRepository` protocol.
+Due work is claimed atomically with bounded opaque fencing leases. Completion and failure require the
+exact active lease, so cancelled, expired, or replaced workers cannot overwrite newer repository
+state. `InMemoryJobRepository` is process-local; `StateJobRepository` uses serializable State Store
+transactions and a versioned JSON-safe schema for restart recovery.
+
+`run_due()` remains an explicit bounded tick. `JobWorker` is a separate one-shot Runtime lifecycle
+adapter with explicit polling, batching, worker identity, and lease limits. Runtime assembly starts it
+after plugins so exported capabilities are ready, and reverse shutdown stops jobs before plugins and
+borrowed State Stores. Job Event Bus payloads exclude arguments, outputs, and exception messages; the
+Security Journal maps them to the dedicated audit job category.
+
+Lease fencing protects repository transitions, not external side effects. Capability providers should
+use idempotency keys or tolerate at-least-once execution. Cron parsing, arbitrary code, shell commands,
+distributed consensus, hosted queues, and exactly-once effects remain outside the core.
+
 
 ## Policy Engine and Security Context
 

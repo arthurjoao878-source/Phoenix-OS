@@ -25,5 +25,9 @@ class JobSchedulerClosedError(PhoenixJobError):
     """Raised when a closed scheduler is accessed."""
 
 
+class JobWorkerStateError(PhoenixJobError):
+    """Raised for invalid one-shot job worker lifecycle transitions."""
+
+
 class JobLeaseLostError(PhoenixJobError):
     """Raised when an execution result uses a stale or expired lease."""

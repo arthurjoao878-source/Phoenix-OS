@@ -1,6 +1,6 @@
 # RFC-0015 — Durable Jobs and Workflow Scheduling
 
-- Status: Draft
+- Status: Accepted
 - Target: Phoenix OS 0.15.0
 - Date: 2026-07-18
 
@@ -22,7 +22,9 @@ complete the same execution attempt.
 - capability-only execution through `CapabilityRegistry`;
 - safe Event Bus facts without raw arguments, outputs, or exception messages;
 - an in-memory reference repository for tests and ephemeral deployments;
-- a durable `StateStore` repository with transactional claims and restart recovery.
+- a durable `StateStore` repository with transactional claims and restart recovery;
+- an explicit Runtime-owned bounded worker loop;
+- safe Audit Ledger categorization through Event Bus journaling.
 
 ## Non-goals
 
@@ -72,7 +74,9 @@ borrows the store lifecycle and persists a versioned JSON-safe schema for restar
 
 `JobScheduler.run_due()` is an explicit deterministic tick. It lists due records, atomically claims
 each record, invokes the named capability, and records the result. The scheduler does not hide a
-background task. Deployment adapters may call ticks from a timer, service loop, or external trigger.
+background task. `JobWorker` is a separate one-shot lifecycle adapter that runs bounded ticks with
+explicit polling, batch, worker, and lease settings. `RuntimeAssembler` starts it after plugins and
+stops it first during reverse shutdown.
 
 Capability authorization, confirmation, deadlines, event observation, and provider error
 normalization remain owned by `CapabilityRegistry`. The scheduler stores only a safe exception class
@@ -102,7 +106,7 @@ operations.
 
 ## Events
 
-The first slice emits:
+The scheduler emits:
 
 - `job.scheduled`;
 - `job.started`;
@@ -140,12 +144,14 @@ or otherwise tolerate at-least-once execution.
 - versioned `StateStore` persistence and safe schema validation;
 - recovery of scheduled, retrying, cancelled, and expired-lease records after restart;
 - serializable competing claims across repository instances;
+- Runtime-owned bounded worker lifecycle and graceful scheduler close;
+- dedicated Audit Ledger job category and failed dead-letter mapping;
+- root-package public API and Phoenix OS 0.15.0 compatibility metadata;
 - strict typing, formatting, and regression tests.
 
-## Follow-up slices
+## Future work
 
-- Runtime lifecycle integration;
-- Policy Engine actions for schedule, inspect, cancel, and retry;
-- Audit Ledger mappings and observability metrics;
-- explicit idempotency keys and manual dead-letter replay;
-- bounded scheduler service loop adapters.
+- optional Policy Engine management adapters for schedule, inspect, cancel, and manual retry;
+- observability metrics beyond worker and scheduler snapshots;
+- explicit idempotency-key conventions and manual dead-letter replay;
+- cron/calendar expressions and remote queue adapters outside the core.
