@@ -26,17 +26,17 @@
        |          v                                               v
        |     Phoenix Kernel                                  Event Bus
        | routing | authorization                  lifecycle and request facts
-       |          |                                               |
-       |          v                                               v
-       |   CapabilityHandler                                EventObserver
-       |          |                                               |
-       |          v                                               v
-       | Capability Registry                           Observability Hub
-       | permission | confirmation              logs | metrics | completed spans
-       |          |                                               |
-       |          v                                               v
-       | capability providers                            external sinks
-       |
+       |          |                                  |                  |
+       |          v                                  v                  v
+       |   CapabilityHandler                    EventObserver     SecurityJournal
+       |          |                                  |                  |
+       |          v                                  v                  v
+       | Capability Registry                 Observability Hub      Audit Ledger
+       | permission | confirmation       logs | metrics | spans   chain | verify
+       |          |                                  |                  |
+       |          v                                  v                  v
+       | capability providers                 external sinks   external AuditStore
+       |                                                            + AuditSigner
        v
  State Store Registry
  named stores | lifecycle
@@ -55,8 +55,8 @@ secrets so ordinary inspection remains redacted.
 
 `ServiceComposer` builds named singleton dependencies from explicit declarations. It detects
 missing dependencies and cycles before startup. `RuntimeAssembler` exposes Kernel, Event Bus,
-Capability Registry, resolved configuration, and optional Observability, Policy, State, and Plugin
-services to factories, then creates `PhoenixRuntime` with composed services and lifecycle components.
+Capability Registry, resolved configuration, and optional Observability, Audit, Policy, State,
+Identity, Secrets, and Plugin services to factories, then creates `PhoenixRuntime` with composed services and lifecycle components.
 
 `PhoenixRuntime` remains the lifecycle owner. It owns the Kernel, Event Bus, Capability Registry,
 external lifecycle components, immutable named services, request admission, graceful draining, and
@@ -65,7 +65,7 @@ ordered shutdown. Configuration and service factories finish before the Runtime 
 Commands enter through `PhoenixRuntime.handle()`, which accepts work only while the Runtime is
 running and delegates admitted requests to `Kernel.handle()`. A `CapabilityHandler` is registered as
 an ordinary route handler. The Kernel does not import the Capability Registry, Configuration,
-Observability, or State subsystems.
+Observability, Audit, Identity, Secrets, or State subsystems.
 
 `StateStoreRegistry` resolves one or more named stores. Consumers depend on the asynchronous
 `StateStore` protocol rather than a database vendor. The reference `MemoryStateStore` supplies safe
@@ -74,12 +74,14 @@ logical snapshots. Durable databases and their connection, migration, encryption
 remain external adapters.
 
 Events report immutable facts and lifecycle transitions; they are not a command channel.
-`EventObserver` may translate those facts into structured diagnostics, but it never publishes
+`EventObserver` may translate those facts into structured diagnostics. `SecurityJournal` may map
+non-audit facts into redacted append-only records, but it ignores `audit.*` events and never publishes
 commands or alters Event Bus dispatch. State operations may emit safe key/version facts and create
 spans, but never include persisted values automatically.
 
 Lifecycle components start in resolved order and stop in reverse order. With observability and
-state, the hub and Event Observer start before the State service. Shutdown therefore closes State
+audit, the hub and Event Observer start first, followed by the Audit Ledger and Security Journal,
+before Policy, State, Identity, Secrets, custom services, and Plugins. Shutdown therefore closes State
 before the observer unsubscribes and the hub closes. The Runtime then closes the Capability Registry
 and Event Bus.
 
@@ -87,6 +89,29 @@ Remote brokers, durable database implementations, distributed transactions, repl
 metric aggregation, telemetry vendor protocols, AI, semantic memory, credential stores, sandboxing,
 operating-system automation, remote configuration, hot reload, and UI remain external adapters.
 
+
+## Audit Ledger and Security Journal
+
+`AuditLedger` accepts immutable `AuditEvent` facts whose structured details are recursively redacted
+before persistence. `AuditStore` implementations atomically assign positive sequences. Each
+`AuditRecord` hashes deterministic UTF-8 JSON containing the complete redacted event, sequence,
+recording time, and previous digest. The first record references a fixed all-zero genesis digest.
+
+`InMemoryAuditStore` provides deterministic process-local append, bounded query, complete-chain
+verification, and optional external signatures. `AuditSigner` receives only record digests and
+provider-neutral `KeyRef` metadata; raw signing keys and concrete algorithms remain external. An
+unsigned chain detects mutation, reordering, and gaps when verified, but it is not independently
+tamper-proof and is not durable.
+
+Historical `audit.read` and `audit.verify` operations require authenticated `SecurityContext` values
+and central Policy Engine authorization or exact fallback permissions. Trusted append avoids
+authorization recursion and does not imply isolation from hostile code already running in-process.
+
+`SecurityJournal` subscribes to Event Bus facts, derives stable categories, outcomes, severity,
+actors, actions, and resources, preserves correlation, and appends redacted records. It ignores
+`audit.*` events at the observer boundary even when a custom mapper is supplied. Runtime shutdown
+keeps the journal and ledger alive while later security services stop, then closes the journal before
+the ledger and Event Bus.
 
 ## Policy Engine and Security Context
 

@@ -224,3 +224,38 @@ Nova identificador de KMS          -> KeyRef(provider, name, version)
 
 `InMemorySecretStore` is only a migration and test aid. It does not encrypt process memory or provide
 durable recovery. Use a reviewed provider adapter before moving production credentials.
+
+
+## Audit and security-journal migration
+
+Do not treat Nova text logs as authoritative audit history. Inventory security-relevant actions and
+convert them into structured facts with stable action, resource, actor, outcome, and category fields.
+Redact before append; never copy credentials, bearer tokens, secret values, full request bodies, or
+personal profile data into audit details.
+
+Recommended sequence:
+
+1. identify authentication, authorization, secret, plugin, capability, state, and runtime events;
+2. assign normalized actions and resources already used by Policy Engine rules;
+3. use direct `AuditLedger.record_security()` calls for operations that must observe append failure;
+4. enable `SecurityJournal` for broad Event Bus capture and inspect dispatch failures;
+5. grant `audit.read` and `audit.verify` only to authenticated operational identities;
+6. verify the complete chain during export, investigation, startup checks, or scheduled operations;
+7. deploy an external `AuditStore` for retention, backup, write protection, and independent clocks;
+8. supply an external `AuditSigner` and protected `KeyRef` when origin authentication is required;
+9. document retention, legal hold, privacy, access review, and incident-response procedures outside
+   the Phoenix core.
+
+Example mapping:
+
+```text
+Nova logger.info("login ok")       -> AuditEvent(category=AUTHENTICATION, outcome=SUCCEEDED)
+Nova logger.warning("access")     -> policy Event Bus fact -> SecurityJournal
+Nova arquivo audit.log            -> external AuditStore adapter
+Nova checksum isolado             -> previous-digest chained AuditRecord
+Nova assinatura local improvisada -> reviewed external AuditSigner + KeyRef
+Nova leitura irrestrita de logs   -> audit.read policy rule
+```
+
+`InMemoryAuditStore` is a test and migration aid only. Its records disappear with the process, and an
+unsigned hash chain is tamper-evident rather than tamper-proof.

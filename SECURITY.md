@@ -42,3 +42,17 @@ Production deployments should use independently reviewed external `SecretStore` 
 and revoke affected versions and sessions after suspected disclosure. Do not place secret material,
 wrapping keys, lease values, vault credentials, or decrypted payloads in logs, events, metrics,
 exceptions, source control, State Store, or configuration files.
+
+
+## Audit ledger and security journal
+
+Audit records may contain identity, authorization, resource, timing, and incident metadata. Restrict
+`audit.read` and `audit.verify`, minimize details, and apply retention and privacy requirements in the
+deployment. Redaction reduces accidental disclosure but cannot determine every domain-specific
+sensitive field.
+
+`InMemoryAuditStore` is not durable, write-once, independently clocked, or resistant to an attacker
+with process-memory access. A SHA-256 chain without protected signatures detects ordinary mutation
+when the complete history is available, but a privileged attacker can replace and rehash an entire
+unsigned ledger. Use reviewed external storage and `AuditSigner` implementations when stronger
+evidence, retention, availability, or non-repudiation properties are required.

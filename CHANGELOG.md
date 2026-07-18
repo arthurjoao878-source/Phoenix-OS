@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0] - 2026-07-18
+
+### Added
+- Accepted RFC-0012 and ADR-0024/0025.
+- Immutable redacted audit events, records, seals, queries, verification reports, and snapshots.
+- Deterministic canonical JSON and SHA-256 previous-digest chaining with a fixed genesis digest.
+- Optional provider-neutral external signatures through `AuditSigner` and `KeyRef`.
+- Append-only `AuditStore` boundary and deterministic `InMemoryAuditStore`.
+- Authenticated deny-by-default `audit.read` and `audit.verify` Policy Engine integration.
+- Event Bus `SecurityJournal` mapping with category, outcome, severity, correlation, and recursion prevention.
+- Safe audit events, logs, metrics, RuntimeAssembler ownership, Nova migration guidance, and example.
+
 ## [0.11.0] - 2026-07-18
 
 ### Added
