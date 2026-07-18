@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "phoenix-os"
-version = "0.15.0"
-description = "A deterministic asynchronous runtime with durable jobs and verifiable audit storage."
+version = "0.16.0"
+description = "A deterministic asynchronous runtime with durable jobs and workflow graphs."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "Phoenix contributors" }]
-keywords = ["orchestration", "runtime", "identity", "secrets", "audit", "jobs", "scheduler", "policy", "security"]
+keywords = ["orchestration", "runtime", "identity", "secrets", "audit", "jobs", "scheduler", "workflows", "policy", "security"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "License :: OSI Approved :: MIT License",

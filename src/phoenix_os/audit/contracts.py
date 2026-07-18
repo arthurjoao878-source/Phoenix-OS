@@ -71,6 +71,7 @@ class AuditCategory(StrEnum):
     CONFIGURATION = "configuration"
     IDENTITY = "identity"
     JOB = "job"
+    WORKFLOW = "workflow"
     PLUGIN = "plugin"
     RUNTIME = "runtime"
     SECRETS = "secrets"

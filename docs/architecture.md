@@ -221,3 +221,25 @@ HSMs, cloud KMS, operating-system keyrings, envelope encryption, provider authen
 and disaster recovery remain behind external `SecretStore` and `SecretProtector` implementations.
 Runtime assembly starts Secrets after Identity and stops it before Identity, State, Observability,
 and Events close.
+
+## Durable Workflow Graphs and Orchestration
+
+`WorkflowDefinition` is an immutable directed acyclic graph of `WorkflowStep` values. Graph
+construction rejects duplicate identifiers, missing dependencies, self-dependencies, and cycles.
+`WorkflowPlanner` computes declaration-ordered topological levels, making fan-out and fan-in stable
+across processes and repository implementations.
+
+`WorkflowOrchestrator` persists one `WorkflowRecord` and delegates every runnable step to the durable
+job subsystem. UUIDv5 identifiers derived from workflow and step identifiers make dispatch safe to
+recover when a process stops between job creation and workflow revision replacement. Job terminal
+state is reconciled into step state; successful dependencies release downstream barriers, while
+failure or cancellation terminates outstanding siblings and descendants.
+
+`InMemoryWorkflowRepository` is process-local. `StateWorkflowRepository` uses the generic State Store
+with a versioned JSON-safe schema and optimistic workflow revisions. The workflow layer does not
+persist callables, shell commands, or executable objects.
+
+Runtime assembly starts `JobWorker` before `WorkflowWorker` and stops them in reverse order. The
+workflow worker performs bounded reconciliation ticks and exposes counters without definitions,
+arguments, outputs, or errors. Safe `workflow.*` events contain identifiers and lifecycle status;
+`SecurityJournal` records them under `AuditCategory.WORKFLOW`.

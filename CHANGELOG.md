@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.16.0] - 2026-07-18
+
+### Added
+- Accepted RFC-0016 and ADR-0032/0033.
+- Immutable workflow definitions, steps, records, statuses, plans, repositories, and worker contracts.
+- Deterministic DAG validation, cycle rejection, declaration-ordered topological planning, fan-out, and fan-in.
+- In-memory and State Store-backed persistence with optimistic revisions and restart recovery.
+- Job-backed orchestration with stable UUIDv5 step jobs, retry reconciliation, failure propagation, and cancellation.
+- Runtime-owned workflow reconciliation, safe Event Bus facts, and Audit Ledger workflow categorization.
+- Public API, migration guidance, executable example, validation notes, and regression tests.
+
 ## [0.15.0] - 2026-07-18
 
 ### Added

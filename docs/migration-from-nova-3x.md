@@ -330,3 +330,41 @@ Nova cron / Celery / cloud queue  -> external scheduling or JobRepository adapte
 Repository fencing rejects stale completion but cannot reverse an external effect performed before a
 worker loses its lease. Pass stable domain idempotency keys to capabilities whenever duplicates would
 be harmful.
+
+## Durable workflow graph migration
+
+Do not translate Nova automation chains into serialized functions, mutable callback lists, shell
+scripts stored as data, or ad hoc status files. Model each reviewed action as a Phoenix capability and
+express ordering through immutable workflow dependencies.
+
+Recommended sequence:
+
+1. inventory multi-step automations and identify explicit inputs, outputs, dependencies, and failure policy;
+2. register one stable capability for every executable step;
+3. create a `WorkflowDefinition` with immutable `WorkflowStep` values;
+4. use dependency sets for fan-out and fan-in rather than shared mutable counters;
+5. keep credentials behind secret references and out of workflow arguments and metadata;
+6. use `StateWorkflowRepository` when instances must survive restart;
+7. run the existing `JobWorker` and the `WorkflowWorker` under Runtime ownership;
+8. make external effects idempotent because step jobs remain at least once;
+9. inspect safe `workflow.*` and `job.*` audit facts rather than logging arguments or outputs;
+10. keep dynamic graphs, compensation engines, hosted queues, remote workers, and distributed locks
+    behind reviewed external adapters.
+
+Example mapping:
+
+```text
+Nova callback chain                 -> WorkflowDefinition with dependencies
+Nova ThreadPool fan-out             -> independent steps in one topological level
+Nova shared completed counter       -> fan-in dependency barrier
+Nova workflow_state.json            -> StateWorkflowRepository
+Nova retry around each callback     -> WorkflowStep RetryPolicy -> durable JobSpec
+Nova resume script                  -> WorkflowWorker reconciliation
+Nova cancel flag                    -> WorkflowOrchestrator.cancel(...)
+Nova serialized Python function     -> registered capability name
+Nova shell pipeline                 -> reviewed external capability provider
+```
+
+A stable workflow-step job identifier prevents duplicate dispatch during recovery, but it cannot undo
+an external effect completed before a worker loses its lease. Providers still need domain-level
+idempotency keys and transactional integration where duplication is harmful.

@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from phoenix_os.identity import AuthenticationManager
     from phoenix_os.jobs import JobScheduler
     from phoenix_os.secrets import SecretsManager
+    from phoenix_os.workflows import WorkflowOrchestrator
 
 _RESERVED_DEFINITION_NAMES = frozenset(
     {
@@ -47,6 +48,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "state",
         "runtime",
         "secrets",
+        "workflows",
     }
 )
 
@@ -222,6 +224,9 @@ class RuntimeAssembler:
         job_lease_ttl: timedelta = timedelta(seconds=30),
         job_batch_size: int = 100,
         job_worker: str = "phoenix.scheduler",
+        workflows: WorkflowOrchestrator | None = None,
+        workflow_poll_interval: float = 1.0,
+        workflow_worker: str = "phoenix.workflows",
         observe_events: bool = True,
         journal_events: bool = True,
         metadata: Mapping[str, str] | None = None,
@@ -243,6 +248,11 @@ class RuntimeAssembler:
         self._job_lease_ttl = job_lease_ttl
         self._job_batch_size = job_batch_size
         self._job_worker = job_worker
+        self._workflows = workflows
+        self._workflow_poll_interval = workflow_poll_interval
+        self._workflow_worker = workflow_worker
+        if workflows is not None and jobs is None:
+            raise ValueError("workflow orchestration requires a Runtime-owned job scheduler")
         self._observe_events = observe_events
         self._journal_events = journal_events
         self._composer = ServiceComposer(definitions)
@@ -272,6 +282,8 @@ class RuntimeAssembler:
             base_services["plugins"] = self._plugins
         if self._jobs is not None:
             base_services["jobs"] = self._jobs
+        if self._workflows is not None:
+            base_services["workflows"] = self._workflows
         container = await self._composer.compose(
             self._configuration,
             base_services=base_services,
@@ -331,6 +343,19 @@ class RuntimeAssembler:
                         lease_ttl=self._job_lease_ttl,
                         batch_size=self._job_batch_size,
                         worker=self._job_worker,
+                    ),
+                )
+            )
+        if self._workflows is not None:
+            from phoenix_os.workflows import WorkflowWorker
+
+            components.append(
+                ComponentSpec(
+                    "workflows",
+                    WorkflowWorker(
+                        self._workflows,
+                        poll_interval=self._workflow_poll_interval,
+                        worker=self._workflow_worker,
                     ),
                 )
             )
