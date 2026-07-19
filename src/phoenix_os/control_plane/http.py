@@ -14,6 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from phoenix_os.control_plane.assets import DashboardAssets
 from phoenix_os.control_plane.auth import AdminTokenAuthenticator
+from phoenix_os.control_plane.command_api import ControlPlaneCommandApi
+from phoenix_os.control_plane.command_http import ControlPlaneCommandHttpAdapter
 from phoenix_os.control_plane.contracts import (
     DEFAULT_EVENT_BATCH_SIZE,
     ControlPlaneReader,
@@ -21,6 +23,7 @@ from phoenix_os.control_plane.contracts import (
     EventStreamRequest,
     PageRequest,
 )
+from phoenix_os.control_plane.csrf import ControlPlaneBrowserOrigin
 from phoenix_os.control_plane.errors import (
     ControlPlaneEventStreamBackpressureError,
     ControlPlaneEventStreamStateError,
@@ -29,6 +32,7 @@ from phoenix_os.control_plane.errors import (
 from phoenix_os.control_plane.serialization import (
     audit_summary_to_dict,
     capability_page_to_dict,
+    command_availability_to_dict,
     event_batch_to_dict,
     job_page_to_dict,
     plugin_page_to_dict,
@@ -57,6 +61,8 @@ class ControlPlaneHttpConfig:
     max_response_bytes: int = 1024 * 1024
     max_connections: int = 64
     max_event_wait: float = 4.0
+    max_command_body_bytes: int = 64 * 1024
+    max_command_concurrency: int = 8
 
     def __post_init__(self) -> None:
         host = self.host.strip()
@@ -78,6 +84,10 @@ class ControlPlaneHttpConfig:
             raise ValueError("control plane max_response_bytes must be at least 1024")
         if self.max_connections <= 0:
             raise ValueError("control plane max_connections must be positive")
+        if self.max_command_body_bytes <= 0 or self.max_command_body_bytes > 1024 * 1024:
+            raise ValueError("control plane max_command_body_bytes must be between 1 and 1048576")
+        if self.max_command_concurrency <= 0 or self.max_command_concurrency > 1024:
+            raise ValueError("control plane max_command_concurrency must be between 1 and 1024")
         if self.max_event_wait <= 0 or self.max_event_wait >= self.request_timeout:
             raise ValueError(
                 "control plane max_event_wait must be positive and below request_timeout"
@@ -118,6 +128,7 @@ class _Request:
     path: str
     query: Mapping[str, tuple[str, ...]]
     headers: Mapping[str, tuple[str, ...]]
+    body: bytes
 
 
 class ControlPlaneHttpServer:
@@ -131,12 +142,21 @@ class ControlPlaneHttpServer:
         config: ControlPlaneHttpConfig | None = None,
         event_stream: EventStreamReader | None = None,
         dashboard_assets: DashboardAssets | None = None,
+        command_api: ControlPlaneCommandApi | None = None,
     ) -> None:
         self._reader = reader
         self._authenticator = authenticator
         self._config = config or ControlPlaneHttpConfig()
         self._event_stream = event_stream
         self._dashboard_assets = dashboard_assets or DashboardAssets()
+        self._command_http = (
+            None
+            if command_api is None
+            else ControlPlaneCommandHttpAdapter(
+                command_api,
+                max_concurrency=self._config.max_command_concurrency,
+            )
+        )
         self._state = ControlPlaneHttpState.CREATED
         self._server: asyncio.Server | None = None
         self._port: int | None = None
@@ -310,6 +330,7 @@ class ControlPlaneHttpServer:
         content_lengths = headers.get("content-length", ())
         if len(content_lengths) > 1:
             raise _HttpRequestError(HTTPStatus.BAD_REQUEST, "invalid_content_length")
+        content_length = 0
         if content_lengths:
             try:
                 content_length = int(content_lengths[0])
@@ -318,8 +339,18 @@ class ControlPlaneHttpServer:
                     HTTPStatus.BAD_REQUEST,
                     "invalid_content_length",
                 ) from exception
-            if content_length != 0:
+            if content_length < 0 or content_length > self._config.max_command_body_bytes:
+                raise _HttpRequestError(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_body_too_large"
+                )
+            if content_length and method.upper() != "POST":
                 raise _HttpRequestError(HTTPStatus.BAD_REQUEST, "request_body_not_supported")
+        body = b""
+        if content_length:
+            try:
+                body = await stream.readexactly(content_length)
+            except asyncio.IncompleteReadError as exception:
+                raise _HttpRequestError(HTTPStatus.BAD_REQUEST, "malformed_request") from exception
         try:
             query = parse_qs(
                 parsed.query,
@@ -333,6 +364,7 @@ class ControlPlaneHttpServer:
             path=parsed.path,
             query={name: tuple(values) for name, values in query.items()},
             headers={name: tuple(values) for name, values in headers.items()},
+            body=body,
         )
 
     async def _dispatch(
@@ -341,9 +373,19 @@ class ControlPlaneHttpServer:
     ) -> tuple[HTTPStatus, Mapping[str, object] | bytes, dict[str, str]]:
         async with self._counter_lock:
             self._requests += 1
-        if request.method != "GET":
-            return HTTPStatus.METHOD_NOT_ALLOWED, {"error": "method_not_allowed"}, {"Allow": "GET"}
+        if request.method not in {"GET", "POST"}:
+            return (
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {"error": "method_not_allowed"},
+                {"Allow": "GET, POST"},
+            )
         if request.path in {"/", "/dashboard"}:
+            if request.method != "GET" or request.body:
+                return (
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    {"error": "method_not_allowed"},
+                    {"Allow": "GET"},
+                )
             return (
                 HTTPStatus.TEMPORARY_REDIRECT,
                 b"",
@@ -351,6 +393,12 @@ class ControlPlaneHttpServer:
             )
         asset = self._dashboard_assets.get(request.path)
         if asset is not None:
+            if request.method != "GET" or request.body:
+                return (
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    {"error": "method_not_allowed"},
+                    {"Allow": "GET"},
+                )
             return (
                 HTTPStatus.OK,
                 asset.body,
@@ -366,6 +414,12 @@ class ControlPlaneHttpServer:
         if request.path.startswith("/dashboard/"):
             return HTTPStatus.NOT_FOUND, {"error": "not_found"}, {}
         if request.path == "/health/live":
+            if request.method != "GET" or request.body:
+                return (
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    {"error": "method_not_allowed"},
+                    {"Allow": "GET"},
+                )
             return HTTPStatus.OK, {"status": "ok"}, {}
         authorization = _single_header(request.headers, "authorization")
         principal = self._authenticator.authenticate(authorization)
@@ -381,6 +435,31 @@ class ControlPlaneHttpServer:
             async with self._counter_lock:
                 self._unauthorized += 1
             return HTTPStatus.FORBIDDEN, {"error": "forbidden"}, {}
+
+        if self._command_http is not None and self._command_http.handles(request.path):
+            if request.query:
+                return HTTPStatus.BAD_REQUEST, {"error": "invalid_query"}, {}
+            origin = self._server_origin()
+            return await self._command_http.dispatch(
+                principal=principal,
+                method=request.method,
+                path=request.path,
+                headers=request.headers,
+                body=request.body,
+                server_origin=origin,
+            )
+        if request.path == "/v1/control-plane/operations":
+            if request.method != "GET" or request.body or request.query:
+                return HTTPStatus.BAD_REQUEST, {"error": "invalid_request"}, {}
+            if self._command_http is None:
+                return HTTPStatus.OK, {"schema_version": 1, "actions": {}}, {}
+            return (
+                HTTPStatus.OK,
+                command_availability_to_dict(self._command_http.api.availability(principal)),
+                {},
+            )
+        if request.method != "GET" or request.body:
+            return HTTPStatus.METHOD_NOT_ALLOWED, {"error": "method_not_allowed"}, {"Allow": "GET"}
 
         if request.path == "/v1/control-plane/health":
             snapshot = await self._reader.snapshot()
@@ -451,6 +530,12 @@ class ControlPlaneHttpServer:
                 {},
             )
         return HTTPStatus.OK, plugin_page_to_dict(await self._reader.list_plugins(page)), {}
+
+    def _server_origin(self) -> ControlPlaneBrowserOrigin:
+        if self._port is None:
+            raise RuntimeError("control plane HTTP server is not bound")
+        host = f"[{self._config.host}]" if ":" in self._config.host else self._config.host
+        return ControlPlaneBrowserOrigin(f"http://{host}:{self._port}")
 
     async def _write_response(
         self,

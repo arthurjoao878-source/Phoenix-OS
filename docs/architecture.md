@@ -266,3 +266,21 @@ facts can be observed. The HTTP server starts last. Reverse lifecycle order ther
 first, stops workers, and then unsubscribes the event stream before the Event Bus closes. The built-in
 dashboard is local and read-only; remote administration, write controls, TLS, multi-user identity,
 and hosted deployment remain external boundaries.
+
+## Dashboard Command Boundary
+
+RFC-0018 adds `ControlPlaneCommandApi` beside the read-only `ControlPlaneService`. The command API owns
+short-lived browser protection, bounded idempotency, exact action authorization, safe job/workflow
+handlers, and payload-free command event publication. It is not a generic dispatcher: every mutation
+has a fixed contract, permission, handler method, HTTP route, serializer, and stable result-code set.
+
+The HTTP transport accepts authenticated command POSTs only from its exact literal-loopback origin.
+CSRF validation precedes idempotency reservation; job and workflow cancellation additionally consume
+a one-time confirmation proof. Body size, total connections, command concurrency, idempotency entries,
+confirmation entries, JSON depth, item counts, string sizes, retry policy, schedule interval, and
+execution deadline are all bounded.
+
+`RuntimeAssembler` exposes `control_plane.commands` as a lifecycle service between
+`control_plane.events` and the job/workflow workers. Startup makes event observation and command state
+available before the HTTP listener. Reverse shutdown stops HTTP first, then workers, then closes
+command confirmation/idempotency state before the Event Bus stream unsubscribes.

@@ -403,3 +403,25 @@ Nova remote admin port               -> external reviewed ingress, not built-in 
 The packaged dashboard is an operator view, not a trust boundary or remote management product. A
 process-local administrator token does not replace deployment identity, TLS, host access controls,
 incident logging, or network policy.
+
+## Phoenix OS 0.18 Dashboard command migration
+
+The built-in Dashboard no longer has to remain observation-only, but mutation access is never implied
+by the administrator bearer. Construct `ControlPlanePrincipal` with `control-plane.read` plus only the
+specific command permissions required by the operator:
+
+```python
+frozenset({
+    "control-plane.read",
+    "control-plane.jobs.create",
+    "control-plane.jobs.cancel",
+    "control-plane.jobs.retry",
+    "control-plane.workflows.cancel",
+})
+```
+
+Nova command adapters should translate trusted UI input into the fixed control-plane command schemas.
+Do not expose shell strings, Python callables, arbitrary module names, caller-created capability
+contexts, plugin mutation, State Store keys, or raw repository records through the Dashboard. Remote
+access still requires an external reviewed ingress and identity boundary; do not widen the built-in
+loopback listener.

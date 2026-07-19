@@ -69,14 +69,24 @@
       </section>
 
       <section class="panel-grid">
+        <article id="operations-panel" class="panel wide hidden">
+          <div class="panel-heading"><div><p class="eyebrow">Safe operations</p><h2>Create a job</h2></div><span id="command-status" class="muted">Ready</span></div>
+          <form id="create-job-form" class="command-form" autocomplete="off">
+            <label>Capability<input id="job-capability" name="capability" required maxlength="256" spellcheck="false"></label>
+            <label>Arguments (JSON object)<textarea id="job-arguments" name="arguments" rows="4" spellcheck="false">{}</textarea></label>
+            <button id="create-job-submit" type="submit">Create job</button>
+          </form>
+          <p class="muted">Commands use origin-bound CSRF protection, per-action permissions, idempotency keys, and one-time confirmation for cancellation.</p>
+        </article>
+
         <article class="panel wide">
           <div class="panel-heading"><div><p class="eyebrow">Execution</p><h2>Recent jobs</h2></div><span id="jobs-page" class="muted"></span></div>
-          <div class="table-wrap"><table><thead><tr><th>Capability</th><th>Status</th><th>Attempts</th><th>Next run</th></tr></thead><tbody id="jobs-table"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Capability</th><th>Status</th><th>Attempts</th><th>Next run</th><th>Action</th></tr></thead><tbody id="jobs-table"></tbody></table></div>
         </article>
 
         <article class="panel wide">
           <div class="panel-heading"><div><p class="eyebrow">Orchestration</p><h2>Recent workflows</h2></div><span id="workflows-page" class="muted"></span></div>
-          <div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th>Revision</th><th>Steps</th></tr></thead><tbody id="workflows-table"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th>Revision</th><th>Steps</th><th>Action</th></tr></thead><tbody id="workflows-table"></tbody></table></div>
         </article>
 
         <article class="panel">
@@ -97,6 +107,6 @@
     </section>
   </main>
 
-  <footer>Loopback-only · Read-only · Phoenix OS v0.17.0</footer>
+  <footer>Loopback-only · Authenticated safe operations · Phoenix OS v0.18.0</footer>
 </body>
 </html>

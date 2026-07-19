@@ -1,4 +1,4 @@
-"""Administrative bearer-token authentication for the local control plane."""
+"""Administrative authentication and authorization for the local control plane."""
 
 from __future__ import annotations
 
@@ -6,7 +6,13 @@ import hashlib
 import secrets
 from dataclasses import dataclass, field
 
-_CONTROL_PLANE_READ = "control-plane.read"
+from phoenix_os.control_plane.commands import (
+    ControlPlaneCommandAction,
+    ControlPlaneCommandAuthorization,
+)
+from phoenix_os.control_plane.errors import ControlPlaneCommandPermissionDeniedError
+
+CONTROL_PLANE_READ_PERMISSION = "control-plane.read"
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,7 +20,9 @@ class ControlPlanePrincipal:
     """Authenticated administrative identity exposed only inside the transport."""
 
     name: str
-    permissions: frozenset[str] = field(default_factory=lambda: frozenset({_CONTROL_PLANE_READ}))
+    permissions: frozenset[str] = field(
+        default_factory=lambda: frozenset({CONTROL_PLANE_READ_PERMISSION})
+    )
 
     def __post_init__(self) -> None:
         normalized = self.name.strip()
@@ -23,10 +31,39 @@ class ControlPlanePrincipal:
         permissions = frozenset(permission.strip() for permission in self.permissions)
         if not permissions or "" in permissions:
             raise ValueError("control plane permissions must not be blank")
-        if _CONTROL_PLANE_READ not in permissions:
+        if CONTROL_PLANE_READ_PERMISSION not in permissions:
             raise ValueError("control plane principal requires control-plane.read")
         object.__setattr__(self, "name", normalized)
         object.__setattr__(self, "permissions", permissions)
+
+
+class ControlPlaneCommandAuthorizer:
+    """Make strict exact-permission decisions for every supported command action."""
+
+    def decide(
+        self,
+        principal: ControlPlanePrincipal,
+        action: ControlPlaneCommandAction,
+    ) -> ControlPlaneCommandAuthorization:
+        normalized_action = ControlPlaneCommandAction(action)
+        permission = normalized_action.permission
+        return ControlPlaneCommandAuthorization(
+            action=normalized_action,
+            permission=permission,
+            allowed=permission in principal.permissions,
+        )
+
+    def require(
+        self,
+        principal: ControlPlanePrincipal,
+        action: ControlPlaneCommandAction,
+    ) -> ControlPlaneCommandAuthorization:
+        decision = self.decide(principal, action)
+        if not decision.allowed:
+            raise ControlPlaneCommandPermissionDeniedError(
+                f"command permission denied: {decision.action.value}"
+            )
+        return decision
 
 
 class AdminTokenAuthenticator:

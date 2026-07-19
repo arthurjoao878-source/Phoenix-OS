@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.17.0` implements seventeen accepted specifications:
+Version `0.18.0` implements eighteen accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -39,6 +39,9 @@ Version `0.17.0` implements seventeen accepted specifications:
 - **RFC-0017 — Dashboard Control Plane and Read-Only API:** allowlisted snapshots, authenticated
   loopback HTTP, paginated operational views, bounded event streaming, packaged static assets, and
   Runtime-owned dashboard lifecycle.
+- **RFC-0018 — Dashboard Operations and Safe Command API:** exact action permissions, bounded
+  idempotency, origin-bound CSRF, one-time destructive confirmations, safe command handlers, audited
+  fixed POST routes, and Dashboard operation controls.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -78,15 +81,20 @@ python .\examples\control_plane_dashboard.py
 ```
 
 Open the printed loopback URL and enter the one-time administrator token. The dashboard serves only
-packaged HTML, CSS, JavaScript, and SVG assets; it loads no external scripts or fonts. All data
-requests remain authenticated with `control-plane.read`, use explicit serializers, and omit job
-arguments, workflow inputs and outputs, plugin metadata, audit bodies, Event Bus payloads, and
-secrets. The token is retained only in browser `sessionStorage` for the active tab.
+packaged HTML, CSS, JavaScript, and SVG assets; it loads no external scripts or fonts. Read requests
+remain authenticated with `control-plane.read` and use explicit serializers that omit job arguments,
+workflow inputs and outputs, plugin metadata, audit bodies, Event Bus payloads, and secrets.
 
-`RuntimeAssembler` can own `ControlPlaneEventStream` and `ControlPlaneHttpServer` by receiving an
-`AdminTokenAuthenticator`. The server accepts only literal loopback addresses. Static routes are
-public because they contain no operational data; every `/v1/control-plane/*` route remains
-authenticated and read-only.
+When the authenticated principal has exact command permissions, the Dashboard can create safe
+capability-backed jobs, cancel jobs or workflows, and retry eligible dead-letter jobs. Browser
+commands require an exact loopback origin, a short-lived CSRF token, a fresh idempotency key, and a
+one-time confirmation proof for cancellation. The bearer and CSRF values are retained only in browser
+`sessionStorage` for the active tab.
+
+`RuntimeAssembler` owns `ControlPlaneEventStream`, `ControlPlaneCommandApi`, and
+`ControlPlaneHttpServer` when it receives an `AdminTokenAuthenticator`. Static routes are public
+because they contain no operational data; every operational route remains bearer-authenticated.
+Read permission alone never grants a command action.
 
 ## Durable workflow example
 

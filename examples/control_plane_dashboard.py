@@ -1,4 +1,4 @@
-"""Launch the local read-only Phoenix dashboard until Enter is pressed."""
+"""Launch the local Phoenix dashboard with safe command permissions."""
 
 from __future__ import annotations
 
@@ -26,6 +26,11 @@ from phoenix_os import (
     Router,
     RuntimeAssembler,
     WorkflowOrchestrator,
+)
+from phoenix_os.control_plane import (
+    CONTROL_PLANE_READ_PERMISSION,
+    ControlPlaneCommandAction,
+    ControlPlanePrincipal,
 )
 
 
@@ -64,7 +69,18 @@ async def main() -> None:
         configuration=configuration,
         jobs=jobs,
         workflows=workflows,
-        control_plane_authenticator=AdminTokenAuthenticator(token),
+        control_plane_authenticator=AdminTokenAuthenticator(
+            token,
+            principal=ControlPlanePrincipal(
+                "phoenix.dashboard",
+                frozenset(
+                    {
+                        CONTROL_PLANE_READ_PERMISSION,
+                        *(action.permission for action in ControlPlaneCommandAction),
+                    }
+                ),
+            ),
+        ),
         control_plane_http_config=ControlPlaneHttpConfig(port=8765),
         control_plane_job_records=jobs_repository,
     ).assemble()

@@ -1,9 +1,12 @@
-"""Canonical JSON-safe serialization for dashboard snapshots and detail pages."""
+"""Canonical JSON-safe serialization for dashboard queries and command receipts."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
+from phoenix_os.control_plane.command_api import ControlPlaneCommandAvailability
+from phoenix_os.control_plane.commands import ControlPlaneCommandReceipt
+from phoenix_os.control_plane.confirmation import ControlPlaneConfirmationChallenge
 from phoenix_os.control_plane.contracts import (
     AuditSummary,
     CapabilityPage,
@@ -15,9 +18,71 @@ from phoenix_os.control_plane.contracts import (
     WorkflowPage,
     WorkflowSummary,
 )
+from phoenix_os.control_plane.csrf import ControlPlaneCsrfToken
+from phoenix_os.control_plane.job_commands import ControlPlaneJobCommandResult
+from phoenix_os.control_plane.workflow_commands import ControlPlaneWorkflowCommandResult
 from phoenix_os.jobs import JobSchedulerSnapshot, JobWorkerSnapshot
 from phoenix_os.runtime import RuntimeSnapshot
 from phoenix_os.workflows import WorkflowWorkerSnapshot
+
+
+def command_receipt_to_dict(receipt: ControlPlaneCommandReceipt) -> dict[str, object]:
+    """Serialize only allowlisted command result fields."""
+
+    return {
+        "schema_version": receipt.schema_version,
+        "command_id": str(receipt.command_id),
+        "action": receipt.action.value,
+        "target": receipt.target,
+        "status": receipt.status.value,
+        "created_at": _timestamp(receipt.created_at),
+        "completed_at": _optional_timestamp(receipt.completed_at),
+        "result_code": receipt.result_code,
+    }
+
+
+def command_availability_to_dict(
+    availability: ControlPlaneCommandAvailability,
+) -> dict[str, object]:
+    return {
+        "schema_version": availability.schema_version,
+        "actions": {
+            "job.create": availability.create_job,
+            "job.cancel": availability.cancel_job,
+            "job.retry-dead-letter": availability.retry_dead_letter_job,
+            "workflow.cancel": availability.cancel_workflow,
+        },
+    }
+
+
+def csrf_token_to_dict(token: ControlPlaneCsrfToken) -> dict[str, object]:
+    return {"schema_version": 1, "csrf_token": token.value}
+
+
+def confirmation_challenge_to_dict(
+    challenge: ControlPlaneConfirmationChallenge,
+) -> dict[str, object]:
+    return {
+        "schema_version": challenge.schema_version,
+        "command_id": str(challenge.command_id),
+        "action": challenge.action.value,
+        "target": challenge.target,
+        "issued_at": _timestamp(challenge.issued_at),
+        "expires_at": _timestamp(challenge.expires_at),
+        "confirmation_proof": challenge.proof.value,
+    }
+
+
+def job_command_result_to_dict(result: ControlPlaneJobCommandResult) -> dict[str, object]:
+    payload = command_receipt_to_dict(result.receipt)
+    payload["job_id"] = None if result.job_id is None else str(result.job_id)
+    return payload
+
+
+def workflow_command_result_to_dict(
+    result: ControlPlaneWorkflowCommandResult,
+) -> dict[str, object]:
+    return command_receipt_to_dict(result.receipt)
 
 
 def snapshot_to_dict(snapshot: ControlPlaneSnapshot) -> dict[str, object]:

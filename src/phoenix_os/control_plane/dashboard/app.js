@@ -2,25 +2,63 @@
 
 const state = {
   token: sessionStorage.getItem("phoenix.controlPlane.token") || "",
+  csrf: sessionStorage.getItem("phoenix.controlPlane.csrf") || "",
   cursor: 0,
   connected: false,
   refreshTimer: null,
   eventLoop: null,
+  operations: {},
 };
 
 const byId = (id) => document.getElementById(id);
 const text = (id, value) => { byId(id).textContent = String(value); };
 const formatTime = (value) => value ? new Date(value).toLocaleString() : "—";
 const statusClass = (value) => `status status-${String(value).replaceAll(" ", "_")}`;
+const newKey = () => `dashboard-${crypto.randomUUID()}`;
 
-async function api(path, options = {}) {
+async function request(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("Authorization", `Bearer ${state.token}`);
   headers.set("Accept", "application/json");
   const response = await fetch(path, { ...options, headers, cache: "no-store" });
-  if (response.status === 401 || response.status === 403) throw new Error("unauthorized");
-  if (!response.ok) throw new Error(`http_${response.status}`);
-  return response.json();
+  const payload = await response.json();
+  if (response.status === 401 || response.status === 403) {
+    const error = new Error(response.status === 401 ? "unauthorized" : (payload.error || "forbidden"));
+    error.payload = payload;
+    throw error;
+  }
+  if (!response.ok && response.status !== 422) {
+    const error = new Error(payload.error || `http_${response.status}`);
+    error.payload = payload;
+    throw error;
+  }
+  return payload;
+}
+
+const api = (path) => request(path);
+
+async function issueCsrf() {
+  const payload = await request("/v1/control-plane/csrf", { method: "POST" });
+  state.csrf = payload.csrf_token;
+  sessionStorage.setItem("phoenix.controlPlane.csrf", state.csrf);
+}
+
+async function command(path, body, key = newKey(), confirmation = "") {
+  if (!state.csrf) await issueCsrf();
+  const headers = new Headers({
+    "Content-Type": "application/json",
+    "Idempotency-Key": key,
+    "X-Phoenix-CSRF": state.csrf,
+  });
+  if (confirmation) headers.set("X-Phoenix-Confirmation", confirmation);
+  try {
+    return await request(path, { method: "POST", headers, body: JSON.stringify(body) });
+  } catch (error) {
+    if (error.message === "request_rejected") {
+      await issueCsrf();
+    }
+    throw error;
+  }
 }
 
 function setConnected(connected, label) {
@@ -44,6 +82,16 @@ function renderSnapshot(snapshot) {
   text("last-updated", `Updated ${formatTime(snapshot.generated_at)}`);
 }
 
+function operationButton(label, action, enabled) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "small secondary";
+  button.textContent = label;
+  button.disabled = !enabled;
+  if (enabled) button.addEventListener("click", action);
+  return button;
+}
+
 function renderJobs(page) {
   const body = byId("jobs-table");
   body.replaceChildren(...page.items.map((job) => {
@@ -53,7 +101,12 @@ function renderJobs(page) {
     const badge = document.createElement("span"); badge.className = statusClass(job.status); badge.textContent = job.status; status.append(badge);
     const attempts = document.createElement("td"); attempts.textContent = `${job.attempts}/${job.max_attempts}`;
     const next = document.createElement("td"); next.textContent = formatTime(job.next_run_at);
-    row.append(capability, status, attempts, next); return row;
+    const actions = document.createElement("td"); actions.className = "row-actions";
+    const cancellable = ["scheduled", "running", "retrying"].includes(job.status);
+    if (cancellable && state.operations["job.cancel"]) actions.append(operationButton("Cancel", () => cancelJob(job.id), true));
+    if (job.status === "dead_letter" && state.operations["job.retry-dead-letter"]) actions.append(operationButton("Retry", () => retryJob(job.id), true));
+    if (!actions.children.length) actions.textContent = "—";
+    row.append(capability, status, attempts, next, actions); return row;
   }));
   text("jobs-page", `${page.page.returned} of ${page.page.total}`);
 }
@@ -72,7 +125,11 @@ function renderWorkflows(page) {
       return result;
     }, {});
     steps.textContent = Object.entries(counts).map(([key, count]) => `${key}: ${count}`).join(" · ") || "0 total";
-    row.append(name, status, revision, steps); return row;
+    const actions = document.createElement("td");
+    if (["pending", "running"].includes(workflow.status) && state.operations["workflow.cancel"]) {
+      actions.append(operationButton("Cancel", () => cancelWorkflow(workflow.id), true));
+    } else actions.textContent = "—";
+    row.append(name, status, revision, steps, actions); return row;
   }));
   text("workflows-page", `${page.page.returned} of ${page.page.total}`);
 }
@@ -90,17 +147,25 @@ function renderStack(id, items, lineBuilder) {
   }));
 }
 
+function renderOperations(payload) {
+  state.operations = payload.actions || {};
+  const any = Object.values(state.operations).some(Boolean);
+  byId("operations-panel").classList.toggle("hidden", !any);
+  byId("create-job-submit").disabled = !state.operations["job.create"];
+}
+
 async function refresh() {
   try {
-    const [snapshot, jobs, workflows, capabilities, plugins, audit] = await Promise.all([
+    const [snapshot, jobs, workflows, capabilities, plugins, audit, operations] = await Promise.all([
       api("/v1/control-plane/snapshot"),
       api("/v1/control-plane/jobs?limit=20"),
       api("/v1/control-plane/workflows?limit=20"),
       api("/v1/control-plane/capabilities?limit=50"),
       api("/v1/control-plane/plugins?limit=50"),
       api("/v1/control-plane/audit"),
+      api("/v1/control-plane/operations"),
     ]);
-    renderSnapshot(snapshot); renderJobs(jobs); renderWorkflows(workflows);
+    renderOperations(operations); renderSnapshot(snapshot); renderJobs(jobs); renderWorkflows(workflows);
     renderStack("capabilities-list", capabilities.items, (item) => [item.name, `${item.risk} risk · ${item.required_permissions.length} permissions`, null]);
     renderStack("plugins-list", plugins.items, (item) => [item.name, `${item.version} · ${item.exports.capabilities} capabilities`, item.status]);
     text("audit-total", audit.available ? audit.records : 0);
@@ -141,14 +206,73 @@ async function eventLoop() {
   }
 }
 
+function showCommand(payload) {
+  text("command-status", `${payload.status}: ${payload.result_code || "completed"}`);
+}
+
+async function createJob(event) {
+  event.preventDefault();
+  try {
+    const argumentsValue = JSON.parse(byId("job-arguments").value || "{}");
+    if (!argumentsValue || Array.isArray(argumentsValue) || typeof argumentsValue !== "object") throw new Error("arguments_object");
+    text("command-status", "Creating job…");
+    const payload = await command("/v1/control-plane/commands/jobs/create", {
+      capability: byId("job-capability").value.trim(),
+      run_at: new Date().toISOString(),
+      arguments: argumentsValue,
+    });
+    showCommand(payload); await refresh();
+  } catch (error) {
+    text("command-status", error.message === "arguments_object" ? "Arguments must be a JSON object" : `Command failed: ${error.message}`);
+  }
+}
+
+async function retryJob(jobId) {
+  try {
+    text("command-status", "Retrying dead-letter job…");
+    const payload = await command("/v1/control-plane/commands/jobs/retry-dead-letter", { job_id: jobId });
+    showCommand(payload); await refresh();
+  } catch (error) { text("command-status", `Command failed: ${error.message}`); }
+}
+
+async function destructiveCommand(kind, id) {
+  const key = newKey();
+  const isJob = kind === "job";
+  const field = isJob ? "job_id" : "workflow_id";
+  const base = isJob ? "jobs" : "workflows";
+  const challenge = await command(`/v1/control-plane/commands/${base}/cancel/confirmation`, { [field]: id }, key);
+  if (!window.confirm(`Confirm cancellation of ${kind} ${id}?`)) {
+    text("command-status", "Cancellation aborted"); return;
+  }
+  const payload = await command(
+    `/v1/control-plane/commands/${base}/cancel`,
+    { [field]: id, command_id: challenge.command_id },
+    key,
+    challenge.confirmation_proof,
+  );
+  showCommand(payload); await refresh();
+}
+
+async function cancelJob(jobId) {
+  try { await destructiveCommand("job", jobId); }
+  catch (error) { text("command-status", `Command failed: ${error.message}`); }
+}
+
+async function cancelWorkflow(workflowId) {
+  try { await destructiveCommand("workflow", workflowId); }
+  catch (error) { text("command-status", `Command failed: ${error.message}`); }
+}
+
 async function connect(token) {
   state.token = token.trim();
   sessionStorage.setItem("phoenix.controlPlane.token", state.token);
   text("login-error", "");
   try {
     await api("/v1/control-plane/health");
+    await issueCsrf();
   } catch (error) {
-    sessionStorage.removeItem("phoenix.controlPlane.token"); state.token = "";
+    sessionStorage.removeItem("phoenix.controlPlane.token"); sessionStorage.removeItem("phoenix.controlPlane.csrf");
+    state.token = ""; state.csrf = "";
     text("login-error", error.message === "unauthorized" ? "The administrator token was rejected." : "The local API is unavailable.");
     return;
   }
@@ -161,13 +285,15 @@ async function connect(token) {
 function disconnect(reason = "Disconnected") {
   state.connected = false;
   if (state.refreshTimer) window.clearInterval(state.refreshTimer);
-  state.refreshTimer = null; state.cursor = 0; state.token = "";
+  state.refreshTimer = null; state.cursor = 0; state.token = ""; state.csrf = ""; state.operations = {};
   sessionStorage.removeItem("phoenix.controlPlane.token");
+  sessionStorage.removeItem("phoenix.controlPlane.csrf");
   byId("token").value = "";
   setConnected(false, reason);
 }
 
 byId("login-form").addEventListener("submit", (event) => { event.preventDefault(); connect(byId("token").value); });
+byId("create-job-form").addEventListener("submit", createJob);
 byId("refresh").addEventListener("click", refresh);
 byId("disconnect").addEventListener("click", () => disconnect());
 window.addEventListener("pagehide", () => { state.connected = false; });
