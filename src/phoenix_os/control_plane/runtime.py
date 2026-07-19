@@ -28,10 +28,23 @@ from phoenix_os.control_plane.event_stream import (
     ControlPlaneEventStreamConfig,
 )
 from phoenix_os.control_plane.http import ControlPlaneHttpConfig, ControlPlaneHttpServer
-from phoenix_os.control_plane.idempotency import InMemoryControlPlaneIdempotencyStore
 from phoenix_os.control_plane.job_commands import (
     ControlPlaneJobCommandHandler,
     ControlPlaneJobScheduler,
+)
+from phoenix_os.control_plane.journal_contracts import ControlPlaneCommandJournalRepository
+from phoenix_os.control_plane.journal_history import ControlPlaneCommandHistoryService
+from phoenix_os.control_plane.journal_idempotency import JournalControlPlaneIdempotencyStore
+from phoenix_os.control_plane.journal_memory import InMemoryControlPlaneCommandJournalRepository
+from phoenix_os.control_plane.journal_recovery import (
+    ControlPlaneCommandRecoveryService,
+    ControlPlaneCommandRecoveryWorker,
+    ControlPlaneCommandSideEffectProbe,
+)
+from phoenix_os.control_plane.journal_retention import (
+    ControlPlaneCommandRetentionPolicy,
+    ControlPlaneCommandRetentionService,
+    ControlPlaneCommandRetentionWorker,
 )
 from phoenix_os.control_plane.protection import ControlPlaneCommandProtector
 from phoenix_os.control_plane.service import ControlPlaneService
@@ -80,11 +93,32 @@ class _EmptyWorkflowSource:
         return ()
 
 
+class _CommandJournalOwner:
+    """Close the journal after command workers and API components stop."""
+
+    def __init__(self, repository: ControlPlaneCommandJournalRepository) -> None:
+        self._repository = repository
+
+    async def start(self, context: object) -> None:
+        del context
+        if self._repository.closed:
+            raise RuntimeError("control plane command journal is closed")
+
+    async def stop(self, context: object) -> None:
+        del context
+        await self._repository.close()
+
+
 @dataclass(frozen=True, slots=True)
 class ControlPlaneRuntimeStack:
     """Control-plane services constructed before the Runtime self-reference exists."""
 
     service: ControlPlaneService
+    journal: ControlPlaneCommandJournalRepository
+    journal_owner: _CommandJournalOwner
+    history: ControlPlaneCommandHistoryService
+    recovery: ControlPlaneCommandRecoveryWorker
+    retention: ControlPlaneCommandRetentionWorker
     events: ControlPlaneEventStream
     commands: ControlPlaneCommandApi
     http: ControlPlaneHttpServer
@@ -108,8 +142,14 @@ class ControlPlaneRuntimeStack:
         event_config: ControlPlaneEventStreamConfig | None = None,
         job_commands: ControlPlaneJobScheduler | None = None,
         workflow_commands: ControlPlaneWorkflowOrchestrator | None = None,
+        command_journal: ControlPlaneCommandJournalRepository | None = None,
+        command_recovery_poll_interval: float = 1.0,
+        command_recovery_batch_size: int = 100,
+        command_retention_policy: ControlPlaneCommandRetentionPolicy | None = None,
+        command_retention_poll_interval: float = 3600.0,
     ) -> ControlPlaneRuntimeStack:
         runtime = _RuntimeSnapshotProxy()
+        journal = command_journal or InMemoryControlPlaneCommandJournalRepository()
         service = ControlPlaneService(
             runtime,
             _EmptyJobSource() if jobs is None else jobs,
@@ -120,12 +160,16 @@ class ControlPlaneRuntimeStack:
             audit=audit,
             job_worker=job_worker,
             workflow_worker=workflow_worker,
+            command_journal=journal,
         )
         event_stream = ControlPlaneEventStream(event_bus, config=event_config)
         authorizer = ControlPlaneCommandAuthorizer()
         csrf = ControlPlaneCsrfProtector(secrets.token_bytes(32))
         confirmations = InMemoryControlPlaneConfirmationService(secrets.token_bytes(32))
-        idempotency = InMemoryControlPlaneIdempotencyStore()
+        idempotency = JournalControlPlaneIdempotencyStore(
+            journal,
+            principal=authenticator.principal.name,
+        )
         protector = ControlPlaneCommandProtector(csrf, confirmations)
         job_handler = (
             None
@@ -157,14 +201,43 @@ class ControlPlaneRuntimeStack:
             jobs=job_handler,
             workflows=workflow_handler,
         )
+        history = ControlPlaneCommandHistoryService(journal, events=event_bus)
+        recovery = ControlPlaneCommandRecoveryWorker(
+            ControlPlaneCommandRecoveryService(
+                journal,
+                ControlPlaneCommandSideEffectProbe(
+                    jobs=job_commands,
+                    workflows=workflow_commands,
+                ),
+            ),
+            poll_interval=command_recovery_poll_interval,
+            batch_size=command_recovery_batch_size,
+        )
+        retention = ControlPlaneCommandRetentionWorker(
+            ControlPlaneCommandRetentionService(journal, events=event_bus),
+            command_retention_policy or ControlPlaneCommandRetentionPolicy(),
+            poll_interval=command_retention_poll_interval,
+        )
         http = ControlPlaneHttpServer(
             service,
             authenticator,
             config=http_config,
             event_stream=event_stream,
             command_api=command_api,
+            command_history=history,
         )
-        return cls(service, event_stream, command_api, http, runtime)
+        return cls(
+            service,
+            journal,
+            _CommandJournalOwner(journal),
+            history,
+            recovery,
+            retention,
+            event_stream,
+            command_api,
+            http,
+            runtime,
+        )
 
     def bind_runtime(self, runtime: PhoenixRuntime) -> None:
         self._runtime.bind(runtime)

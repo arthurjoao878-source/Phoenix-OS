@@ -59,3 +59,43 @@ class ControlPlaneConfirmationCapacityError(PhoenixControlPlaneError):
 
 class ControlPlaneConfirmationStoreClosedError(PhoenixControlPlaneError):
     """Raised when a closed confirmation service receives an operation."""
+
+
+class ControlPlaneCommandJournalAlreadyExistsError(PhoenixControlPlaneError):
+    """Raised when a command id or idempotency digest already exists."""
+
+
+class ControlPlaneCommandJournalNotFoundError(PhoenixControlPlaneError):
+    """Raised when a requested command journal record does not exist."""
+
+
+class ControlPlaneCommandJournalConflictError(PhoenixControlPlaneError):
+    """Raised for stale revisions or invalid command lifecycle transitions."""
+
+
+class ControlPlaneCommandJournalCapacityError(PhoenixControlPlaneError):
+    """Raised when the bounded command journal has no remaining capacity."""
+
+
+class ControlPlaneCommandJournalRepositoryClosedError(PhoenixControlPlaneError):
+    """Raised when a closed command journal repository receives an operation."""
+
+
+class ControlPlaneCommandJournalPersistenceError(PhoenixControlPlaneError):
+    """Raised when the durable journal cannot complete a State Store operation."""
+
+
+class ControlPlaneCommandJournalCorruptionError(ControlPlaneCommandJournalPersistenceError):
+    """Raised when persisted journal records or indexes fail strict validation."""
+
+
+class ControlPlaneCommandJournalSchemaError(ControlPlaneCommandJournalCorruptionError):
+    """Raised when persisted command-journal data uses an unsupported schema."""
+
+
+class ControlPlaneCommandRecoveryWorkerStateError(PhoenixControlPlaneError):
+    """Raised when the one-shot command recovery worker lifecycle is misused."""
+
+
+class ControlPlaneCommandRetentionWorkerStateError(PhoenixControlPlaneError):
+    """Raised when the one-shot command retention worker lifecycle is misused."""

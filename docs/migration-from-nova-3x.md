@@ -425,3 +425,11 @@ Do not expose shell strings, Python callables, arbitrary module names, caller-cr
 contexts, plugin mutation, State Store keys, or raw repository records through the Dashboard. Remote
 access still requires an external reviewed ingress and identity boundary; do not widen the built-in
 loopback listener.
+
+
+## Phoenix OS 0.19 command journal
+
+When a default Phoenix State Store is configured, the Dashboard command journal now persists
+automatically. Existing 0.18 deployments without a State Store continue with a bounded in-memory
+repository. Do not migrate command request bodies or plaintext idempotency keys: RFC-0019 stores only
+allowlisted identity, protected digests, lifecycle timestamps, revisions, and stable result codes.

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.0] - 2026-07-19
+
+### Added
+- Accepted RFC-0019 and ADR-0038/0039.
+- Payload-free versioned command journal contracts and bounded repositories.
+- State Store persistence with canonical checksums, strict decoding, and corruption detection.
+- Restart-safe journal-backed idempotency and terminal receipts.
+- Bounded interrupted-command recovery with deterministic side-effect probes.
+- Authenticated paginated command history and allowlisted Dashboard presentation.
+- Terminal-only age/count retention with optimistic revision fencing.
+- RuntimeAssembler ownership of journal, recovery, retention, history, and HTTP lifecycle.
+
+
 ## [0.18.0] - 2026-07-19
 
 ### Added

@@ -284,3 +284,12 @@ execution deadline are all bounded.
 `control_plane.events` and the job/workflow workers. Startup makes event observation and command state
 available before the HTTP listener. Reverse shutdown stops HTTP first, then workers, then closes
 command confirmation/idempotency state before the Event Bus stream unsubscribes.
+
+
+## Durable Command Journal
+
+Administrative command idempotency is adapted to `ControlPlaneCommandJournalRepository`. The
+State Store implementation persists canonical payload-free records and SHA-256 idempotency indexes
+atomically. Runtime-owned recovery probes deterministic job/workflow state before marking interrupted
+commands terminal, while terminal-only retention uses revision-bound deletion candidates. The
+Dashboard receives only paginated allowlisted history and coarse journal counters.

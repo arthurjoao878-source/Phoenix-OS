@@ -20,6 +20,11 @@ from phoenix_os.control_plane.contracts import (
 )
 from phoenix_os.control_plane.csrf import ControlPlaneCsrfToken
 from phoenix_os.control_plane.job_commands import ControlPlaneJobCommandResult
+from phoenix_os.control_plane.journal_contracts import (
+    ControlPlaneCommandJournalPageInfo,
+    ControlPlaneCommandJournalSnapshot,
+)
+from phoenix_os.control_plane.journal_history import ControlPlaneCommandHistoryPage
 from phoenix_os.control_plane.workflow_commands import ControlPlaneWorkflowCommandResult
 from phoenix_os.jobs import JobSchedulerSnapshot, JobWorkerSnapshot
 from phoenix_os.runtime import RuntimeSnapshot
@@ -97,6 +102,31 @@ def snapshot_to_dict(snapshot: ControlPlaneSnapshot) -> dict[str, object]:
         "workflows": _workflows(snapshot.workflows),
         "job_worker": _job_worker(snapshot.job_worker),
         "workflow_worker": _workflow_worker(snapshot.workflow_worker),
+        "command_journal": _command_journal(snapshot.command_journal),
+    }
+
+
+def command_history_page_to_dict(page: ControlPlaneCommandHistoryPage) -> dict[str, object]:
+    """Serialize allowlisted operation history without stored digests or fingerprints."""
+
+    return {
+        "schema_version": page.schema_version,
+        "items": [
+            {
+                "command_id": str(item.command_id),
+                "action": item.action.value,
+                "target": item.target,
+                "principal": item.principal,
+                "status": item.status.value,
+                "requested_at": _timestamp(item.requested_at),
+                "updated_at": _timestamp(item.updated_at),
+                "completed_at": _optional_timestamp(item.completed_at),
+                "result_code": item.result_code,
+                "revision": item.revision,
+            }
+            for item in page.items
+        ],
+        "page": _journal_page(page.page),
     }
 
 
@@ -242,6 +272,16 @@ def audit_summary_to_dict(summary: AuditSummary | None) -> dict[str, object]:
     }
 
 
+def _journal_page(page: ControlPlaneCommandJournalPageInfo) -> dict[str, object]:
+    return {
+        "offset": page.offset,
+        "limit": page.limit,
+        "returned": page.returned,
+        "total": page.total,
+        "next_offset": page.next_offset,
+    }
+
+
 def _page(page: PageInfo) -> dict[str, object]:
     return {
         "offset": page.offset,
@@ -317,6 +357,23 @@ def _workflow_worker(
         "failures": snapshot.failures,
         "last_tick_at": _optional_timestamp(snapshot.last_tick_at),
         "last_error": snapshot.last_error,
+    }
+
+
+def _command_journal(
+    snapshot: ControlPlaneCommandJournalSnapshot | None,
+) -> dict[str, object] | None:
+    if snapshot is None:
+        return None
+    return {
+        "closed": snapshot.closed,
+        "entries": snapshot.entries,
+        "pending": snapshot.pending,
+        "executing": snapshot.executing,
+        "succeeded": snapshot.succeeded,
+        "rejected": snapshot.rejected,
+        "failed": snapshot.failed,
+        "capacity": snapshot.capacity,
     }
 
 

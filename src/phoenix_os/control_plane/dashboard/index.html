@@ -66,6 +66,11 @@
           <strong id="audit-total" class="metric">0</strong>
           <p id="audit-summary" class="muted">Unavailable</p>
         </article>
+        <article class="card">
+          <p class="label">Command journal</p>
+          <strong id="commands-total" class="metric">0</strong>
+          <p id="commands-summary" class="muted">Unavailable</p>
+        </article>
       </section>
 
       <section class="panel-grid">
@@ -100,6 +105,11 @@
         </article>
 
         <article class="panel wide">
+          <div class="panel-heading"><div><p class="eyebrow">Durable operations</p><h2>Command history</h2></div><span id="commands-page" class="muted"></span></div>
+          <div class="table-wrap"><table><thead><tr><th>Requested</th><th>Action</th><th>Target</th><th>Status</th><th>Result</th><th>Principal</th></tr></thead><tbody id="commands-table"></tbody></table></div>
+        </article>
+
+        <article class="panel wide">
           <div class="panel-heading"><div><p class="eyebrow">Live feed</p><h2>Recent events</h2></div><span id="event-status" class="muted">Waiting</span></div>
           <ol id="events-list" class="event-list"></ol>
         </article>
@@ -107,6 +117,6 @@
     </section>
   </main>
 
-  <footer>Loopback-only · Authenticated safe operations · Phoenix OS v0.18.0</footer>
+  <footer>Loopback-only · Authenticated safe operations · Phoenix OS v0.19.0</footer>
 </body>
 </html>

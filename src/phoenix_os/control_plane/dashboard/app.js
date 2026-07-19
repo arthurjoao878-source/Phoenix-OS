@@ -79,6 +79,9 @@ function renderSnapshot(snapshot) {
   text("jobs-summary", `${snapshot.jobs.running} running · ${snapshot.jobs.succeeded} succeeded · ${snapshot.jobs.dead_letter} dead-letter`);
   text("workflows-total", snapshot.workflows.total);
   text("workflows-summary", `${snapshot.workflows.running} running · ${snapshot.workflows.succeeded} succeeded · ${snapshot.workflows.failed} failed`);
+  const journal = snapshot.command_journal;
+  text("commands-total", journal ? journal.entries : 0);
+  text("commands-summary", journal ? `${journal.pending + journal.executing} active · ${journal.succeeded} succeeded · ${journal.failed + journal.rejected} unsuccessful` : "Unavailable");
   text("last-updated", `Updated ${formatTime(snapshot.generated_at)}`);
 }
 
@@ -147,6 +150,23 @@ function renderStack(id, items, lineBuilder) {
   }));
 }
 
+function renderHistory(page) {
+  const body = byId("commands-table");
+  body.replaceChildren(...page.items.map((commandItem) => {
+    const row = document.createElement("tr");
+    const requested = document.createElement("td"); requested.textContent = formatTime(commandItem.requested_at);
+    const action = document.createElement("td"); action.textContent = commandItem.action;
+    const target = document.createElement("td"); target.textContent = commandItem.target;
+    const status = document.createElement("td");
+    const badge = document.createElement("span"); badge.className = statusClass(commandItem.status); badge.textContent = commandItem.status; status.append(badge);
+    const result = document.createElement("td"); result.textContent = commandItem.result_code || "—";
+    const principal = document.createElement("td"); principal.textContent = commandItem.principal;
+    row.append(requested, action, target, status, result, principal);
+    return row;
+  }));
+  text("commands-page", `${page.page.returned} of ${page.page.total}`);
+}
+
 function renderOperations(payload) {
   state.operations = payload.actions || {};
   const any = Object.values(state.operations).some(Boolean);
@@ -156,7 +176,7 @@ function renderOperations(payload) {
 
 async function refresh() {
   try {
-    const [snapshot, jobs, workflows, capabilities, plugins, audit, operations] = await Promise.all([
+    const [snapshot, jobs, workflows, capabilities, plugins, audit, operations, history] = await Promise.all([
       api("/v1/control-plane/snapshot"),
       api("/v1/control-plane/jobs?limit=20"),
       api("/v1/control-plane/workflows?limit=20"),
@@ -164,8 +184,9 @@ async function refresh() {
       api("/v1/control-plane/plugins?limit=50"),
       api("/v1/control-plane/audit"),
       api("/v1/control-plane/operations"),
+      api("/v1/control-plane/commands/history?limit=20"),
     ]);
-    renderOperations(operations); renderSnapshot(snapshot); renderJobs(jobs); renderWorkflows(workflows);
+    renderOperations(operations); renderSnapshot(snapshot); renderJobs(jobs); renderWorkflows(workflows); renderHistory(history);
     renderStack("capabilities-list", capabilities.items, (item) => [item.name, `${item.risk} risk · ${item.required_permissions.length} permissions`, null]);
     renderStack("plugins-list", plugins.items, (item) => [item.name, `${item.version} · ${item.exports.capabilities} capabilities`, item.status]);
     text("audit-total", audit.available ? audit.records : 0);

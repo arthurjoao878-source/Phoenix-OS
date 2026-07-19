@@ -64,7 +64,9 @@ class ControlPlaneCommandHttpAdapter:
 
     @staticmethod
     def handles(path: str) -> bool:
-        return path == "/v1/control-plane/csrf" or path.startswith(_COMMAND_PREFIX)
+        return path == "/v1/control-plane/csrf" or (
+            path.startswith(_COMMAND_PREFIX) and path != "/v1/control-plane/commands/history"
+        )
 
     async def dispatch(
         self,
