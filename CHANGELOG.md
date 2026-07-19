@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0] - 2026-07-19
+
+### Added
+- Accepted RFC-0018 and ADR-0036/0037.
+- Exact per-action Dashboard command permissions and operation availability discovery.
+- SHA-256-bound idempotency with safe replay, terminal-only eviction, and deterministic command IDs.
+- Origin-bound HMAC CSRF tokens and one-time HMAC confirmation proofs for destructive actions.
+- Safe job creation, cancellation, dead-letter retry, and workflow cancellation handlers.
+- Bounded authenticated POST transport with strict JSON schemas and command concurrency limits.
+- Payload-free command events, Security Journal categorization, and allowlisted receipts.
+- Dashboard job creation, cancellation, retry controls, release documentation, and v0.18.0 packaging.
+
 ## [0.17.0] - 2026-07-18
 
 ### Added

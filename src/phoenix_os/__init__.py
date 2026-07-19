@@ -131,6 +131,8 @@ from phoenix_os.configuration import (
 )
 from phoenix_os.control_plane import (
     AdminTokenAuthenticator,
+    ControlPlaneCommandApi,
+    ControlPlaneCommandAvailability,
     ControlPlaneEventStream,
     ControlPlaneEventStreamConfig,
     ControlPlaneEventStreamSnapshot,
@@ -543,6 +545,8 @@ __all__ = [
     "ConfirmationDecision",
     "ConfirmationPolicy",
     "ConfirmationStatus",
+    "ControlPlaneCommandApi",
+    "ControlPlaneCommandAvailability",
     "ControlPlaneEventStream",
     "ControlPlaneEventStreamConfig",
     "ControlPlaneEventStreamSnapshot",
@@ -862,4 +866,4 @@ __all__ = [
     "workflow_job_id",
 ]
 
-__version__ = "0.17.0"
+__version__ = "0.18.0"

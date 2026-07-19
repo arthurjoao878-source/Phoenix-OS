@@ -50,6 +50,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "configuration",
         "control_plane",
         "control_plane.events",
+        "control_plane.commands",
         "control_plane.http",
         "observability",
         "plugins",
@@ -397,11 +398,15 @@ class RuntimeAssembler:
                 workflow_worker=workflow_worker_service,
                 http_config=self._control_plane_http_config,
                 event_config=self._control_plane_event_config,
+                job_commands=self._jobs,
+                workflow_commands=self._workflows,
             )
             custom_services["control_plane"] = control_plane_stack.service
             custom_services["control_plane.events"] = control_plane_stack.events
+            custom_services["control_plane.commands"] = control_plane_stack.commands
             custom_services["control_plane.http"] = control_plane_stack.http
             components.append(ComponentSpec("control_plane.events", control_plane_stack.events))
+            components.append(ComponentSpec("control_plane.commands", control_plane_stack.commands))
 
         if job_worker_service is not None:
             components.append(ComponentSpec("jobs", job_worker_service))

@@ -446,5 +446,5 @@ async def test_binding_services_is_only_allowed_before_prepare_and_conflicts_are
 
 def test_manager_exposes_core_version() -> None:
     manager = manager_for()
-    assert manager.core_version == SemanticVersion(0, 17, 0)
+    assert manager.core_version == SemanticVersion(0, 18, 0)
     assert manager.api_version == 1

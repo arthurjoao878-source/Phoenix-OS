@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 
 from phoenix_os.capabilities import CapabilityRegistry
-from phoenix_os.control_plane.auth import AdminTokenAuthenticator
+from phoenix_os.control_plane.auth import (
+    AdminTokenAuthenticator,
+    ControlPlaneCommandAuthorizer,
+)
+from phoenix_os.control_plane.command_api import ControlPlaneCommandApi
+from phoenix_os.control_plane.confirmation import InMemoryControlPlaneConfirmationService
 from phoenix_os.control_plane.contracts import (
     AuditSnapshotSource,
     JobRecordSource,
@@ -16,12 +22,23 @@ from phoenix_os.control_plane.contracts import (
     WorkflowSnapshotSource,
     WorkflowWorkerSnapshotSource,
 )
+from phoenix_os.control_plane.csrf import ControlPlaneCsrfProtector
 from phoenix_os.control_plane.event_stream import (
     ControlPlaneEventStream,
     ControlPlaneEventStreamConfig,
 )
 from phoenix_os.control_plane.http import ControlPlaneHttpConfig, ControlPlaneHttpServer
+from phoenix_os.control_plane.idempotency import InMemoryControlPlaneIdempotencyStore
+from phoenix_os.control_plane.job_commands import (
+    ControlPlaneJobCommandHandler,
+    ControlPlaneJobScheduler,
+)
+from phoenix_os.control_plane.protection import ControlPlaneCommandProtector
 from phoenix_os.control_plane.service import ControlPlaneService
+from phoenix_os.control_plane.workflow_commands import (
+    ControlPlaneWorkflowCommandHandler,
+    ControlPlaneWorkflowOrchestrator,
+)
 from phoenix_os.events import EventBus
 from phoenix_os.jobs import JobSchedulerSnapshot
 from phoenix_os.runtime import PhoenixRuntime, RuntimeSnapshot
@@ -69,6 +86,7 @@ class ControlPlaneRuntimeStack:
 
     service: ControlPlaneService
     events: ControlPlaneEventStream
+    commands: ControlPlaneCommandApi
     http: ControlPlaneHttpServer
     _runtime: _RuntimeSnapshotProxy
 
@@ -88,6 +106,8 @@ class ControlPlaneRuntimeStack:
         workflow_worker: WorkflowWorkerSnapshotSource | None = None,
         http_config: ControlPlaneHttpConfig | None = None,
         event_config: ControlPlaneEventStreamConfig | None = None,
+        job_commands: ControlPlaneJobScheduler | None = None,
+        workflow_commands: ControlPlaneWorkflowOrchestrator | None = None,
     ) -> ControlPlaneRuntimeStack:
         runtime = _RuntimeSnapshotProxy()
         service = ControlPlaneService(
@@ -102,13 +122,49 @@ class ControlPlaneRuntimeStack:
             workflow_worker=workflow_worker,
         )
         event_stream = ControlPlaneEventStream(event_bus, config=event_config)
+        authorizer = ControlPlaneCommandAuthorizer()
+        csrf = ControlPlaneCsrfProtector(secrets.token_bytes(32))
+        confirmations = InMemoryControlPlaneConfirmationService(secrets.token_bytes(32))
+        idempotency = InMemoryControlPlaneIdempotencyStore()
+        protector = ControlPlaneCommandProtector(csrf, confirmations)
+        job_handler = (
+            None
+            if job_commands is None
+            else ControlPlaneJobCommandHandler(
+                job_commands,
+                capabilities,
+                authorizer,
+                protector,
+                idempotency,
+            )
+        )
+        workflow_handler = (
+            None
+            if workflow_commands is None
+            else ControlPlaneWorkflowCommandHandler(
+                workflow_commands,
+                authorizer,
+                protector,
+                idempotency,
+            )
+        )
+        command_api = ControlPlaneCommandApi(
+            csrf=csrf,
+            confirmations=confirmations,
+            idempotency=idempotency,
+            authorizer=authorizer,
+            events=event_bus,
+            jobs=job_handler,
+            workflows=workflow_handler,
+        )
         http = ControlPlaneHttpServer(
             service,
             authenticator,
             config=http_config,
             event_stream=event_stream,
+            command_api=command_api,
         )
-        return cls(service, event_stream, http, runtime)
+        return cls(service, event_stream, command_api, http, runtime)
 
     def bind_runtime(self, runtime: PhoenixRuntime) -> None:
         self._runtime.bind(runtime)
