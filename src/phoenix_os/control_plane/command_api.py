@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Protocol, cast
 from uuid import UUID
 
 from phoenix_os.control_plane.auth import (
@@ -44,6 +46,10 @@ from phoenix_os.control_plane.workflow_commands import (
 from phoenix_os.events import BusClosedError, EventBus
 
 type ControlPlaneCommandApiClock = Callable[[], datetime]
+
+
+class _PrincipalScopedIdempotencyStore(Protocol):
+    def principal_scope(self, principal: str) -> AbstractContextManager[None]: ...
 
 
 def _utc_now() -> datetime:
@@ -151,13 +157,14 @@ class ControlPlaneCommandApi:
     ) -> ControlPlaneJobCommandResult:
         handler = self._require_jobs()
         intent = command.intent(key, requested_at=self._now())
-        result = await handler.create_job(
-            principal,
-            intent,
-            command,
-            origin=origin,
-            csrf_token=csrf_token,
-        )
+        with self._principal_scope(principal):
+            result = await handler.create_job(
+                principal,
+                intent,
+                command,
+                origin=origin,
+                csrf_token=csrf_token,
+            )
         await self._record_receipt(principal, result.receipt)
         return result
 
@@ -172,13 +179,14 @@ class ControlPlaneCommandApi:
     ) -> ControlPlaneJobCommandResult:
         handler = self._require_jobs()
         intent = command.intent(key, requested_at=self._now())
-        result = await handler.retry_dead_letter_job(
-            principal,
-            intent,
-            command,
-            origin=origin,
-            csrf_token=csrf_token,
-        )
+        with self._principal_scope(principal):
+            result = await handler.retry_dead_letter_job(
+                principal,
+                intent,
+                command,
+                origin=origin,
+                csrf_token=csrf_token,
+            )
         await self._record_receipt(principal, result.receipt)
         return result
 
@@ -222,14 +230,15 @@ class ControlPlaneCommandApi:
     ) -> ControlPlaneJobCommandResult:
         handler = self._require_jobs()
         intent = command.intent(key, requested_at=self._now(), command_id=command_id)
-        result = await handler.cancel_job(
-            principal,
-            intent,
-            command,
-            origin=origin,
-            csrf_token=csrf_token,
-            confirmation=confirmation,
-        )
+        with self._principal_scope(principal):
+            result = await handler.cancel_job(
+                principal,
+                intent,
+                command,
+                origin=origin,
+                csrf_token=csrf_token,
+                confirmation=confirmation,
+            )
         await self._record_receipt(principal, result.receipt)
         return result
 
@@ -273,14 +282,15 @@ class ControlPlaneCommandApi:
     ) -> ControlPlaneWorkflowCommandResult:
         handler = self._require_workflows()
         intent = command.intent(key, requested_at=self._now(), command_id=command_id)
-        result = await handler.cancel_workflow(
-            principal,
-            intent,
-            command,
-            origin=origin,
-            csrf_token=csrf_token,
-            confirmation=confirmation,
-        )
+        with self._principal_scope(principal):
+            result = await handler.cancel_workflow(
+                principal,
+                intent,
+                command,
+                origin=origin,
+                csrf_token=csrf_token,
+                confirmation=confirmation,
+            )
         await self._record_receipt(principal, result.receipt)
         return result
 
@@ -381,6 +391,16 @@ class ControlPlaneCommandApi:
         if self._workflows is None:
             raise RuntimeError("workflow commands are unavailable")
         return self._workflows
+
+    def _principal_scope(
+        self,
+        principal: ControlPlanePrincipal,
+    ) -> AbstractContextManager[None]:
+        scope = getattr(self._idempotency, "principal_scope", None)
+        if scope is None:
+            return nullcontext()
+        scoped = cast(_PrincipalScopedIdempotencyStore, self._idempotency)
+        return scoped.principal_scope(principal.name)
 
     def _require_open(self) -> None:
         if self._closed:

@@ -8,6 +8,9 @@ const state = {
   refreshTimer: null,
   eventLoop: null,
   operations: {},
+  me: null,
+  operatorMode: sessionStorage.getItem("phoenix.controlPlane.operatorMode") === "1",
+  temporarySession: sessionStorage.getItem("phoenix.controlPlane.temporarySession") === "1",
 };
 
 const byId = (id) => document.getElementById(id);
@@ -36,6 +39,28 @@ async function request(path, options = {}) {
 }
 
 const api = (path) => request(path);
+
+async function exchangeOperatorCredential(credential) {
+  const response = await fetch("/v1/control-plane/operator/login", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${credential}`, Accept: "application/json" },
+    cache: "no-store",
+  });
+  const payload = await response.json();
+  if (response.ok) return payload;
+  if ([404, 405].includes(response.status) || payload.error === "not_found" || payload.error === "method_not_allowed") return null;
+  const error = new Error(response.status === 401 ? "unauthorized" : (payload.error || `http_${response.status}`));
+  throw error;
+}
+
+async function operatorCommand(path, body) {
+  if (!state.csrf) await issueCsrf();
+  const headers = new Headers({
+    "Content-Type": "application/json",
+    "X-Phoenix-CSRF": state.csrf,
+  });
+  return request(path, { method: "POST", headers, body: JSON.stringify(body) });
+}
 
 async function issueCsrf() {
   const payload = await request("/v1/control-plane/csrf", { method: "POST" });
@@ -167,6 +192,47 @@ function renderHistory(page) {
   text("commands-page", `${page.page.returned} of ${page.page.total}`);
 }
 
+function renderOperators(page) {
+  const body = byId("operators-table");
+  const can = (permission) => state.me && state.me.permissions.includes(permission);
+  body.replaceChildren(...page.items.map((operatorItem) => {
+    const row = document.createElement("tr");
+    const identity = document.createElement("td");
+    const strong = document.createElement("strong"); strong.textContent = operatorItem.display_name;
+    const username = document.createElement("p"); username.className = "muted"; username.textContent = operatorItem.username;
+    identity.append(strong, username);
+    const role = document.createElement("td"); role.textContent = operatorItem.role;
+    const status = document.createElement("td");
+    const badge = document.createElement("span"); badge.className = statusClass(operatorItem.status); badge.textContent = operatorItem.status; status.append(badge);
+    const revision = document.createElement("td"); revision.textContent = operatorItem.revision;
+    const actions = document.createElement("td"); actions.className = "row-actions";
+    if (operatorItem.status !== "revoked" && can("control-plane.operators.update")) {
+      actions.append(operationButton("Edit", () => updateOperator(operatorItem), true));
+    }
+    if (operatorItem.status === "active" && can("control-plane.operators.disable")) {
+      actions.append(operationButton("Disable", () => operatorLifecycle(operatorItem, "disable"), true));
+    }
+    if (operatorItem.status === "disabled" && can("control-plane.operators.disable")) {
+      actions.append(operationButton("Reactivate", () => operatorLifecycle(operatorItem, "reactivate"), true));
+    }
+    if (operatorItem.status !== "revoked" && can("control-plane.operators.rotate")) {
+      actions.append(operationButton("Rotate", () => rotateOperator(operatorItem), true));
+    }
+    if (operatorItem.status !== "revoked" && can("control-plane.operators.revoke")) {
+      actions.append(operationButton("Revoke", () => operatorLifecycle(operatorItem, "revoke"), true));
+    }
+    if (!actions.children.length) actions.textContent = "—";
+    row.append(identity, role, status, revision, actions);
+    return row;
+  }));
+  text("operators-page", `${page.page.returned} of ${page.page.total}`);
+  const filter = byId("history-operator");
+  const selected = filter.value;
+  const options = [new Option("All", ""), ...page.items.map((item) => new Option(item.username, item.username))];
+  filter.replaceChildren(...options);
+  filter.value = options.some((item) => item.value === selected) ? selected : "";
+}
+
 function renderOperations(payload) {
   state.operations = payload.actions || {};
   const any = Object.values(state.operations).some(Boolean);
@@ -176,7 +242,15 @@ function renderOperations(payload) {
 
 async function refresh() {
   try {
-    const [snapshot, jobs, workflows, capabilities, plugins, audit, operations, history] = await Promise.all([
+    if (state.operatorMode && !state.me) {
+      state.me = await api("/v1/control-plane/operator/me");
+      text("operator-identity", state.me.username);
+    } else if (!state.operatorMode) {
+      text("operator-identity", "Legacy administrator");
+    }
+    const historyOperator = byId("history-operator").value;
+    const historyPath = `/v1/control-plane/commands/history?limit=20${historyOperator ? `&operator=${encodeURIComponent(historyOperator)}` : ""}`;
+    const baseRequests = [
       api("/v1/control-plane/snapshot"),
       api("/v1/control-plane/jobs?limit=20"),
       api("/v1/control-plane/workflows?limit=20"),
@@ -184,16 +258,24 @@ async function refresh() {
       api("/v1/control-plane/plugins?limit=50"),
       api("/v1/control-plane/audit"),
       api("/v1/control-plane/operations"),
-      api("/v1/control-plane/commands/history?limit=20"),
-    ]);
+      api(historyPath),
+    ];
+    const [snapshot, jobs, workflows, capabilities, plugins, audit, operations, history] = await Promise.all(baseRequests);
     renderOperations(operations); renderSnapshot(snapshot); renderJobs(jobs); renderWorkflows(workflows); renderHistory(history);
     renderStack("capabilities-list", capabilities.items, (item) => [item.name, `${item.risk} risk · ${item.required_permissions.length} permissions`, null]);
     renderStack("plugins-list", plugins.items, (item) => [item.name, `${item.version} · ${item.exports.capabilities} capabilities`, item.status]);
     text("audit-total", audit.available ? audit.records : 0);
     text("audit-summary", audit.available ? `${audit.signed_records} signed · ${audit.verification_failures} verification failures` : "Unavailable");
-    setConnected(true, "Connected");
+    const canReadOperators = state.me && state.me.permissions.includes("control-plane.operators.read");
+    byId("operators-panel").classList.toggle("hidden", !canReadOperators);
+    if (canReadOperators) {
+      const operators = await api("/v1/control-plane/operators?limit=200");
+      renderOperators(operators);
+      byId("create-operator-submit").disabled = !state.me.permissions.includes("control-plane.operators.create");
+    }
+    setConnected(true, state.me ? `Connected as ${state.me.username}` : "Connected");
   } catch (error) {
-    if (error.message === "unauthorized") disconnect("Token rejected");
+    if (error.message === "unauthorized") disconnect("Session rejected");
     else setConnected(state.connected, "API unavailable");
   }
 }
@@ -284,17 +366,88 @@ async function cancelWorkflow(workflowId) {
   catch (error) { text("command-status", `Command failed: ${error.message}`); }
 }
 
-async function connect(token) {
+async function createOperator(event) {
+  event.preventDefault();
+  try {
+    const payload = await operatorCommand("/v1/control-plane/operators", {
+      username: byId("operator-username").value.trim(),
+      display_name: byId("operator-display-name").value.trim(),
+      role: byId("operator-role").value,
+    });
+    text("operator-token-output", `Credential for ${payload.username}: ${payload.token}`);
+    event.target.reset();
+    await refresh();
+  } catch (error) { text("operator-token-output", `Operator creation failed: ${error.message}`); }
+}
+
+async function updateOperator(operatorItem) {
+  const displayName = window.prompt("Operator display name", operatorItem.display_name);
+  if (displayName === null) return;
+  const role = window.prompt("Role: viewer, operator, or maintainer", operatorItem.role);
+  if (role === null) return;
+  const normalizedRole = role.trim().toLowerCase();
+  if (!["viewer", "operator", "maintainer"].includes(normalizedRole)) {
+    text("operator-token-output", "Operator update failed: invalid role");
+    return;
+  }
+  try {
+    await operatorCommand(`/v1/control-plane/operators/${operatorItem.operator_id}/update`, {
+      expected_revision: operatorItem.revision,
+      display_name: displayName.trim(),
+      role: normalizedRole,
+      additional_permissions: operatorItem.additional_permissions,
+    });
+    text("operator-token-output", `${operatorItem.username}: profile updated`);
+    await refresh();
+  } catch (error) { text("operator-token-output", `Operator update failed: ${error.message}`); }
+}
+
+async function operatorLifecycle(operatorItem, action) {
+  if (action === "revoke" && !window.confirm(`Permanently revoke ${operatorItem.username}?`)) return;
+  try {
+    await operatorCommand(`/v1/control-plane/operators/${operatorItem.operator_id}/${action}`, { expected_revision: operatorItem.revision });
+    text("operator-token-output", `${operatorItem.username}: ${action} completed`);
+    await refresh();
+  } catch (error) { text("operator-token-output", `Operator action failed: ${error.message}`); }
+}
+
+async function rotateOperator(operatorItem) {
+  if (!window.confirm(`Rotate the credential for ${operatorItem.username}? Existing sessions will be revoked.`)) return;
+  try {
+    const payload = await operatorCommand(`/v1/control-plane/operators/${operatorItem.operator_id}/rotate`, { expected_revision: operatorItem.revision });
+    text("operator-token-output", `New credential for ${payload.username}: ${payload.token}`);
+    await refresh();
+  } catch (error) { text("operator-token-output", `Credential rotation failed: ${error.message}`); }
+}
+
+async function connect(token, alreadySession = false) {
   state.token = token.trim();
-  sessionStorage.setItem("phoenix.controlPlane.token", state.token);
   text("login-error", "");
   try {
+    if (!alreadySession) {
+      const exchange = await exchangeOperatorCredential(state.token);
+      if (exchange) {
+        state.token = exchange.session_token;
+        state.operatorMode = true;
+        state.temporarySession = true;
+        state.me = { username: exchange.username, permissions: [] };
+      } else {
+        state.operatorMode = false;
+        state.temporarySession = false;
+        state.me = null;
+      }
+    }
+    sessionStorage.setItem("phoenix.controlPlane.token", state.token);
+    sessionStorage.setItem("phoenix.controlPlane.operatorMode", state.operatorMode ? "1" : "0");
+    sessionStorage.setItem("phoenix.controlPlane.temporarySession", state.temporarySession ? "1" : "0");
     await api("/v1/control-plane/health");
+    if (state.operatorMode) state.me = await api("/v1/control-plane/operator/me");
     await issueCsrf();
   } catch (error) {
     sessionStorage.removeItem("phoenix.controlPlane.token"); sessionStorage.removeItem("phoenix.controlPlane.csrf");
-    state.token = ""; state.csrf = "";
-    text("login-error", error.message === "unauthorized" ? "The administrator token was rejected." : "The local API is unavailable.");
+    sessionStorage.removeItem("phoenix.controlPlane.operatorMode"); sessionStorage.removeItem("phoenix.controlPlane.temporarySession");
+    state.token = ""; state.csrf = ""; state.me = null; state.operatorMode = false; state.temporarySession = false;
+    text("login-error", error.message === "unauthorized" ? "The operator credential was rejected." : "The local API is unavailable.");
     return;
   }
   setConnected(true, "Connected");
@@ -303,21 +456,30 @@ async function connect(token) {
   state.eventLoop = eventLoop();
 }
 
-function disconnect(reason = "Disconnected") {
+async function disconnect(reason = "Disconnected") {
   state.connected = false;
   if (state.refreshTimer) window.clearInterval(state.refreshTimer);
-  state.refreshTimer = null; state.cursor = 0; state.token = ""; state.csrf = ""; state.operations = {};
+  if (state.operatorMode && state.token) {
+    try { await request("/v1/control-plane/operator/logout", { method: "POST" }); } catch (_) { /* local cleanup still wins */ }
+  }
+  state.refreshTimer = null; state.cursor = 0; state.token = ""; state.csrf = ""; state.operations = {}; state.me = null; state.operatorMode = false; state.temporarySession = false;
   sessionStorage.removeItem("phoenix.controlPlane.token");
   sessionStorage.removeItem("phoenix.controlPlane.csrf");
+  sessionStorage.removeItem("phoenix.controlPlane.operatorMode");
+  sessionStorage.removeItem("phoenix.controlPlane.temporarySession");
   byId("token").value = "";
+  text("operator-identity", "Anonymous");
   setConnected(false, reason);
 }
 
+
 byId("login-form").addEventListener("submit", (event) => { event.preventDefault(); connect(byId("token").value); });
 byId("create-job-form").addEventListener("submit", createJob);
+byId("create-operator-form").addEventListener("submit", createOperator);
+byId("history-operator").addEventListener("change", refresh);
 byId("refresh").addEventListener("click", refresh);
 byId("disconnect").addEventListener("click", () => disconnect());
 window.addEventListener("pagehide", () => { state.connected = false; });
 
-if (state.token) connect(state.token);
+if (state.token) connect(state.token, state.temporarySession);
 else setConnected(false, "Disconnected");

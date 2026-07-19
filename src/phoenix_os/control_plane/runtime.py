@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from phoenix_os.capabilities import CapabilityRegistry
 from phoenix_os.control_plane.auth import (
     AdminTokenAuthenticator,
+    ControlPlaneAuthenticator,
     ControlPlaneCommandAuthorizer,
 )
 from phoenix_os.control_plane.command_api import ControlPlaneCommandApi
@@ -45,6 +46,22 @@ from phoenix_os.control_plane.journal_retention import (
     ControlPlaneCommandRetentionPolicy,
     ControlPlaneCommandRetentionService,
     ControlPlaneCommandRetentionWorker,
+)
+from phoenix_os.control_plane.operator_api import ControlPlaneOperatorApi
+from phoenix_os.control_plane.operator_authentication import ControlPlaneOperatorAuthenticator
+from phoenix_os.control_plane.operator_contracts import (
+    ControlPlaneOperatorRecord,
+    ControlPlaneOperatorRegistry,
+)
+from phoenix_os.control_plane.operator_http import (
+    ControlPlaneOperatorHttpAdapter,
+    ControlPlaneOperatorSessionAuthenticator,
+)
+from phoenix_os.control_plane.operator_management import ControlPlaneOperatorManager
+from phoenix_os.control_plane.operator_sessions import (
+    ControlPlaneOperatorAccessService,
+    ControlPlaneOperatorLoginRateLimiter,
+    InMemoryControlPlaneOperatorSessionStore,
 )
 from phoenix_os.control_plane.protection import ControlPlaneCommandProtector
 from phoenix_os.control_plane.service import ControlPlaneService
@@ -109,6 +126,32 @@ class _CommandJournalOwner:
         await self._repository.close()
 
 
+class _OperatorRegistryOwner:
+    """Bootstrap at most one maintainer and own the registry adapter lifecycle."""
+
+    def __init__(
+        self,
+        registry: ControlPlaneOperatorRegistry,
+        bootstrap: ControlPlaneOperatorRecord | None,
+    ) -> None:
+        self._registry = registry
+        self._bootstrap = bootstrap
+
+    async def start(self, context: object) -> None:
+        del context
+        if self._registry.closed:
+            raise RuntimeError("control plane operator registry is closed")
+        if self._bootstrap is None:
+            return
+        existing = await self._registry.get_by_username(self._bootstrap.username)
+        if existing is None:
+            await self._registry.add(self._bootstrap)
+
+    async def stop(self, context: object) -> None:
+        del context
+        await self._registry.close()
+
+
 @dataclass(frozen=True, slots=True)
 class ControlPlaneRuntimeStack:
     """Control-plane services constructed before the Runtime self-reference exists."""
@@ -122,6 +165,10 @@ class ControlPlaneRuntimeStack:
     events: ControlPlaneEventStream
     commands: ControlPlaneCommandApi
     http: ControlPlaneHttpServer
+    operator_registry: ControlPlaneOperatorRegistry | None
+    operator_registry_owner: _OperatorRegistryOwner | None
+    operator_access: ControlPlaneOperatorAccessService | None
+    operator_api: ControlPlaneOperatorApi | None
     _runtime: _RuntimeSnapshotProxy
 
     @classmethod
@@ -130,7 +177,9 @@ class ControlPlaneRuntimeStack:
         *,
         event_bus: EventBus,
         capabilities: CapabilityRegistry,
-        authenticator: AdminTokenAuthenticator,
+        authenticator: AdminTokenAuthenticator | None = None,
+        operator_registry: ControlPlaneOperatorRegistry | None = None,
+        bootstrap_operator: ControlPlaneOperatorRecord | None = None,
         jobs: JobSnapshotSource | None = None,
         job_records: JobRecordSource | None = None,
         workflows: WorkflowSnapshotSource | None = None,
@@ -148,6 +197,13 @@ class ControlPlaneRuntimeStack:
         command_retention_policy: ControlPlaneCommandRetentionPolicy | None = None,
         command_retention_poll_interval: float = 3600.0,
     ) -> ControlPlaneRuntimeStack:
+        if (authenticator is None) == (operator_registry is None):
+            raise ValueError(
+                "control plane requires exactly one legacy authenticator or operator registry"
+            )
+        if bootstrap_operator is not None and operator_registry is None:
+            raise ValueError("bootstrap operator requires an operator registry")
+
         runtime = _RuntimeSnapshotProxy()
         journal = command_journal or InMemoryControlPlaneCommandJournalRepository()
         service = ControlPlaneService(
@@ -166,9 +222,47 @@ class ControlPlaneRuntimeStack:
         authorizer = ControlPlaneCommandAuthorizer()
         csrf = ControlPlaneCsrfProtector(secrets.token_bytes(32))
         confirmations = InMemoryControlPlaneConfirmationService(secrets.token_bytes(32))
+
+        operator_owner: _OperatorRegistryOwner | None = None
+        operator_access: ControlPlaneOperatorAccessService | None = None
+        operator_api: ControlPlaneOperatorApi | None = None
+        operator_http: ControlPlaneOperatorHttpAdapter | None = None
+        resolved_authenticator: ControlPlaneAuthenticator
+        default_principal: str
+        if operator_registry is not None:
+            operator_owner = _OperatorRegistryOwner(operator_registry, bootstrap_operator)
+            operator_access = ControlPlaneOperatorAccessService(
+                registry=operator_registry,
+                authenticator=ControlPlaneOperatorAuthenticator(operator_registry),
+                sessions=InMemoryControlPlaneOperatorSessionStore(),
+                rate_limiter=ControlPlaneOperatorLoginRateLimiter(),
+                events=event_bus,
+            )
+            operator_api = ControlPlaneOperatorApi(
+                registry=operator_registry,
+                manager=ControlPlaneOperatorManager(operator_registry),
+                access=operator_access,
+                events=event_bus,
+            )
+            operator_http = ControlPlaneOperatorHttpAdapter(
+                api=operator_api,
+                access=operator_access,
+                csrf=csrf,
+            )
+            resolved_authenticator = ControlPlaneOperatorSessionAuthenticator(operator_access)
+            default_principal = (
+                bootstrap_operator.username
+                if bootstrap_operator is not None
+                else "phoenix.operator"
+            )
+        else:
+            assert authenticator is not None
+            resolved_authenticator = authenticator
+            default_principal = authenticator.principal.name
+
         idempotency = JournalControlPlaneIdempotencyStore(
             journal,
-            principal=authenticator.principal.name,
+            principal=default_principal,
         )
         protector = ControlPlaneCommandProtector(csrf, confirmations)
         job_handler = (
@@ -220,11 +314,12 @@ class ControlPlaneRuntimeStack:
         )
         http = ControlPlaneHttpServer(
             service,
-            authenticator,
+            resolved_authenticator,
             config=http_config,
             event_stream=event_stream,
             command_api=command_api,
             command_history=history,
+            operator_http=operator_http,
         )
         return cls(
             service,
@@ -236,6 +331,10 @@ class ControlPlaneRuntimeStack:
             event_stream,
             command_api,
             http,
+            operator_registry,
+            operator_owner,
+            operator_access,
+            operator_api,
             runtime,
         )
 

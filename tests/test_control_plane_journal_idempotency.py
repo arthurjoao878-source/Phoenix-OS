@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -309,3 +310,57 @@ async def test_journal_idempotency_replays_from_state_store_after_restart() -> N
     assert replay.receipt.command_id == intent.id
     assert replay.receipt.status is ControlPlaneCommandStatus.SUCCEEDED
     assert replay.receipt.result_code == "job.created"
+
+
+@pytest.mark.asyncio
+async def test_journal_principal_scopes_are_isolated_across_async_tasks() -> None:
+    repository = InMemoryControlPlaneCommandJournalRepository()
+    store = JournalControlPlaneIdempotencyStore(repository, principal="fallback")
+    alice = _intent(key="journal-principal-alice", command_id=UUID(int=901))
+    bob = _intent(key="journal-principal-bob", command_id=UUID(int=902))
+
+    async def reserve(principal: str, intent: ControlPlaneCommandIntent) -> None:
+        with store.principal_scope(principal):
+            await asyncio.sleep(0)
+            await store.reserve(intent)
+
+    await asyncio.gather(reserve("alice", alice), reserve("bob", bob))
+
+    alice_record = await repository.get(alice.id)
+    bob_record = await repository.get(bob.id)
+    assert alice_record is not None and alice_record.principal == "alice"
+    assert bob_record is not None and bob_record.principal == "bob"
+
+
+@pytest.mark.asyncio
+async def test_journal_principal_scope_restores_default_after_exit() -> None:
+    repository = InMemoryControlPlaneCommandJournalRepository()
+    store = JournalControlPlaneIdempotencyStore(repository, principal="fallback")
+    scoped = _intent(key="journal-principal-scoped", command_id=UUID(int=903))
+    default = _intent(key="journal-principal-default", command_id=UUID(int=904))
+
+    with store.principal_scope("alice"):
+        await store.reserve(scoped)
+    await store.reserve(default)
+
+    scoped_record = await repository.get(scoped.id)
+    default_record = await repository.get(default.id)
+    assert scoped_record is not None and scoped_record.principal == "alice"
+    assert default_record is not None and default_record.principal == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_journal_rejects_cross_operator_idempotency_replay() -> None:
+    repository = InMemoryControlPlaneCommandJournalRepository()
+    store = JournalControlPlaneIdempotencyStore(repository, principal="fallback")
+    intent = _intent(key="journal-cross-operator", command_id=UUID(int=905))
+
+    with store.principal_scope("alice"):
+        await store.reserve(intent)
+    with store.principal_scope("bob"):
+        with pytest.raises(ControlPlaneIdempotencyConflictError):
+            await store.reserve(intent)
+        assert await store.get(intent.idempotency_key) is None
+
+    record = await repository.get(intent.id)
+    assert record is not None and record.principal == "alice"

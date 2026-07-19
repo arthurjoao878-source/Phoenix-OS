@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 
 from phoenix_os.control_plane.commands import (
@@ -43,20 +45,17 @@ class JournalControlPlaneIdempotencyStore:
         self,
         repository: ControlPlaneCommandJournalRepository,
         *,
-        principal: str,
+        principal: str = "phoenix.dashboard",
         clock: JournalIdempotencyClock = _utc_now,
     ) -> None:
-        normalized_principal = principal.strip()
-        if not normalized_principal:
-            raise ValueError("journal idempotency principal must not be blank")
-        if len(normalized_principal) > 128:
-            raise ValueError("journal idempotency principal is too long")
-        if any(ord(character) < 32 or ord(character) == 127 for character in normalized_principal):
-            raise ValueError("journal idempotency principal must not contain control characters")
+        normalized_principal = _normalize_principal(principal)
         if not callable(clock):
             raise TypeError("clock must be callable")
         self._repository = repository
-        self._principal = normalized_principal
+        self._principal = ContextVar(
+            "phoenix_control_plane_command_principal",
+            default=normalized_principal,
+        )
         self._clock = clock
         self._closed = False
         self._close_lock = asyncio.Lock()
@@ -64,6 +63,17 @@ class JournalControlPlaneIdempotencyStore:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @contextmanager
+    def principal_scope(self, principal: str) -> Iterator[None]:
+        """Bind one authenticated principal to journal writes in this async context."""
+
+        normalized = _normalize_principal(principal)
+        token = self._principal.set(normalized)
+        try:
+            yield
+        finally:
+            self._principal.reset(token)
 
     async def reserve(
         self,
@@ -81,7 +91,7 @@ class JournalControlPlaneIdempotencyStore:
 
         record = ControlPlaneCommandJournalRecord.from_intent(
             intent,
-            principal=self._principal,
+            principal=self._principal.get(),
         )
         try:
             await self._repository.add(record)
@@ -157,7 +167,9 @@ class JournalControlPlaneIdempotencyStore:
     async def get(self, key: IdempotencyKey) -> ControlPlaneCommandReceipt | None:
         self._require_open()
         record = await self._repository.get_by_idempotency_digest(key.digest.hex())
-        return None if record is None else _record_to_receipt(record)
+        if record is None or record.principal != self._principal.get():
+            return None
+        return _record_to_receipt(record)
 
     async def snapshot(self) -> ControlPlaneIdempotencySnapshot:
         snapshot = await self._repository.snapshot()
@@ -245,13 +257,14 @@ class JournalControlPlaneIdempotencyStore:
             ) from exception
         return _record_to_receipt(updated)
 
-    @staticmethod
     def _require_matching(
+        self,
         record: ControlPlaneCommandJournalRecord,
         intent: ControlPlaneCommandIntent,
     ) -> None:
         if (
-            record.idempotency_digest != intent.idempotency_key.digest.hex()
+            record.principal != self._principal.get()
+            or record.idempotency_digest != intent.idempotency_key.digest.hex()
             or record.fingerprint != intent.fingerprint
             or record.action is not intent.action
             or record.target != intent.target
@@ -263,6 +276,17 @@ class JournalControlPlaneIdempotencyStore:
     def _require_open(self) -> None:
         if self._closed:
             raise ControlPlaneIdempotencyStoreClosedError("idempotency store is closed")
+
+
+def _normalize_principal(principal: str) -> str:
+    normalized = principal.strip()
+    if not normalized:
+        raise ValueError("journal idempotency principal must not be blank")
+    if len(normalized) > 128:
+        raise ValueError("journal idempotency principal is too long")
+    if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
+        raise ValueError("journal idempotency principal must not contain control characters")
+    return normalized
 
 
 def _record_to_receipt(record: ControlPlaneCommandJournalRecord) -> ControlPlaneCommandReceipt:

@@ -5,9 +5,10 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, cast
+from uuid import uuid4
 
 from phoenix_os.capabilities import CapabilityRegistry
 from phoenix_os.configuration.contracts import Configuration
@@ -34,6 +35,8 @@ if TYPE_CHECKING:
         ControlPlaneCommandRetentionPolicy,
         ControlPlaneEventStreamConfig,
         ControlPlaneHttpConfig,
+        ControlPlaneOperatorRegistry,
+        ControlPlaneOperatorToken,
         JobRecordSource,
     )
     from phoenix_os.identity import AuthenticationManager
@@ -57,6 +60,9 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "control_plane.command-history",
         "control_plane.command-recovery",
         "control_plane.command-retention",
+        "control_plane.operator-registry",
+        "control_plane.operator-access",
+        "control_plane.operators",
         "control_plane.http",
         "observability",
         "plugins",
@@ -244,6 +250,12 @@ class RuntimeAssembler:
         workflow_poll_interval: float = 1.0,
         workflow_worker: str = "phoenix.workflows",
         control_plane_authenticator: AdminTokenAuthenticator | None = None,
+        control_plane_operator_registry: ControlPlaneOperatorRegistry | None = None,
+        control_plane_operator_token: ControlPlaneOperatorToken | None = None,
+        control_plane_operator_username: str = "phoenix-maintainer",
+        control_plane_operator_display_name: str = "Phoenix Maintainer",
+        control_plane_operator_role: str = "maintainer",
+        control_plane_operator_capacity: int = 10_000,
         control_plane_http_config: ControlPlaneHttpConfig | None = None,
         control_plane_event_config: ControlPlaneEventStreamConfig | None = None,
         control_plane_job_records: JobRecordSource | None = None,
@@ -278,6 +290,12 @@ class RuntimeAssembler:
         self._workflow_poll_interval = workflow_poll_interval
         self._workflow_worker = workflow_worker
         self._control_plane_authenticator = control_plane_authenticator
+        self._control_plane_operator_registry = control_plane_operator_registry
+        self._control_plane_operator_token = control_plane_operator_token
+        self._control_plane_operator_username = control_plane_operator_username
+        self._control_plane_operator_display_name = control_plane_operator_display_name
+        self._control_plane_operator_role = control_plane_operator_role
+        self._control_plane_operator_capacity = control_plane_operator_capacity
         self._control_plane_http_config = control_plane_http_config
         self._control_plane_event_config = control_plane_event_config
         self._control_plane_job_records = control_plane_job_records
@@ -293,7 +311,13 @@ class RuntimeAssembler:
         )
         if workflows is not None and jobs is None:
             raise ValueError("workflow orchestration requires a Runtime-owned job scheduler")
-        if control_plane_authenticator is None and any(
+        operator_mode = (
+            control_plane_operator_registry is not None or control_plane_operator_token is not None
+        )
+        if control_plane_authenticator is not None and operator_mode:
+            raise ValueError("legacy and operator control-plane authentication are exclusive")
+        control_plane_enabled = control_plane_authenticator is not None or operator_mode
+        if not control_plane_enabled and any(
             item is not None
             for item in (
                 control_plane_http_config,
@@ -303,7 +327,9 @@ class RuntimeAssembler:
                 control_plane_command_retention_policy,
             )
         ):
-            raise ValueError("control plane options require an authenticator")
+            raise ValueError("control plane options require an authenticator or operator registry")
+        if control_plane_operator_capacity <= 0 or control_plane_operator_capacity > 10_000:
+            raise ValueError("control-plane operator capacity is outside supported bounds")
         self._observe_events = observe_events
         self._journal_events = journal_events
         self._composer = ServiceComposer(definitions)
@@ -406,22 +432,37 @@ class RuntimeAssembler:
             )
 
         control_plane_stack = None
-        if self._control_plane_authenticator is not None:
+        operator_mode = (
+            self._control_plane_operator_registry is not None
+            or self._control_plane_operator_token is not None
+        )
+        if self._control_plane_authenticator is not None or operator_mode:
             from phoenix_os.control_plane.journal_memory import (
                 InMemoryControlPlaneCommandJournalRepository,
             )
             from phoenix_os.control_plane.journal_state import (
                 StateControlPlaneCommandJournalRepository,
             )
+            from phoenix_os.control_plane.operator_contracts import (
+                ControlPlaneOperatorRecord,
+                ControlPlaneOperatorRole,
+            )
+            from phoenix_os.control_plane.operator_memory import (
+                InMemoryControlPlaneOperatorRegistry,
+            )
+            from phoenix_os.control_plane.operator_state import (
+                StateControlPlaneOperatorRegistry,
+            )
             from phoenix_os.control_plane.runtime import ControlPlaneRuntimeStack
+
+            state_store: StateStore | None
+            if isinstance(self._state, StateStoreRegistry):
+                state_store = None if self._state.default_name is None else self._state.store()
+            else:
+                state_store = self._state
 
             command_journal = self._control_plane_command_journal
             if command_journal is None:
-                state_store: StateStore | None
-                if isinstance(self._state, StateStoreRegistry):
-                    state_store = None if self._state.default_name is None else self._state.store()
-                else:
-                    state_store = self._state
                 command_journal = (
                     InMemoryControlPlaneCommandJournalRepository(
                         capacity=self._control_plane_command_journal_capacity
@@ -433,10 +474,38 @@ class RuntimeAssembler:
                     )
                 )
 
+            operator_registry = self._control_plane_operator_registry
+            bootstrap_operator = None
+            if operator_mode:
+                if operator_registry is None:
+                    operator_registry = (
+                        InMemoryControlPlaneOperatorRegistry(
+                            capacity=self._control_plane_operator_capacity
+                        )
+                        if state_store is None
+                        else StateControlPlaneOperatorRegistry(
+                            state_store,
+                            capacity=self._control_plane_operator_capacity,
+                        )
+                    )
+                if self._control_plane_operator_token is not None:
+                    now = datetime.now(UTC)
+                    bootstrap_operator = ControlPlaneOperatorRecord(
+                        id=uuid4(),
+                        username=self._control_plane_operator_username,
+                        display_name=self._control_plane_operator_display_name,
+                        role=ControlPlaneOperatorRole(self._control_plane_operator_role),
+                        token_digest=self._control_plane_operator_token.digest,
+                        created_at=now,
+                        updated_at=now,
+                    )
+
             control_plane_stack = ControlPlaneRuntimeStack.create(
                 event_bus=self._events,
                 capabilities=self._capabilities,
                 authenticator=self._control_plane_authenticator,
+                operator_registry=operator_registry,
+                bootstrap_operator=bootstrap_operator,
                 jobs=self._jobs,
                 job_records=self._control_plane_job_records,
                 workflows=self._workflows,
@@ -464,6 +533,30 @@ class RuntimeAssembler:
             custom_services["control_plane.events"] = control_plane_stack.events
             custom_services["control_plane.commands"] = control_plane_stack.commands
             custom_services["control_plane.http"] = control_plane_stack.http
+            if control_plane_stack.operator_registry is not None:
+                custom_services["control_plane.operator-registry"] = (
+                    control_plane_stack.operator_registry
+                )
+            if control_plane_stack.operator_access is not None:
+                custom_services["control_plane.operator-access"] = (
+                    control_plane_stack.operator_access
+                )
+            if control_plane_stack.operator_api is not None:
+                custom_services["control_plane.operators"] = control_plane_stack.operator_api
+            if control_plane_stack.operator_registry_owner is not None:
+                components.append(
+                    ComponentSpec(
+                        "control_plane.operator-registry",
+                        control_plane_stack.operator_registry_owner,
+                    )
+                )
+            if control_plane_stack.operator_access is not None:
+                components.append(
+                    ComponentSpec(
+                        "control_plane.operator-access",
+                        control_plane_stack.operator_access,
+                    )
+                )
             components.append(
                 ComponentSpec("control_plane.command-journal", control_plane_stack.journal_owner)
             )

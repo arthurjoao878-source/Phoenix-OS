@@ -99,3 +99,63 @@ class ControlPlaneCommandRecoveryWorkerStateError(PhoenixControlPlaneError):
 
 class ControlPlaneCommandRetentionWorkerStateError(PhoenixControlPlaneError):
     """Raised when the one-shot command retention worker lifecycle is misused."""
+
+
+class ControlPlaneOperatorAlreadyExistsError(PhoenixControlPlaneError):
+    """Raised when an operator id, username, or credential digest is duplicated."""
+
+
+class ControlPlaneOperatorNotFoundError(PhoenixControlPlaneError):
+    """Raised when a requested local operator does not exist."""
+
+
+class ControlPlaneOperatorConflictError(PhoenixControlPlaneError):
+    """Raised for stale revisions or invalid operator replacement state."""
+
+
+class ControlPlaneOperatorStateError(ControlPlaneOperatorConflictError):
+    """Raised when an operator lifecycle transition is not permitted."""
+
+
+class ControlPlaneOperatorCapacityError(PhoenixControlPlaneError):
+    """Raised when the bounded local operator registry is full."""
+
+
+class ControlPlaneOperatorRegistryClosedError(PhoenixControlPlaneError):
+    """Raised when a closed local operator registry receives an operation."""
+
+
+class ControlPlaneOperatorPersistenceError(PhoenixControlPlaneError):
+    """Raised when the durable operator registry cannot complete State Store work."""
+
+
+class ControlPlaneOperatorCorruptionError(ControlPlaneOperatorPersistenceError):
+    """Raised when persisted operator records or indexes fail strict validation."""
+
+
+class ControlPlaneOperatorSchemaError(ControlPlaneOperatorCorruptionError):
+    """Raised when persisted operator data uses an unsupported schema."""
+
+
+class ControlPlaneOperatorAccessRejectedError(PhoenixControlPlaneError):
+    """Raised with one generic message for rejected operator login attempts."""
+
+
+class ControlPlaneOperatorSessionConflictError(PhoenixControlPlaneError):
+    """Raised for duplicated, missing, or stale operator session mutations."""
+
+
+class ControlPlaneOperatorSessionCapacityError(PhoenixControlPlaneError):
+    """Raised when bounded operator session capacity is exhausted."""
+
+
+class ControlPlaneOperatorSessionStoreClosedError(PhoenixControlPlaneError):
+    """Raised when a closed operator session component receives work."""
+
+
+class ControlPlaneOperatorRateLimitCapacityError(PhoenixControlPlaneError):
+    """Raised when bounded login rate-limit tracking capacity is exhausted."""
+
+
+class ControlPlaneOperatorPermissionDeniedError(PhoenixControlPlaneError):
+    """Raised when an operator lacks an exact local access-management permission."""
