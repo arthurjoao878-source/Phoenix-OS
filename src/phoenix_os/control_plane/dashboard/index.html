@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Phoenix OS Control Plane</title>
+  <link rel="icon" href="/dashboard/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/dashboard/app.css">
+  <script src="/dashboard/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Phoenix OS</p>
+      <h1>Control Plane</h1>
+    </div>
+    <div class="connection" aria-live="polite">
+      <span id="connection-dot" class="status-dot status-offline"></span>
+      <span id="connection-label">Disconnected</span>
+    </div>
+  </header>
+
+  <main>
+    <section id="login-panel" class="login-panel" aria-labelledby="login-title">
+      <div>
+        <p class="eyebrow">Local administrator access</p>
+        <h2 id="login-title">Connect to the dashboard</h2>
+        <p>The token stays in this browser tab and is sent only to the loopback API.</p>
+      </div>
+      <form id="login-form" autocomplete="off">
+        <label for="token">Administrator token</label>
+        <div class="token-row">
+          <input id="token" name="token" type="password" minlength="24" required spellcheck="false" autocomplete="off">
+          <button type="submit">Connect</button>
+        </div>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="dashboard" class="dashboard hidden" aria-live="polite">
+      <nav class="actions" aria-label="Dashboard actions">
+        <button id="refresh" type="button">Refresh now</button>
+        <button id="disconnect" type="button" class="secondary">Disconnect</button>
+        <span id="last-updated">Not updated</span>
+      </nav>
+
+      <section class="hero-grid" aria-label="System overview">
+        <article class="card health-card">
+          <p class="label">System health</p>
+          <div class="metric-row"><strong id="health">Unknown</strong><span id="runtime-state" class="pill">unknown</span></div>
+          <p id="runtime-id" class="muted">Runtime unavailable</p>
+        </article>
+        <article class="card">
+          <p class="label">Jobs</p>
+          <strong id="jobs-total" class="metric">0</strong>
+          <p id="jobs-summary" class="muted">No data</p>
+        </article>
+        <article class="card">
+          <p class="label">Workflows</p>
+          <strong id="workflows-total" class="metric">0</strong>
+          <p id="workflows-summary" class="muted">No data</p>
+        </article>
+        <article class="card">
+          <p class="label">Audit records</p>
+          <strong id="audit-total" class="metric">0</strong>
+          <p id="audit-summary" class="muted">Unavailable</p>
+        </article>
+      </section>
+
+      <section class="panel-grid">
+        <article class="panel wide">
+          <div class="panel-heading"><div><p class="eyebrow">Execution</p><h2>Recent jobs</h2></div><span id="jobs-page" class="muted"></span></div>
+          <div class="table-wrap"><table><thead><tr><th>Capability</th><th>Status</th><th>Attempts</th><th>Next run</th></tr></thead><tbody id="jobs-table"></tbody></table></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-heading"><div><p class="eyebrow">Orchestration</p><h2>Recent workflows</h2></div><span id="workflows-page" class="muted"></span></div>
+          <div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th>Revision</th><th>Steps</th></tr></thead><tbody id="workflows-table"></tbody></table></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">Registry</p><h2>Capabilities</h2></div></div>
+          <ul id="capabilities-list" class="stack-list"></ul>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">Extensions</p><h2>Plugins</h2></div></div>
+          <ul id="plugins-list" class="stack-list"></ul>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-heading"><div><p class="eyebrow">Live feed</p><h2>Recent events</h2></div><span id="event-status" class="muted">Waiting</span></div>
+          <ol id="events-list" class="event-list"></ol>
+        </article>
+      </section>
+    </section>
+  </main>
+
+  <footer>Loopback-only · Read-only · Phoenix OS v0.17.0</footer>
+</body>
+</html>

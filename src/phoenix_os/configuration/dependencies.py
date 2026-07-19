@@ -28,6 +28,12 @@ from phoenix_os.state import StateStore, StateStoreRegistry
 
 if TYPE_CHECKING:
     from phoenix_os.audit import AuditLedger
+    from phoenix_os.control_plane import (
+        AdminTokenAuthenticator,
+        ControlPlaneEventStreamConfig,
+        ControlPlaneHttpConfig,
+        JobRecordSource,
+    )
     from phoenix_os.identity import AuthenticationManager
     from phoenix_os.jobs import JobScheduler
     from phoenix_os.secrets import SecretsManager
@@ -42,6 +48,9 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "audit",
         "capabilities",
         "configuration",
+        "control_plane",
+        "control_plane.events",
+        "control_plane.http",
         "observability",
         "plugins",
         "policy",
@@ -227,6 +236,10 @@ class RuntimeAssembler:
         workflows: WorkflowOrchestrator | None = None,
         workflow_poll_interval: float = 1.0,
         workflow_worker: str = "phoenix.workflows",
+        control_plane_authenticator: AdminTokenAuthenticator | None = None,
+        control_plane_http_config: ControlPlaneHttpConfig | None = None,
+        control_plane_event_config: ControlPlaneEventStreamConfig | None = None,
+        control_plane_job_records: JobRecordSource | None = None,
         observe_events: bool = True,
         journal_events: bool = True,
         metadata: Mapping[str, str] | None = None,
@@ -251,8 +264,21 @@ class RuntimeAssembler:
         self._workflows = workflows
         self._workflow_poll_interval = workflow_poll_interval
         self._workflow_worker = workflow_worker
+        self._control_plane_authenticator = control_plane_authenticator
+        self._control_plane_http_config = control_plane_http_config
+        self._control_plane_event_config = control_plane_event_config
+        self._control_plane_job_records = control_plane_job_records
         if workflows is not None and jobs is None:
             raise ValueError("workflow orchestration requires a Runtime-owned job scheduler")
+        if control_plane_authenticator is None and any(
+            item is not None
+            for item in (
+                control_plane_http_config,
+                control_plane_event_config,
+                control_plane_job_records,
+            )
+        ):
+            raise ValueError("control plane options require an authenticator")
         self._observe_events = observe_events
         self._journal_events = journal_events
         self._composer = ServiceComposer(definitions)
@@ -331,35 +357,60 @@ class RuntimeAssembler:
         components.extend(container.components)
         if self._plugins is not None:
             components.append(ComponentSpec("plugins", self._plugins))
+
+        job_worker_service = None
         if self._jobs is not None:
             from phoenix_os.jobs import JobWorker
 
-            components.append(
-                ComponentSpec(
-                    "jobs",
-                    JobWorker(
-                        self._jobs,
-                        poll_interval=self._job_poll_interval,
-                        lease_ttl=self._job_lease_ttl,
-                        batch_size=self._job_batch_size,
-                        worker=self._job_worker,
-                    ),
-                )
+            job_worker_service = JobWorker(
+                self._jobs,
+                poll_interval=self._job_poll_interval,
+                lease_ttl=self._job_lease_ttl,
+                batch_size=self._job_batch_size,
+                worker=self._job_worker,
             )
+
+        workflow_worker_service = None
         if self._workflows is not None:
             from phoenix_os.workflows import WorkflowWorker
 
-            components.append(
-                ComponentSpec(
-                    "workflows",
-                    WorkflowWorker(
-                        self._workflows,
-                        poll_interval=self._workflow_poll_interval,
-                        worker=self._workflow_worker,
-                    ),
-                )
+            workflow_worker_service = WorkflowWorker(
+                self._workflows,
+                poll_interval=self._workflow_poll_interval,
+                worker=self._workflow_worker,
             )
-        return PhoenixRuntime(
+
+        control_plane_stack = None
+        if self._control_plane_authenticator is not None:
+            from phoenix_os.control_plane.runtime import ControlPlaneRuntimeStack
+
+            control_plane_stack = ControlPlaneRuntimeStack.create(
+                event_bus=self._events,
+                capabilities=self._capabilities,
+                authenticator=self._control_plane_authenticator,
+                jobs=self._jobs,
+                job_records=self._control_plane_job_records,
+                workflows=self._workflows,
+                plugins=self._plugins,
+                audit=self._audit,
+                job_worker=job_worker_service,
+                workflow_worker=workflow_worker_service,
+                http_config=self._control_plane_http_config,
+                event_config=self._control_plane_event_config,
+            )
+            custom_services["control_plane"] = control_plane_stack.service
+            custom_services["control_plane.events"] = control_plane_stack.events
+            custom_services["control_plane.http"] = control_plane_stack.http
+            components.append(ComponentSpec("control_plane.events", control_plane_stack.events))
+
+        if job_worker_service is not None:
+            components.append(ComponentSpec("jobs", job_worker_service))
+        if workflow_worker_service is not None:
+            components.append(ComponentSpec("workflows", workflow_worker_service))
+        if control_plane_stack is not None:
+            components.append(ComponentSpec("control_plane.http", control_plane_stack.http))
+
+        runtime = PhoenixRuntime(
             kernel=self._kernel,
             events=self._events,
             capabilities=self._capabilities,
@@ -368,3 +419,6 @@ class RuntimeAssembler:
             metadata=self._metadata,
             source=self._source,
         )
+        if control_plane_stack is not None:
+            control_plane_stack.bind_runtime(runtime)
+        return runtime

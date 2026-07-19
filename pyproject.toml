@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "phoenix-os"
-version = "0.16.0"
-description = "A deterministic asynchronous runtime with durable jobs and workflow graphs."
+version = "0.17.0"
+description = "A deterministic asynchronous runtime with durable orchestration and a secure local dashboard."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
