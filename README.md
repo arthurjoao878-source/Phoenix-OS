@@ -1,7 +1,7 @@
 # Phoenix OS
 
-Phoenix OS is an experimental, headless orchestration foundation for Python 3.12+.
-Version `0.16.0` implements sixteen accepted specifications:
+Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
+Version `0.17.0` implements seventeen accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -36,10 +36,13 @@ Version `0.16.0` implements sixteen accepted specifications:
 - **RFC-0016 — Durable Workflow Graphs and Orchestration:** immutable DAG definitions, deterministic
   fan-out/fan-in planning, durable job-backed steps, restart recovery, failure propagation, and
   Runtime-owned reconciliation.
+- **RFC-0017 — Dashboard Control Plane and Read-Only API:** allowlisted snapshots, authenticated
+  loopback HTTP, paginated operational views, bounded event streaming, packaged static assets, and
+  Runtime-owned dashboard lifecycle.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
-queue broker, audit signature provider, remote audit archive, telemetry vendor, UI, or
+queue broker, audit signature provider, remote audit archive, telemetry vendor, hosted control plane, remote administration, or
 operating-system automation. The
 standard-library SQLite adapter is a local reference implementation; stronger storage remains behind
 the State Store and Audit Store protocols. Other integrations belong behind capability providers,
@@ -67,6 +70,23 @@ On Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
+
+## Local dashboard example
+
+```powershell
+python .\examples\control_plane_dashboard.py
+```
+
+Open the printed loopback URL and enter the one-time administrator token. The dashboard serves only
+packaged HTML, CSS, JavaScript, and SVG assets; it loads no external scripts or fonts. All data
+requests remain authenticated with `control-plane.read`, use explicit serializers, and omit job
+arguments, workflow inputs and outputs, plugin metadata, audit bodies, Event Bus payloads, and
+secrets. The token is retained only in browser `sessionStorage` for the active tab.
+
+`RuntimeAssembler` can own `ControlPlaneEventStream` and `ControlPlaneHttpServer` by receiving an
+`AdminTokenAuthenticator`. The server accepts only literal loopback addresses. Static routes are
+public because they contain no operational data; every `/v1/control-plane/*` route remains
+authenticated and read-only.
 
 ## Durable workflow example
 
@@ -232,7 +252,7 @@ updated = await store.put(
 ```
 
 See `examples/` and `docs/` for complete contracts, configuration, dependency composition, Runtime
-integration, durable jobs, Runtime workers, authentication providers, sessions, secret references, leases, key providers, policy rules, security contexts, plugin manifests, dependency resolution, durable audit recovery, state transactions, snapshots, trace context, redaction, and architectural decisions.
+integration, the local dashboard, durable jobs, Runtime workers, authentication providers, sessions, secret references, leases, key providers, policy rules, security contexts, plugin manifests, dependency resolution, durable audit recovery, state transactions, snapshots, trace context, redaction, and architectural decisions.
 
 ## License
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0] - 2026-07-18
+
+### Added
+- Accepted RFC-0017 and ADR-0034/0035.
+- Versioned allowlisted control-plane snapshots and safe aggregate health.
+- SHA-256 administrator-token authentication with constant-time comparison.
+- Loopback-only bounded HTTP/1.1 read API with authenticated operational routes.
+- Paginated job, workflow, capability, plugin, and audit read models.
+- Bounded cursor-based Event Bus long polling with retention gaps and backpressure.
+- Packaged dependency-free dashboard assets with strict browser security headers.
+- RuntimeAssembler ownership, public API, executable example, migration guidance, and regression tests.
+
 ## [0.16.0] - 2026-07-18
 
 ### Added

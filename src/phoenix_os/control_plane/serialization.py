@@ -1,0 +1,265 @@
+"""Canonical JSON-safe serialization for dashboard snapshots and detail pages."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from phoenix_os.control_plane.contracts import (
+    AuditSummary,
+    CapabilityPage,
+    ControlPlaneSnapshot,
+    EventBatch,
+    JobPage,
+    PageInfo,
+    PluginPage,
+    WorkflowPage,
+    WorkflowSummary,
+)
+from phoenix_os.jobs import JobSchedulerSnapshot, JobWorkerSnapshot
+from phoenix_os.runtime import RuntimeSnapshot
+from phoenix_os.workflows import WorkflowWorkerSnapshot
+
+
+def snapshot_to_dict(snapshot: ControlPlaneSnapshot) -> dict[str, object]:
+    """Serialize only the bounded fields approved for control-plane clients."""
+
+    return {
+        "schema_version": snapshot.schema_version,
+        "generated_at": _timestamp(snapshot.generated_at),
+        "health": snapshot.health.value,
+        "runtime": _runtime(snapshot.runtime),
+        "jobs": _jobs(snapshot.jobs),
+        "workflows": _workflows(snapshot.workflows),
+        "job_worker": _job_worker(snapshot.job_worker),
+        "workflow_worker": _workflow_worker(snapshot.workflow_worker),
+    }
+
+
+def event_batch_to_dict(batch: EventBatch) -> dict[str, object]:
+    """Serialize safe event headers and cursor/backpressure diagnostics."""
+
+    return {
+        "schema_version": batch.schema_version,
+        "items": [
+            {
+                "sequence": item.sequence,
+                "id": str(item.id),
+                "name": item.name,
+                "source": item.source,
+                "occurred_at": _timestamp(item.occurred_at),
+                "correlation_id": item.correlation_id,
+                "causation_id": (None if item.causation_id is None else str(item.causation_id)),
+            }
+            for item in batch.items
+        ],
+        "cursor": batch.cursor,
+        "retention": {
+            "oldest_cursor": batch.oldest_cursor,
+            "latest_cursor": batch.latest_cursor,
+            "gap": batch.gap,
+            "dropped": batch.dropped,
+        },
+        "timed_out": batch.timed_out,
+    }
+
+
+def job_page_to_dict(page: JobPage) -> dict[str, object]:
+    return {
+        "items": [
+            {
+                "id": str(item.id),
+                "capability": item.capability,
+                "status": item.status.value,
+                "attempts": item.attempts,
+                "max_attempts": item.max_attempts,
+                "recurring": item.recurring,
+                "created_at": _timestamp(item.created_at),
+                "updated_at": _timestamp(item.updated_at),
+                "next_run_at": _timestamp(item.next_run_at),
+                "has_error": item.has_error,
+            }
+            for item in page.items
+        ],
+        "page": _page(page.page),
+    }
+
+
+def workflow_page_to_dict(page: WorkflowPage) -> dict[str, object]:
+    return {
+        "items": [
+            {
+                "id": str(item.id),
+                "name": item.name,
+                "version": item.version,
+                "status": item.status.value,
+                "revision": item.revision,
+                "created_at": _timestamp(item.created_at),
+                "updated_at": _timestamp(item.updated_at),
+                "finished_at": _optional_timestamp(item.finished_at),
+                "completed_steps": item.completed_steps,
+                "total_steps": item.total_steps,
+                "has_error": item.has_error,
+                "steps": [
+                    {
+                        "id": step.id,
+                        "status": step.status.value,
+                        "job_id": None if step.job_id is None else str(step.job_id),
+                        "started_at": _optional_timestamp(step.started_at),
+                        "finished_at": _optional_timestamp(step.finished_at),
+                        "has_error": step.has_error,
+                    }
+                    for step in item.steps
+                ],
+            }
+            for item in page.items
+        ],
+        "page": _page(page.page),
+    }
+
+
+def capability_page_to_dict(page: CapabilityPage) -> dict[str, object]:
+    return {
+        "items": [
+            {
+                "name": item.name,
+                "description": item.description,
+                "version": item.version,
+                "risk": item.risk.value,
+                "required_permissions": list(item.required_permissions),
+                "confirmation_required": item.confirmation_required,
+                "default_timeout": item.default_timeout,
+                "tags": list(item.tags),
+            }
+            for item in page.items
+        ],
+        "page": _page(page.page),
+    }
+
+
+def plugin_page_to_dict(page: PluginPage) -> dict[str, object]:
+    return {
+        "items": [
+            {
+                "plugin_id": item.plugin_id,
+                "name": item.name,
+                "version": item.version,
+                "api_version": item.api_version,
+                "status": item.status.value,
+                "dependencies": list(item.dependencies),
+                "permissions": list(item.permissions),
+                "exports": {
+                    "capabilities": item.capability_exports,
+                    "state_stores": item.state_store_exports,
+                    "services": item.service_exports,
+                },
+                "has_failure": item.has_failure,
+            }
+            for item in page.items
+        ],
+        "page": _page(page.page),
+    }
+
+
+def audit_summary_to_dict(summary: AuditSummary | None) -> dict[str, object]:
+    if summary is None:
+        return {"available": False}
+    return {
+        "available": True,
+        "closed": summary.closed,
+        "records": summary.records,
+        "head_sequence": summary.head_sequence,
+        "signed_records": summary.signed_records,
+        "appended": summary.appended,
+        "reads": summary.reads,
+        "verifications": summary.verifications,
+        "verification_failures": summary.verification_failures,
+        "denied_operations": summary.denied_operations,
+    }
+
+
+def _page(page: PageInfo) -> dict[str, object]:
+    return {
+        "offset": page.offset,
+        "limit": page.limit,
+        "returned": page.returned,
+        "total": page.total,
+        "next_offset": page.next_offset,
+    }
+
+
+def _runtime(snapshot: RuntimeSnapshot) -> dict[str, object]:
+    return {
+        "runtime_id": str(snapshot.runtime_id),
+        "state": snapshot.state.value,
+        "components": list(snapshot.components),
+        "active_components": list(snapshot.active_components),
+        "in_flight_requests": snapshot.in_flight_requests,
+        "created_at": _timestamp(snapshot.created_at),
+        "started_at": _optional_timestamp(snapshot.started_at),
+        "stopped_at": _optional_timestamp(snapshot.stopped_at),
+    }
+
+
+def _jobs(snapshot: JobSchedulerSnapshot) -> dict[str, object]:
+    return {
+        "closed": snapshot.closed,
+        "total": snapshot.jobs,
+        "scheduled": snapshot.scheduled,
+        "running": snapshot.running,
+        "retrying": snapshot.retrying,
+        "succeeded": snapshot.succeeded,
+        "cancelled": snapshot.cancelled,
+        "dead_letter": snapshot.dead_letter,
+        "runs": snapshot.runs,
+    }
+
+
+def _workflows(summary: WorkflowSummary) -> dict[str, object]:
+    return {
+        "total": summary.total,
+        "pending": summary.pending,
+        "running": summary.running,
+        "succeeded": summary.succeeded,
+        "failed": summary.failed,
+        "cancelled": summary.cancelled,
+    }
+
+
+def _job_worker(snapshot: JobWorkerSnapshot | None) -> dict[str, object] | None:
+    if snapshot is None:
+        return None
+    return {
+        "state": snapshot.state.value,
+        "worker": snapshot.worker,
+        "ticks": snapshot.ticks,
+        "runs": snapshot.runs,
+        "failures": snapshot.failures,
+        "last_tick_at": _optional_timestamp(snapshot.last_tick_at),
+        "last_error": snapshot.last_error,
+    }
+
+
+def _workflow_worker(
+    snapshot: WorkflowWorkerSnapshot | None,
+) -> dict[str, object] | None:
+    if snapshot is None:
+        return None
+    return {
+        "state": snapshot.state.value,
+        "worker": snapshot.worker,
+        "ticks": snapshot.ticks,
+        "workflows": snapshot.workflows,
+        "failures": snapshot.failures,
+        "last_tick_at": _optional_timestamp(snapshot.last_tick_at),
+        "last_error": snapshot.last_error,
+    }
+
+
+def _timestamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        raise ValueError("control plane timestamps must be timezone-aware")
+    return value.isoformat()
+
+
+def _optional_timestamp(value: datetime | None) -> str | None:
+    return None if value is None else _timestamp(value)

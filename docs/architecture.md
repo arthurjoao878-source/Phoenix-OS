@@ -56,7 +56,7 @@ secrets so ordinary inspection remains redacted.
 
 `ServiceComposer` builds named singleton dependencies from explicit declarations. It detects
 missing dependencies and cycles before startup. `RuntimeAssembler` exposes Kernel, Event Bus,
-Capability Registry, resolved configuration, and optional Observability, Audit, Policy, State, Identity, Secrets, Jobs, and Plugin services to
+Capability Registry, resolved configuration, and optional Observability, Audit, Policy, State, Identity, Secrets, Jobs, Workflows, Plugins, and local Control Plane services to
 factories, then creates `PhoenixRuntime` with composed services and lifecycle components.
 
 `PhoenixRuntime` remains the lifecycle owner. It owns the Kernel, Event Bus, Capability Registry,
@@ -89,9 +89,9 @@ and Event Bus.
 Remote brokers, remote or distributed database implementations, replication, cross-service
 transactions, hosted job queues, distributed scheduling consensus, metric aggregation, telemetry
 vendor protocols, AI, semantic memory,
-credential stores, sandboxing, operating-system automation, remote configuration, hot reload, and
-UI remain external adapters. The local SQLite audit backend is the only durable database reference
-implementation included in the core.
+credential stores, sandboxing, operating-system automation, remote configuration, hot reload, hosted administration, and remote UI delivery remain external adapters.
+The package includes only a loopback, read-only dashboard and the local SQLite audit backend as
+reference implementations.
 
 
 ## Audit Ledger and Security Journal
@@ -243,3 +243,26 @@ Runtime assembly starts `JobWorker` before `WorkflowWorker` and stops them in re
 workflow worker performs bounded reconciliation ticks and exposes counters without definitions,
 arguments, outputs, or errors. Safe `workflow.*` events contain identifiers and lifecycle status;
 `SecurityJournal` records them under `AuditCategory.WORKFLOW`.
+
+
+## Dashboard Control Plane
+
+`ControlPlaneService` reads immutable Runtime, job, workflow, capability, plugin, and audit snapshots
+through narrow protocols. Every public model and JSON serializer is allowlisted. Internal service
+objects, provider instances, arguments, outputs, metadata, Event Bus payloads, audit records, chain
+digests, exception messages, credentials, and secrets are not serialized recursively.
+
+`ControlPlaneHttpServer` is a bounded standard-library HTTP/1.1 adapter. It accepts only literal
+loopback addresses, supports GET only, authenticates operational routes with an administrator token
+digest, and applies fixed request, response, connection, and timeout limits. Static dashboard assets
+are selected from an exact package manifest and contain no operational data.
+
+`ControlPlaneEventStream` observes wildcard Event Bus facts but retains only event identity headers in
+one bounded shared ring buffer. Long polling uses cursors, reports retention gaps, rejects excess
+waiters with backpressure, and wakes readers during shutdown.
+
+With control-plane assembly enabled, the event stream starts before job and workflow workers so their
+facts can be observed. The HTTP server starts last. Reverse lifecycle order therefore closes HTTP
+first, stops workers, and then unsubscribes the event stream before the Event Bus closes. The built-in
+dashboard is local and read-only; remote administration, write controls, TLS, multi-user identity,
+and hosted deployment remain external boundaries.

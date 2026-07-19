@@ -368,3 +368,38 @@ Nova shell pipeline                 -> reviewed external capability provider
 A stable workflow-step job identifier prevents duplicate dispatch during recovery, but it cannot undo
 an external effect completed before a worker loses its lease. Providers still need domain-level
 idempotency keys and transactional integration where duplication is harmful.
+
+## Dashboard and control-plane migration
+
+Do not expose Nova debug endpoints, unrestricted object dumps, log files, command handlers, or local
+web servers directly as a Phoenix dashboard. Build the observation surface from the explicit
+control-plane views and keep every operational route read-only.
+
+Recommended sequence:
+
+1. generate a high-entropy administrator token at startup or resolve one from a reviewed secret
+   provider;
+2. construct `AdminTokenAuthenticator` and pass it to `RuntimeAssembler`;
+3. bind `ControlPlaneHttpConfig` only to literal `127.0.0.1` or `::1`;
+4. pass the durable job repository as `control_plane_job_records` when job detail is required;
+5. expose plugin, audit, jobs, and workflows through their existing managers rather than copying
+   internal objects;
+6. open `/dashboard/` locally and enter the token in the active browser tab;
+7. keep remote access behind an external TLS, identity, authorization, and reverse-proxy boundary;
+8. never add command execution, shell input, arbitrary file paths, raw exception messages, Event Bus
+   payloads, credentials, secret values, or audit bodies to dashboard serializers.
+
+Example mapping:
+
+```text
+Nova Flask debug server              -> loopback ControlPlaneHttpServer
+Nova globals / __dict__ JSON dump    -> explicit ControlPlaneSnapshot serializer
+Nova unrestricted logs endpoint      -> bounded safe Event Bus header feed
+Nova browser token in URL/localStorage -> Authorization header + tab sessionStorage
+Nova static folder from user path    -> fixed packaged DashboardAssets manifest
+Nova remote admin port               -> external reviewed ingress, not built-in listener
+```
+
+The packaged dashboard is an operator view, not a trust boundary or remote management product. A
+process-local administrator token does not replace deployment identity, TLS, host access controls,
+incident logging, or network policy.
