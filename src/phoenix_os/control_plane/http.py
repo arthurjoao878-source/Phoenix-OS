@@ -25,7 +25,18 @@ from phoenix_os.control_plane.contracts import (
     PageRequest,
 )
 from phoenix_os.control_plane.csrf import ControlPlaneBrowserOrigin
+from phoenix_os.control_plane.durable_operator_http import (
+    ControlPlaneDurableOperatorHttpAdapter,
+)
+from phoenix_os.control_plane.durable_session_access import (
+    ControlPlaneDurableSessionAuthentication,
+)
+from phoenix_os.control_plane.durable_session_http import (
+    ControlPlaneDurableSessionHttpBoundary,
+)
 from phoenix_os.control_plane.errors import (
+    ControlPlaneDurableSessionCsrfRejectedError,
+    ControlPlaneDurableSessionHttpRejectedError,
     ControlPlaneEventStreamBackpressureError,
     ControlPlaneEventStreamStateError,
     ControlPlaneServerStateError,
@@ -145,7 +156,7 @@ class ControlPlaneHttpServer:
     def __init__(
         self,
         reader: ControlPlaneReader,
-        authenticator: ControlPlaneAuthenticator,
+        authenticator: ControlPlaneAuthenticator | None,
         *,
         config: ControlPlaneHttpConfig | None = None,
         event_stream: EventStreamReader | None = None,
@@ -153,7 +164,13 @@ class ControlPlaneHttpServer:
         command_api: ControlPlaneCommandApi | None = None,
         command_history: ControlPlaneCommandHistoryReader | None = None,
         operator_http: ControlPlaneOperatorHttpAdapter | None = None,
+        durable_session_http: ControlPlaneDurableSessionHttpBoundary | None = None,
+        durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None,
     ) -> None:
+        if authenticator is None and durable_session_http is None:
+            raise ValueError("control plane requires an authenticator or durable session boundary")
+        if operator_http is not None and durable_operator_http is not None:
+            raise ValueError("legacy and durable operator HTTP adapters are exclusive")
         self._reader = reader
         self._authenticator = authenticator
         self._config = config or ControlPlaneHttpConfig()
@@ -161,6 +178,8 @@ class ControlPlaneHttpServer:
         self._dashboard_assets = dashboard_assets or DashboardAssets()
         self._command_history = command_history
         self._operator_http = operator_http
+        self._durable_session_http = durable_session_http
+        self._durable_operator_http = durable_operator_http
         self._command_http = (
             None
             if command_api is None
@@ -433,7 +452,20 @@ class ControlPlaneHttpServer:
                     {"Allow": "GET"},
                 )
             return HTTPStatus.OK, {"status": "ok"}, {}
+
         authorization = _single_header(request.headers, "authorization")
+        origin = self._server_origin()
+        if self._durable_operator_http is not None and self._durable_operator_http.handles_public(
+            request.path
+        ):
+            return await self._durable_operator_http.dispatch_public(
+                method=request.method,
+                authorization=authorization,
+                headers=request.headers,
+                body=request.body,
+                query=request.query,
+                server_origin=origin,
+            )
         if self._operator_http is not None and self._operator_http.handles_public(request.path):
             return await self._operator_http.dispatch_public(
                 method=request.method,
@@ -441,20 +473,67 @@ class ControlPlaneHttpServer:
                 body=request.body,
                 query=request.query,
             )
-        principal = await self._authenticate(authorization)
+
+        durable_authentication: ControlPlaneDurableSessionAuthentication | None = None
+        rotation_headers: dict[str, str] = {}
+        if self._durable_session_http is not None:
+            try:
+                durable_http = await self._durable_session_http.authenticate(
+                    _single_header(request.headers, "cookie"),
+                    origin=origin,
+                )
+            except (ControlPlaneDurableSessionHttpRejectedError, ValueError):
+                principal = None
+            else:
+                durable_authentication = durable_http.authentication
+                principal = durable_authentication.principal
+                rotation_headers = dict(durable_http.response_headers)
+        else:
+            principal = await self._authenticate(authorization)
+
         if principal is None:
             async with self._counter_lock:
                 self._unauthorized += 1
-            return (
-                HTTPStatus.UNAUTHORIZED,
-                {"error": "unauthorized"},
-                {"WWW-Authenticate": 'Bearer realm="phoenix-control-plane"'},
-            )
+            headers = {"WWW-Authenticate": 'Bearer realm="phoenix-control-plane"'}
+            if self._durable_session_http is not None:
+                headers["Set-Cookie"] = self._durable_session_http.clear_cookie()
+            return HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"}, headers
         if "control-plane.read" not in principal.permissions:
             async with self._counter_lock:
                 self._unauthorized += 1
-            return HTTPStatus.FORBIDDEN, {"error": "forbidden"}, {}
+            return HTTPStatus.FORBIDDEN, {"error": "forbidden"}, rotation_headers
 
+        status, payload, headers = await self._dispatch_authenticated(
+            request,
+            principal=principal,
+            durable_authentication=durable_authentication,
+            server_origin=origin,
+        )
+        return status, payload, _merge_headers(headers, rotation_headers)
+
+    async def _dispatch_authenticated(
+        self,
+        request: _Request,
+        *,
+        principal: ControlPlanePrincipal,
+        durable_authentication: ControlPlaneDurableSessionAuthentication | None,
+        server_origin: ControlPlaneBrowserOrigin,
+    ) -> tuple[HTTPStatus, Mapping[str, object] | bytes, dict[str, str]]:
+        authorization = _single_header(request.headers, "authorization")
+        if (
+            durable_authentication is not None
+            and self._durable_operator_http is not None
+            and self._durable_operator_http.handles(request.path)
+        ):
+            return await self._durable_operator_http.dispatch(
+                authentication=durable_authentication,
+                method=request.method,
+                path=request.path,
+                query=request.query,
+                headers=request.headers,
+                body=request.body,
+                server_origin=server_origin,
+            )
         if self._operator_http is not None and self._operator_http.handles(request.path):
             return await self._operator_http.dispatch(
                 principal=principal,
@@ -464,20 +543,37 @@ class ControlPlaneHttpServer:
                 query=request.query,
                 headers=request.headers,
                 body=request.body,
-                server_origin=self._server_origin(),
+                server_origin=server_origin,
             )
 
         if self._command_http is not None and self._command_http.handles(request.path):
             if request.query:
                 return HTTPStatus.BAD_REQUEST, {"error": "invalid_query"}, {}
-            origin = self._server_origin()
+            command_headers = request.headers
+            if durable_authentication is not None and self._durable_session_http is not None:
+                if request.path == "/v1/control-plane/csrf":
+                    return HTTPStatus.GONE, {"error": "session_csrf_already_issued"}, {}
+                try:
+                    supplied_origin = _request_origin(request.headers, server_origin)
+                    await self._durable_session_http.verify_csrf(
+                        _single_header(request.headers, "x-phoenix-csrf"),
+                        durable_authentication,
+                        supplied_origin=supplied_origin,
+                        expected_origin=server_origin,
+                    )
+                except (ControlPlaneDurableSessionCsrfRejectedError, ValueError):
+                    return HTTPStatus.FORBIDDEN, {"error": "request_rejected"}, {}
+                internal_csrf = self._command_http.api.issue_csrf(principal, server_origin)
+                mutable_headers = dict(request.headers)
+                mutable_headers["x-phoenix-csrf"] = (internal_csrf.value,)
+                command_headers = mutable_headers
             return await self._command_http.dispatch(
                 principal=principal,
                 method=request.method,
                 path=request.path,
-                headers=request.headers,
+                headers=command_headers,
                 body=request.body,
-                server_origin=origin,
+                server_origin=server_origin,
             )
         if request.path == "/v1/control-plane/operations":
             if request.method != "GET" or request.body or request.query:
@@ -512,7 +608,11 @@ class ControlPlaneHttpServer:
                 {},
             )
         if request.method != "GET" or request.body:
-            return HTTPStatus.METHOD_NOT_ALLOWED, {"error": "method_not_allowed"}, {"Allow": "GET"}
+            return (
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {"error": "method_not_allowed"},
+                {"Allow": "GET"},
+            )
 
         if request.path == "/v1/control-plane/health":
             snapshot = await self._reader.snapshot()
@@ -588,6 +688,8 @@ class ControlPlaneHttpServer:
         self,
         authorization: str | None,
     ) -> ControlPlanePrincipal | None:
+        if self._authenticator is None:
+            return None
         result = self._authenticator.authenticate(authorization)
         if inspect.isawaitable(result):
             return await result
@@ -665,6 +767,25 @@ class _HttpRequestError(Exception):
 def _single_header(headers: Mapping[str, tuple[str, ...]], name: str) -> str | None:
     values = headers.get(name, ())
     return None if not values else values[0]
+
+
+def _merge_headers(primary: Mapping[str, str], secondary: Mapping[str, str]) -> dict[str, str]:
+    result = dict(primary)
+    result.update(secondary)
+    return result
+
+
+def _request_origin(
+    headers: Mapping[str, tuple[str, ...]],
+    expected: ControlPlaneBrowserOrigin,
+) -> ControlPlaneBrowserOrigin:
+    raw = _single_header(headers, "origin")
+    if raw is None:
+        raise ValueError("origin is required")
+    supplied = ControlPlaneBrowserOrigin(raw)
+    if supplied != expected:
+        raise ValueError("origin does not match control plane")
+    return supplied
 
 
 def _page_request(query: Mapping[str, tuple[str, ...]]) -> PageRequest:

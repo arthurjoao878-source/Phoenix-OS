@@ -26,7 +26,7 @@
       <div>
         <p class="eyebrow">Local operator access</p>
         <h2 id="login-title">Connect to the dashboard</h2>
-        <p>The long-lived credential is exchanged for a temporary session kept only in this browser tab.</p>
+        <p>The durable credential is exchanged for a rotating HttpOnly, SameSite=Strict session cookie. JavaScript never receives the session token.</p>
       </div>
       <form id="login-form" autocomplete="off">
         <label for="token">Operator credential</label>
@@ -97,6 +97,27 @@
           <div class="table-wrap"><table><thead><tr><th>Operator</th><th>Role</th><th>Status</th><th>Revision</th><th>Action</th></tr></thead><tbody id="operators-table"></tbody></table></div>
         </article>
 
+        <article id="sessions-panel" class="panel wide hidden">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Durable access</p><h2>Operator sessions</h2></div>
+            <div class="history-tools">
+              <label for="sessions-operator">Operator</label>
+              <select id="sessions-operator"><option value="">All</option></select>
+              <label for="sessions-status">Status</label>
+              <select id="sessions-status">
+                <option value="">All</option>
+                <option value="active">Active</option>
+                <option value="revoked">Revoked</option>
+                <option value="expired">Expired</option>
+                <option value="rotated">Rotated</option>
+              </select>
+              <span id="sessions-page" class="muted"></span>
+            </div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Issued</th><th>Operator</th><th>Generation</th><th>Status</th><th>Last activity</th><th>Reason</th><th>Action</th></tr></thead><tbody id="sessions-table"></tbody></table></div>
+          <p class="muted">Active sessions survive Runtime restarts, rotate automatically, and may be ended individually or globally.</p>
+        </article>
+
         <article class="panel wide">
           <div class="panel-heading"><div><p class="eyebrow">Execution</p><h2>Recent jobs</h2></div><span id="jobs-page" class="muted"></span></div>
           <div class="table-wrap"><table><thead><tr><th>Capability</th><th>Status</th><th>Attempts</th><th>Next run</th><th>Action</th></tr></thead><tbody id="jobs-table"></tbody></table></div>
@@ -130,6 +151,6 @@
     </section>
   </main>
 
-  <footer>Loopback-only · Authenticated safe operations · Phoenix OS v0.20.0</footer>
+  <footer>Loopback-only · HttpOnly durable sessions · Step-up protected administration · Phoenix OS v0.21.0</footer>
 </body>
 </html>

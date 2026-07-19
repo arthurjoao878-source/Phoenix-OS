@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.20.0` implements twenty accepted specifications:
+Version `0.21.0` implements twenty-one accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -49,6 +49,9 @@ Version `0.20.0` implements twenty accepted specifications:
 - **RFC-0020 — Local Operator Identity and Role-Based Access Control:** identified local operators,
   deterministic Viewer/Operator/Maintainer roles, protected credential digests, temporary sessions,
   generic login failures, bounded throttling, operator management, and exact journal attribution.
+- **RFC-0021 — Durable Operator Sessions and Step-Up Authentication:** restart-safe rotating sessions,
+  absolute and idle expiry, HttpOnly cookies, session-bound CSRF, recent step-up proofs, safe history,
+  bounded retention, and Runtime-owned recovery.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -88,7 +91,8 @@ python .\examples\control_plane_dashboard.py
 ```
 
 Open the printed loopback URL and enter the bootstrap Maintainer credential. The Dashboard exchanges
-it for a temporary process-local session and does not retain the long-lived credential. Packaged HTML,
+it for a durable rotating session carried only in a host-only `HttpOnly`, `SameSite=Strict` cookie and
+does not retain the long-lived credential. Packaged HTML,
 CSS, JavaScript, and SVG assets load without external scripts or fonts. Read responses use explicit
 serializers that omit credential digests, session tokens, job arguments, workflow inputs and outputs,
 plugin metadata, audit bodies, Event Bus payloads, and secrets.
@@ -96,8 +100,9 @@ plugin metadata, audit bodies, Event Bus payloads, and secrets.
 When the authenticated principal has exact command permissions, the Dashboard can create safe
 capability-backed jobs, cancel jobs or workflows, and retry eligible dead-letter jobs. Browser
 commands require an exact loopback origin, a short-lived CSRF token, a fresh idempotency key, and a
-one-time confirmation proof for cancellation. The temporary session bearer and CSRF value are retained only in browser `sessionStorage` for the
-active tab. Maintainers can create, update, disable, reactivate, rotate, and revoke local operators;
+one-time confirmation proof for cancellation. The session bearer is never exposed to JavaScript or browser storage. A separate session-bound CSRF
+value rotates with the cookie, and reviewed high-risk mutations require recent step-up authentication.
+Maintainers can create, update, disable, reactivate, rotate, and revoke local operators;
 creation and rotation display a new long-lived credential exactly once.
 
 `RuntimeAssembler` owns the operator registry, temporary access service, command journal, event

@@ -19,6 +19,9 @@ from phoenix_os.control_plane.contracts import (
     WorkflowSummary,
 )
 from phoenix_os.control_plane.csrf import ControlPlaneCsrfToken
+from phoenix_os.control_plane.durable_session_history import (
+    ControlPlaneDurableSessionHistoryPage,
+)
 from phoenix_os.control_plane.job_commands import ControlPlaneJobCommandResult
 from phoenix_os.control_plane.journal_contracts import (
     ControlPlaneCommandJournalPageInfo,
@@ -31,6 +34,7 @@ from phoenix_os.control_plane.operator_api import (
     ControlPlaneOperatorViewPage,
 )
 from phoenix_os.control_plane.operator_management import ControlPlaneOperatorMutationReceipt
+from phoenix_os.control_plane.step_up import ControlPlaneStepUpGrant
 from phoenix_os.control_plane.workflow_commands import ControlPlaneWorkflowCommandResult
 from phoenix_os.jobs import JobSchedulerSnapshot, JobWorkerSnapshot
 from phoenix_os.runtime import RuntimeSnapshot
@@ -192,6 +196,66 @@ def command_history_page_to_dict(page: ControlPlaneCommandHistoryPage) -> dict[s
             for item in page.items
         ],
         "page": _journal_page(page.page),
+    }
+
+
+def durable_session_history_page_to_dict(
+    page: ControlPlaneDurableSessionHistoryPage,
+) -> dict[str, object]:
+    """Serialize session history without token or CSRF digests."""
+
+    return {
+        "schema_version": page.schema_version,
+        "items": [
+            {
+                "session_id": str(item.session_id),
+                "operator_id": str(item.operator_id),
+                "username": item.username,
+                "generation": item.generation,
+                "issued_at": _timestamp(item.issued_at),
+                "last_seen_at": _timestamp(item.last_seen_at),
+                "absolute_expires_at": _timestamp(item.absolute_expires_at),
+                "idle_expires_at": _timestamp(item.idle_expires_at),
+                "rotate_after": _timestamp(item.rotate_after),
+                "status": item.status.value,
+                "terminated_at": _optional_timestamp(item.terminated_at),
+                "termination_reason": (
+                    None if item.termination_reason is None else item.termination_reason.value
+                ),
+                "predecessor_session_id": (
+                    None
+                    if item.predecessor_session_id is None
+                    else str(item.predecessor_session_id)
+                ),
+                "successor_session_id": (
+                    None if item.successor_session_id is None else str(item.successor_session_id)
+                ),
+                "revision": item.revision,
+            }
+            for item in page.items
+        ],
+        "page": {
+            "offset": page.page.offset,
+            "limit": page.page.limit,
+            "returned": page.page.returned,
+            "total": page.page.total,
+            "next_offset": page.page.next_offset,
+        },
+    }
+
+
+def step_up_grant_to_dict(grant: ControlPlaneStepUpGrant) -> dict[str, object]:
+    """Serialize the one-time signed proof and safe recent-authentication metadata."""
+
+    evidence = grant.evidence
+    return {
+        "schema_version": grant.schema_version,
+        "step_up_proof": grant.token.value,
+        "action": evidence.action.value,
+        "session_id": str(evidence.session_id),
+        "operator_id": str(evidence.operator_id),
+        "authenticated_at": _timestamp(evidence.authenticated_at),
+        "expires_at": _timestamp(evidence.expires_at),
     }
 
 

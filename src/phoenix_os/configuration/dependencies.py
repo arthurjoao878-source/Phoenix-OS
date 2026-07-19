@@ -33,10 +33,15 @@ if TYPE_CHECKING:
         AdminTokenAuthenticator,
         ControlPlaneCommandJournalRepository,
         ControlPlaneCommandRetentionPolicy,
+        ControlPlaneDurableSessionCookiePolicy,
+        ControlPlaneDurableSessionPolicy,
+        ControlPlaneDurableSessionRepository,
+        ControlPlaneDurableSessionRetentionPolicy,
         ControlPlaneEventStreamConfig,
         ControlPlaneHttpConfig,
         ControlPlaneOperatorRegistry,
         ControlPlaneOperatorToken,
+        ControlPlaneStepUpPolicy,
         JobRecordSource,
     )
     from phoenix_os.identity import AuthenticationManager
@@ -62,6 +67,11 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "control_plane.command-retention",
         "control_plane.operator-registry",
         "control_plane.operator-access",
+        "control_plane.operator-sessions",
+        "control_plane.operator-session-history",
+        "control_plane.operator-session-recovery",
+        "control_plane.operator-session-retention",
+        "control_plane.operator-step-up",
         "control_plane.operators",
         "control_plane.http",
         "observability",
@@ -256,6 +266,18 @@ class RuntimeAssembler:
         control_plane_operator_display_name: str = "Phoenix Maintainer",
         control_plane_operator_role: str = "maintainer",
         control_plane_operator_capacity: int = 10_000,
+        control_plane_durable_session_repository: ControlPlaneDurableSessionRepository
+        | None = None,
+        control_plane_durable_session_policy: ControlPlaneDurableSessionPolicy | None = None,
+        control_plane_durable_session_capacity: int = 4096,
+        control_plane_durable_session_cookie_policy: ControlPlaneDurableSessionCookiePolicy
+        | None = None,
+        control_plane_durable_session_recovery_poll_interval: float = 30.0,
+        control_plane_durable_session_recovery_batch_size: int = 100,
+        control_plane_durable_session_retention_policy: ControlPlaneDurableSessionRetentionPolicy
+        | None = None,
+        control_plane_durable_session_retention_poll_interval: float = 3600.0,
+        control_plane_step_up_policy: ControlPlaneStepUpPolicy | None = None,
         control_plane_http_config: ControlPlaneHttpConfig | None = None,
         control_plane_event_config: ControlPlaneEventStreamConfig | None = None,
         control_plane_job_records: JobRecordSource | None = None,
@@ -296,6 +318,25 @@ class RuntimeAssembler:
         self._control_plane_operator_display_name = control_plane_operator_display_name
         self._control_plane_operator_role = control_plane_operator_role
         self._control_plane_operator_capacity = control_plane_operator_capacity
+        self._control_plane_durable_session_repository = control_plane_durable_session_repository
+        self._control_plane_durable_session_policy = control_plane_durable_session_policy
+        self._control_plane_durable_session_capacity = control_plane_durable_session_capacity
+        self._control_plane_durable_session_cookie_policy = (
+            control_plane_durable_session_cookie_policy
+        )
+        self._control_plane_durable_session_recovery_poll_interval = (
+            control_plane_durable_session_recovery_poll_interval
+        )
+        self._control_plane_durable_session_recovery_batch_size = (
+            control_plane_durable_session_recovery_batch_size
+        )
+        self._control_plane_durable_session_retention_policy = (
+            control_plane_durable_session_retention_policy
+        )
+        self._control_plane_durable_session_retention_poll_interval = (
+            control_plane_durable_session_retention_poll_interval
+        )
+        self._control_plane_step_up_policy = control_plane_step_up_policy
         self._control_plane_http_config = control_plane_http_config
         self._control_plane_event_config = control_plane_event_config
         self._control_plane_job_records = control_plane_job_records
@@ -325,11 +366,30 @@ class RuntimeAssembler:
                 control_plane_job_records,
                 control_plane_command_journal,
                 control_plane_command_retention_policy,
+                control_plane_durable_session_repository,
+                control_plane_durable_session_policy,
+                control_plane_durable_session_cookie_policy,
+                control_plane_durable_session_retention_policy,
+                control_plane_step_up_policy,
             )
         ):
             raise ValueError("control plane options require an authenticator or operator registry")
         if control_plane_operator_capacity <= 0 or control_plane_operator_capacity > 10_000:
             raise ValueError("control-plane operator capacity is outside supported bounds")
+        if (
+            control_plane_durable_session_capacity <= 0
+            or control_plane_durable_session_capacity > 100_000
+        ):
+            raise ValueError("control-plane durable session capacity is outside supported bounds")
+        if control_plane_durable_session_recovery_poll_interval <= 0:
+            raise ValueError("durable session recovery poll interval must be positive")
+        if (
+            control_plane_durable_session_recovery_batch_size <= 0
+            or control_plane_durable_session_recovery_batch_size > 200
+        ):
+            raise ValueError("durable session recovery batch size is outside supported bounds")
+        if control_plane_durable_session_retention_poll_interval <= 0:
+            raise ValueError("durable session retention poll interval must be positive")
         self._observe_events = observe_events
         self._journal_events = journal_events
         self._composer = ServiceComposer(definitions)
@@ -437,6 +497,15 @@ class RuntimeAssembler:
             or self._control_plane_operator_token is not None
         )
         if self._control_plane_authenticator is not None or operator_mode:
+            from phoenix_os.control_plane.durable_session_contracts import (
+                ControlPlaneDurableSessionPolicy,
+            )
+            from phoenix_os.control_plane.durable_session_memory import (
+                InMemoryControlPlaneDurableSessionRepository,
+            )
+            from phoenix_os.control_plane.durable_session_state import (
+                StateControlPlaneDurableSessionRepository,
+            )
             from phoenix_os.control_plane.journal_memory import (
                 InMemoryControlPlaneCommandJournalRepository,
             )
@@ -476,6 +545,10 @@ class RuntimeAssembler:
 
             operator_registry = self._control_plane_operator_registry
             bootstrap_operator = None
+            durable_session_repository = self._control_plane_durable_session_repository
+            durable_session_policy = (
+                self._control_plane_durable_session_policy or ControlPlaneDurableSessionPolicy()
+            )
             if operator_mode:
                 if operator_registry is None:
                     operator_registry = (
@@ -486,6 +559,23 @@ class RuntimeAssembler:
                         else StateControlPlaneOperatorRegistry(
                             state_store,
                             capacity=self._control_plane_operator_capacity,
+                        )
+                    )
+                if durable_session_repository is None:
+                    durable_session_repository = (
+                        InMemoryControlPlaneDurableSessionRepository(
+                            capacity=self._control_plane_durable_session_capacity,
+                            max_sessions_per_operator=(
+                                durable_session_policy.max_sessions_per_operator
+                            ),
+                        )
+                        if state_store is None
+                        else StateControlPlaneDurableSessionRepository(
+                            state_store,
+                            capacity=self._control_plane_durable_session_capacity,
+                            max_sessions_per_operator=(
+                                durable_session_policy.max_sessions_per_operator
+                            ),
                         )
                     )
                 if self._control_plane_operator_token is not None:
@@ -506,6 +596,22 @@ class RuntimeAssembler:
                 authenticator=self._control_plane_authenticator,
                 operator_registry=operator_registry,
                 bootstrap_operator=bootstrap_operator,
+                durable_session_repository=durable_session_repository,
+                durable_session_policy=durable_session_policy,
+                durable_session_cookie_policy=(self._control_plane_durable_session_cookie_policy),
+                durable_session_recovery_poll_interval=(
+                    self._control_plane_durable_session_recovery_poll_interval
+                ),
+                durable_session_recovery_batch_size=(
+                    self._control_plane_durable_session_recovery_batch_size
+                ),
+                durable_session_retention_policy=(
+                    self._control_plane_durable_session_retention_policy
+                ),
+                durable_session_retention_poll_interval=(
+                    self._control_plane_durable_session_retention_poll_interval
+                ),
+                step_up_policy=self._control_plane_step_up_policy,
                 jobs=self._jobs,
                 job_records=self._control_plane_job_records,
                 workflows=self._workflows,
@@ -543,6 +649,26 @@ class RuntimeAssembler:
                 )
             if control_plane_stack.operator_api is not None:
                 custom_services["control_plane.operators"] = control_plane_stack.operator_api
+            if control_plane_stack.durable_sessions is not None:
+                custom_services["control_plane.operator-sessions"] = (
+                    control_plane_stack.durable_sessions
+                )
+            if control_plane_stack.durable_session_history is not None:
+                custom_services["control_plane.operator-session-history"] = (
+                    control_plane_stack.durable_session_history
+                )
+            if control_plane_stack.durable_session_recovery is not None:
+                custom_services["control_plane.operator-session-recovery"] = (
+                    control_plane_stack.durable_session_recovery
+                )
+            if control_plane_stack.durable_session_retention is not None:
+                custom_services["control_plane.operator-session-retention"] = (
+                    control_plane_stack.durable_session_retention
+                )
+            if control_plane_stack.operator_step_up is not None:
+                custom_services["control_plane.operator-step-up"] = (
+                    control_plane_stack.operator_step_up
+                )
             if control_plane_stack.operator_registry_owner is not None:
                 components.append(
                     ComponentSpec(
@@ -550,11 +676,32 @@ class RuntimeAssembler:
                         control_plane_stack.operator_registry_owner,
                     )
                 )
+            if control_plane_stack.durable_sessions_owner is not None:
+                components.append(
+                    ComponentSpec(
+                        "control_plane.operator-sessions",
+                        control_plane_stack.durable_sessions_owner,
+                    )
+                )
             if control_plane_stack.operator_access is not None:
                 components.append(
                     ComponentSpec(
                         "control_plane.operator-access",
                         control_plane_stack.operator_access,
+                    )
+                )
+            if control_plane_stack.durable_session_recovery is not None:
+                components.append(
+                    ComponentSpec(
+                        "control_plane.operator-session-recovery",
+                        control_plane_stack.durable_session_recovery,
+                    )
+                )
+            if control_plane_stack.durable_session_retention is not None:
+                components.append(
+                    ComponentSpec(
+                        "control_plane.operator-session-retention",
+                        control_plane_stack.durable_session_retention,
                     )
                 )
             components.append(

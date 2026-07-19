@@ -27,6 +27,7 @@ CONTROL_PLANE_OPERATORS_UPDATE_PERMISSION = "control-plane.operators.update"
 CONTROL_PLANE_OPERATORS_DISABLE_PERMISSION = "control-plane.operators.disable"
 CONTROL_PLANE_OPERATORS_ROTATE_PERMISSION = "control-plane.operators.rotate"
 CONTROL_PLANE_OPERATORS_REVOKE_PERMISSION = "control-plane.operators.revoke"
+CONTROL_PLANE_OPERATOR_SESSIONS_READ_PERMISSION = "control-plane.operator-sessions.read"
 CONTROL_PLANE_OPERATOR_SESSIONS_REVOKE_PERMISSION = "control-plane.operator-sessions.revoke"
 
 _USERNAME_PATTERN = re.compile(r"[a-z][a-z0-9_.-]{2,63}\Z")
@@ -58,6 +59,7 @@ class ControlPlaneOperatorRole(StrEnum):
                 CONTROL_PLANE_OPERATORS_DISABLE_PERMISSION,
                 CONTROL_PLANE_OPERATORS_ROTATE_PERMISSION,
                 CONTROL_PLANE_OPERATORS_REVOKE_PERMISSION,
+                CONTROL_PLANE_OPERATOR_SESSIONS_READ_PERMISSION,
                 CONTROL_PLANE_OPERATOR_SESSIONS_REVOKE_PERMISSION,
             }
         )
