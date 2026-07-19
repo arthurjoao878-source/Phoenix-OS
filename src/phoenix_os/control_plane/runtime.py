@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from phoenix_os.capabilities import CapabilityRegistry
 from phoenix_os.control_plane.auth import (
     AdminTokenAuthenticator,
-    ControlPlaneAuthenticator,
     ControlPlaneCommandAuthorizer,
 )
 from phoenix_os.control_plane.command_api import ControlPlaneCommandApi
@@ -24,6 +23,38 @@ from phoenix_os.control_plane.contracts import (
     WorkflowWorkerSnapshotSource,
 )
 from phoenix_os.control_plane.csrf import ControlPlaneCsrfProtector
+from phoenix_os.control_plane.durable_operator_http import (
+    ControlPlaneDurableOperatorHttpAdapter,
+)
+from phoenix_os.control_plane.durable_session_access import (
+    ControlPlaneDurableSessionAccessService,
+)
+from phoenix_os.control_plane.durable_session_admin import (
+    ControlPlaneDurableSessionAdministration,
+)
+from phoenix_os.control_plane.durable_session_contracts import (
+    ControlPlaneDurableSessionPolicy,
+    ControlPlaneDurableSessionRepository,
+)
+from phoenix_os.control_plane.durable_session_history import (
+    ControlPlaneDurableSessionHistoryService,
+)
+from phoenix_os.control_plane.durable_session_http import (
+    ControlPlaneDurableSessionCookiePolicy,
+    ControlPlaneDurableSessionHttpBoundary,
+)
+from phoenix_os.control_plane.durable_session_memory import (
+    InMemoryControlPlaneDurableSessionRepository,
+)
+from phoenix_os.control_plane.durable_session_recovery import (
+    ControlPlaneDurableSessionRecoveryService,
+    ControlPlaneDurableSessionRecoveryWorker,
+)
+from phoenix_os.control_plane.durable_session_retention import (
+    ControlPlaneDurableSessionRetentionPolicy,
+    ControlPlaneDurableSessionRetentionService,
+    ControlPlaneDurableSessionRetentionWorker,
+)
 from phoenix_os.control_plane.event_stream import (
     ControlPlaneEventStream,
     ControlPlaneEventStreamConfig,
@@ -53,18 +84,13 @@ from phoenix_os.control_plane.operator_contracts import (
     ControlPlaneOperatorRecord,
     ControlPlaneOperatorRegistry,
 )
-from phoenix_os.control_plane.operator_http import (
-    ControlPlaneOperatorHttpAdapter,
-    ControlPlaneOperatorSessionAuthenticator,
-)
 from phoenix_os.control_plane.operator_management import ControlPlaneOperatorManager
-from phoenix_os.control_plane.operator_sessions import (
-    ControlPlaneOperatorAccessService,
-    ControlPlaneOperatorLoginRateLimiter,
-    InMemoryControlPlaneOperatorSessionStore,
-)
 from phoenix_os.control_plane.protection import ControlPlaneCommandProtector
 from phoenix_os.control_plane.service import ControlPlaneService
+from phoenix_os.control_plane.step_up import (
+    ControlPlaneOperatorStepUpService,
+    ControlPlaneStepUpPolicy,
+)
 from phoenix_os.control_plane.workflow_commands import (
     ControlPlaneWorkflowCommandHandler,
     ControlPlaneWorkflowOrchestrator,
@@ -152,6 +178,22 @@ class _OperatorRegistryOwner:
         await self._registry.close()
 
 
+class _DurableSessionRepositoryOwner:
+    """Own the durable session adapter after access and workers have stopped."""
+
+    def __init__(self, repository: ControlPlaneDurableSessionRepository) -> None:
+        self._repository = repository
+
+    async def start(self, context: object) -> None:
+        del context
+        if self._repository.closed:
+            raise RuntimeError("control plane durable session repository is closed")
+
+    async def stop(self, context: object) -> None:
+        del context
+        await self._repository.close()
+
+
 @dataclass(frozen=True, slots=True)
 class ControlPlaneRuntimeStack:
     """Control-plane services constructed before the Runtime self-reference exists."""
@@ -167,8 +209,14 @@ class ControlPlaneRuntimeStack:
     http: ControlPlaneHttpServer
     operator_registry: ControlPlaneOperatorRegistry | None
     operator_registry_owner: _OperatorRegistryOwner | None
-    operator_access: ControlPlaneOperatorAccessService | None
+    operator_access: ControlPlaneDurableSessionAccessService | None
     operator_api: ControlPlaneOperatorApi | None
+    durable_sessions: ControlPlaneDurableSessionRepository | None
+    durable_sessions_owner: _DurableSessionRepositoryOwner | None
+    durable_session_history: ControlPlaneDurableSessionHistoryService | None
+    durable_session_recovery: ControlPlaneDurableSessionRecoveryWorker | None
+    durable_session_retention: ControlPlaneDurableSessionRetentionWorker | None
+    operator_step_up: ControlPlaneOperatorStepUpService | None
     _runtime: _RuntimeSnapshotProxy
 
     @classmethod
@@ -180,6 +228,14 @@ class ControlPlaneRuntimeStack:
         authenticator: AdminTokenAuthenticator | None = None,
         operator_registry: ControlPlaneOperatorRegistry | None = None,
         bootstrap_operator: ControlPlaneOperatorRecord | None = None,
+        durable_session_repository: ControlPlaneDurableSessionRepository | None = None,
+        durable_session_policy: ControlPlaneDurableSessionPolicy | None = None,
+        durable_session_cookie_policy: ControlPlaneDurableSessionCookiePolicy | None = None,
+        durable_session_recovery_poll_interval: float = 30.0,
+        durable_session_recovery_batch_size: int = 100,
+        durable_session_retention_policy: ControlPlaneDurableSessionRetentionPolicy | None = None,
+        durable_session_retention_poll_interval: float = 3600.0,
+        step_up_policy: ControlPlaneStepUpPolicy | None = None,
         jobs: JobSnapshotSource | None = None,
         job_records: JobRecordSource | None = None,
         workflows: WorkflowSnapshotSource | None = None,
@@ -203,6 +259,8 @@ class ControlPlaneRuntimeStack:
             )
         if bootstrap_operator is not None and operator_registry is None:
             raise ValueError("bootstrap operator requires an operator registry")
+        if durable_session_repository is not None and operator_registry is None:
+            raise ValueError("durable sessions require an operator registry")
 
         runtime = _RuntimeSnapshotProxy()
         journal = command_journal or InMemoryControlPlaneCommandJournalRepository()
@@ -224,32 +282,79 @@ class ControlPlaneRuntimeStack:
         confirmations = InMemoryControlPlaneConfirmationService(secrets.token_bytes(32))
 
         operator_owner: _OperatorRegistryOwner | None = None
-        operator_access: ControlPlaneOperatorAccessService | None = None
+        operator_access: ControlPlaneDurableSessionAccessService | None = None
         operator_api: ControlPlaneOperatorApi | None = None
-        operator_http: ControlPlaneOperatorHttpAdapter | None = None
-        resolved_authenticator: ControlPlaneAuthenticator
+        durable_sessions: ControlPlaneDurableSessionRepository | None = None
+        durable_sessions_owner: _DurableSessionRepositoryOwner | None = None
+        durable_history: ControlPlaneDurableSessionHistoryService | None = None
+        durable_recovery: ControlPlaneDurableSessionRecoveryWorker | None = None
+        durable_retention: ControlPlaneDurableSessionRetentionWorker | None = None
+        operator_step_up: ControlPlaneOperatorStepUpService | None = None
+        durable_boundary: ControlPlaneDurableSessionHttpBoundary | None = None
+        durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None
         default_principal: str
         if operator_registry is not None:
             operator_owner = _OperatorRegistryOwner(operator_registry, bootstrap_operator)
-            operator_access = ControlPlaneOperatorAccessService(
+            policy = durable_session_policy or ControlPlaneDurableSessionPolicy()
+            durable_sessions = durable_session_repository or (
+                InMemoryControlPlaneDurableSessionRepository(
+                    max_sessions_per_operator=policy.max_sessions_per_operator
+                )
+            )
+            durable_sessions_owner = _DurableSessionRepositoryOwner(durable_sessions)
+            operator_authenticator = ControlPlaneOperatorAuthenticator(operator_registry)
+            operator_access = ControlPlaneDurableSessionAccessService(
                 registry=operator_registry,
-                authenticator=ControlPlaneOperatorAuthenticator(operator_registry),
-                sessions=InMemoryControlPlaneOperatorSessionStore(),
-                rate_limiter=ControlPlaneOperatorLoginRateLimiter(),
+                repository=durable_sessions,
+                policy=policy,
                 events=event_bus,
             )
+            session_admin = ControlPlaneDurableSessionAdministration(operator_access)
             operator_api = ControlPlaneOperatorApi(
                 registry=operator_registry,
                 manager=ControlPlaneOperatorManager(operator_registry),
-                access=operator_access,
+                access=session_admin,
                 events=event_bus,
             )
-            operator_http = ControlPlaneOperatorHttpAdapter(
-                api=operator_api,
-                access=operator_access,
-                csrf=csrf,
+            durable_history = ControlPlaneDurableSessionHistoryService(
+                durable_sessions,
+                events=event_bus,
             )
-            resolved_authenticator = ControlPlaneOperatorSessionAuthenticator(operator_access)
+            durable_boundary = ControlPlaneDurableSessionHttpBoundary(
+                authenticator=operator_authenticator,
+                access=operator_access,
+                repository=durable_sessions,
+                cookie_policy=durable_session_cookie_policy,
+            )
+            operator_step_up = ControlPlaneOperatorStepUpService(
+                authenticator=operator_authenticator,
+                registry=operator_registry,
+                repository=durable_sessions,
+                secret=secrets.token_bytes(32),
+                policy=step_up_policy,
+            )
+            durable_operator_http = ControlPlaneDurableOperatorHttpAdapter(
+                api=operator_api,
+                boundary=durable_boundary,
+                history=durable_history,
+                step_up=operator_step_up,
+            )
+            durable_recovery = ControlPlaneDurableSessionRecoveryWorker(
+                ControlPlaneDurableSessionRecoveryService(
+                    repository=durable_sessions,
+                    registry=operator_registry,
+                ),
+                poll_interval=durable_session_recovery_poll_interval,
+                batch_size=durable_session_recovery_batch_size,
+            )
+            durable_retention = ControlPlaneDurableSessionRetentionWorker(
+                ControlPlaneDurableSessionRetentionService(
+                    durable_sessions,
+                    events=event_bus,
+                ),
+                durable_session_retention_policy or ControlPlaneDurableSessionRetentionPolicy(),
+                poll_interval=durable_session_retention_poll_interval,
+            )
             default_principal = (
                 bootstrap_operator.username
                 if bootstrap_operator is not None
@@ -257,7 +362,6 @@ class ControlPlaneRuntimeStack:
             )
         else:
             assert authenticator is not None
-            resolved_authenticator = authenticator
             default_principal = authenticator.principal.name
 
         idempotency = JournalControlPlaneIdempotencyStore(
@@ -314,12 +418,13 @@ class ControlPlaneRuntimeStack:
         )
         http = ControlPlaneHttpServer(
             service,
-            resolved_authenticator,
+            authenticator,
             config=http_config,
             event_stream=event_stream,
             command_api=command_api,
             command_history=history,
-            operator_http=operator_http,
+            durable_session_http=durable_boundary,
+            durable_operator_http=durable_operator_http,
         )
         return cls(
             service,
@@ -335,6 +440,12 @@ class ControlPlaneRuntimeStack:
             operator_owner,
             operator_access,
             operator_api,
+            durable_sessions,
+            durable_sessions_owner,
+            durable_history,
+            durable_recovery,
+            durable_retention,
+            operator_step_up,
             runtime,
         )
 

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from phoenix_os.control_plane.auth import ControlPlanePrincipal
@@ -33,12 +34,38 @@ from phoenix_os.control_plane.operator_management import (
     ControlPlaneOperatorMutationReceipt,
 )
 from phoenix_os.control_plane.operator_sessions import (
-    ControlPlaneOperatorAccessService,
     ControlPlaneOperatorSessionRevocationReason,
 )
 from phoenix_os.events import BusClosedError, EventBus
 
 type ControlPlaneOperatorApiClock = Callable[[], datetime]
+
+
+class ControlPlaneOperatorSessionAdministration(Protocol):
+    def invalidate_operator_sessions(
+        self,
+        operator_id: UUID,
+        *,
+        actor: str,
+        reason: ControlPlaneOperatorSessionRevocationReason,
+    ) -> Awaitable[int]: ...
+
+    def revoke_session(
+        self,
+        session_id: UUID,
+        *,
+        actor: ControlPlanePrincipal,
+    ) -> Awaitable[bool]: ...
+
+    def revoke_operator_sessions(
+        self,
+        operator_id: UUID,
+        *,
+        actor: ControlPlanePrincipal,
+        reason: ControlPlaneOperatorSessionRevocationReason = (
+            ControlPlaneOperatorSessionRevocationReason.ADMINISTRATIVE
+        ),
+    ) -> Awaitable[int]: ...
 
 
 def _utc_now() -> datetime:
@@ -141,7 +168,7 @@ class ControlPlaneOperatorApi:
         *,
         registry: ControlPlaneOperatorRegistry,
         manager: ControlPlaneOperatorManager,
-        access: ControlPlaneOperatorAccessService,
+        access: ControlPlaneOperatorSessionAdministration,
         events: EventBus,
         clock: ControlPlaneOperatorApiClock = _utc_now,
     ) -> None:
@@ -324,6 +351,13 @@ class ControlPlaneOperatorApi:
         session_id: UUID,
     ) -> bool:
         return await self._access.revoke_session(session_id, actor=actor)
+
+    async def revoke_operator_sessions(
+        self,
+        actor: ControlPlanePrincipal,
+        operator_id: UUID,
+    ) -> int:
+        return await self._access.revoke_operator_sessions(operator_id, actor=actor)
 
     async def _required(self, operator_id: UUID) -> ControlPlaneOperatorRecord:
         record = await self._registry.get(operator_id)

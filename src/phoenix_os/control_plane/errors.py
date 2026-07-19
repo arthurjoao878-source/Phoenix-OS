@@ -159,3 +159,59 @@ class ControlPlaneOperatorRateLimitCapacityError(PhoenixControlPlaneError):
 
 class ControlPlaneOperatorPermissionDeniedError(PhoenixControlPlaneError):
     """Raised when an operator lacks an exact local access-management permission."""
+
+
+class ControlPlaneDurableSessionAlreadyExistsError(PhoenixControlPlaneError):
+    """Raised when a durable session id or protected token digest is duplicated."""
+
+
+class ControlPlaneDurableSessionNotFoundError(PhoenixControlPlaneError):
+    """Raised when a requested durable operator session does not exist."""
+
+
+class ControlPlaneDurableSessionConflictError(PhoenixControlPlaneError):
+    """Raised for stale revisions or invalid durable session transitions."""
+
+
+class ControlPlaneDurableSessionCapacityError(PhoenixControlPlaneError):
+    """Raised when bounded durable session capacity is exhausted."""
+
+
+class ControlPlaneDurableSessionRepositoryClosedError(PhoenixControlPlaneError):
+    """Raised when a closed durable session repository receives an operation."""
+
+
+class ControlPlaneDurableSessionCorruptionError(PhoenixControlPlaneError):
+    """Raised when persisted durable session state fails integrity validation."""
+
+
+class ControlPlaneDurableSessionPersistenceError(PhoenixControlPlaneError):
+    """Raised when the durable session State Store operation fails."""
+
+
+class ControlPlaneDurableSessionSchemaError(ControlPlaneDurableSessionCorruptionError):
+    """Raised when persisted durable session state uses an unsupported schema."""
+
+
+class ControlPlaneDurableSessionAccessClosedError(PhoenixControlPlaneError):
+    """Raised when a closed durable session access service receives work."""
+
+
+class ControlPlaneDurableSessionRecoveryWorkerStateError(PhoenixControlPlaneError):
+    """Raised when the durable session recovery worker lifecycle is misused."""
+
+
+class ControlPlaneDurableSessionHttpRejectedError(PhoenixControlPlaneError):
+    """Raised with one generic message for rejected durable-session HTTP evidence."""
+
+
+class ControlPlaneDurableSessionCsrfRejectedError(PhoenixControlPlaneError):
+    """Raised when session-bound rotating CSRF evidence fails closed."""
+
+
+class ControlPlaneStepUpRejectedError(PhoenixControlPlaneError):
+    """Raised with one generic message for rejected recent-authentication evidence."""
+
+
+class ControlPlaneDurableSessionRetentionWorkerStateError(PhoenixControlPlaneError):
+    """Raised when the durable session retention worker lifecycle is misused."""

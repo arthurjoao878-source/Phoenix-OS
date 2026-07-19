@@ -14,12 +14,13 @@ from phoenix_os import (
     CapabilityRegistry,
     ConfigLoader,
     ConfigSchema,
+    ControlPlaneDurableSessionAccessService,
     ControlPlaneHttpServer,
-    ControlPlaneOperatorAccessService,
     ControlPlaneOperatorRecord,
     ControlPlaneOperatorRole,
     ControlPlaneOperatorToken,
     EventBus,
+    InMemoryControlPlaneDurableSessionRepository,
     InMemoryControlPlaneOperatorRegistry,
     Kernel,
     MappingConfigSource,
@@ -27,6 +28,7 @@ from phoenix_os import (
     PhoenixRuntime,
     Router,
     RuntimeAssembler,
+    StateControlPlaneDurableSessionRepository,
     StateControlPlaneOperatorRegistry,
 )
 
@@ -63,6 +65,10 @@ async def _request(
     path: str,
     *,
     authorization: str | None = None,
+    cookie: str | None = None,
+    origin: str | None = None,
+    csrf: str | None = None,
+    step_up: str | None = None,
     body: bytes = b"",
 ) -> tuple[int, dict[str, str], dict[str, Any]]:
     assert server.port is not None
@@ -70,6 +76,14 @@ async def _request(
     lines = [f"{method} {path} HTTP/1.1", f"Host: {server.host}"]
     if authorization is not None:
         lines.append(f"Authorization: {authorization}")
+    if cookie is not None:
+        lines.append(f"Cookie: {cookie}")
+    if origin is not None:
+        lines.append(f"Origin: {origin}")
+    if csrf is not None:
+        lines.append(f"X-Phoenix-CSRF: {csrf}")
+    if step_up is not None:
+        lines.append(f"X-Phoenix-Step-Up: {step_up}")
     if body:
         lines.extend(
             (
@@ -100,7 +114,7 @@ async def test_runtime_uses_bounded_memory_operator_registry_without_state_store
     assert isinstance(registry, InMemoryControlPlaneOperatorRegistry)
     assert isinstance(
         runtime.service("control_plane.operator-access"),
-        ControlPlaneOperatorAccessService,
+        ControlPlaneDurableSessionAccessService,
     )
     assert runtime.service("control_plane.operators") is not None
 
@@ -112,6 +126,10 @@ async def test_runtime_uses_state_operator_registry_with_default_state_store() -
     assert isinstance(
         runtime.service("control_plane.operator-registry"),
         StateControlPlaneOperatorRegistry,
+    )
+    assert isinstance(
+        runtime.service("control_plane.operator-sessions"),
+        StateControlPlaneDurableSessionRepository,
     )
 
 
@@ -158,44 +176,138 @@ async def test_runtime_does_not_overwrite_existing_bootstrap_username() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_exchanges_bootstrap_credential_for_temporary_session() -> None:
+async def test_runtime_exchanges_bootstrap_credential_for_httponly_durable_session() -> None:
     runtime = await _runtime()
     server = runtime.service("control_plane.http")
     assert isinstance(server, ControlPlaneHttpServer)
     await runtime.start()
     try:
+        assert server.port is not None
+        origin = f"http://{server.host}:{server.port}"
         status, headers, login = await _request(
             server,
             "POST",
             "/v1/control-plane/operator/login",
             authorization=f"Bearer {_BOOTSTRAP.value}",
+            origin=origin,
         )
-        session_token = login["session_token"]
-        assert isinstance(session_token, str)
+        cookie = headers["set-cookie"].split(";", 1)[0]
+        csrf = headers["x-phoenix-csrf"]
         me_status, _, me = await _request(
             server,
             "GET",
             "/v1/control-plane/operator/me",
-            authorization=f"Bearer {session_token}",
+            cookie=cookie,
         )
         list_status, _, operators = await _request(
             server,
             "GET",
             "/v1/control-plane/operators?limit=20",
-            authorization=f"Bearer {session_token}",
+            cookie=cookie,
+        )
+        history_status, _, sessions = await _request(
+            server,
+            "GET",
+            "/v1/control-plane/operator-sessions?limit=20",
+            cookie=cookie,
+        )
+        logout_status, logout_headers, logout = await _request(
+            server,
+            "POST",
+            "/v1/control-plane/operator/logout",
+            cookie=cookie,
+            origin=origin,
+            csrf=csrf,
         )
     finally:
         await runtime.stop()
 
     assert status == 200
     assert headers["cache-control"] == "no-store"
-    assert session_token != _BOOTSTRAP.value
+    assert "HttpOnly" in headers["set-cookie"]
+    assert "SameSite=Strict" in headers["set-cookie"]
+    assert "session_token" not in login
+    assert "csrf" not in login
     assert me_status == 200
     assert me["username"] == "local-maintainer"
     assert list_status == 200
     assert operators["page"]["total"] == 1
     assert operators["items"][0]["username"] == "local-maintainer"
-    assert "token_digest" not in repr(operators)
+    assert history_status == 200
+    assert sessions["page"]["total"] == 1
+    assert "token_digest" not in repr(sessions)
+    assert "csrf_digest" not in repr(sessions)
+    assert logout_status == 200
+    assert logout["logged_out"]
+    assert "Max-Age=0" in logout_headers["set-cookie"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_requires_action_bound_step_up_for_maintainer_creation() -> None:
+    runtime = await _runtime()
+    server = runtime.service("control_plane.http")
+    assert isinstance(server, ControlPlaneHttpServer)
+    await runtime.start()
+    try:
+        assert server.port is not None
+        origin = f"http://{server.host}:{server.port}"
+        _, login_headers, _ = await _request(
+            server,
+            "POST",
+            "/v1/control-plane/operator/login",
+            authorization=f"Bearer {_BOOTSTRAP.value}",
+            origin=origin,
+        )
+        cookie = login_headers["set-cookie"].split(";", 1)[0]
+        csrf = login_headers["x-phoenix-csrf"]
+        create_body = json.dumps(
+            {
+                "username": "second-maintainer",
+                "display_name": "Second Maintainer",
+                "role": "maintainer",
+            }
+        ).encode()
+        rejected_status, _, rejected = await _request(
+            server,
+            "POST",
+            "/v1/control-plane/operators",
+            cookie=cookie,
+            origin=origin,
+            csrf=csrf,
+            body=create_body,
+        )
+        step_up_body = json.dumps({"action": "create-maintainer"}).encode()
+        proof_status, _, proof = await _request(
+            server,
+            "POST",
+            "/v1/control-plane/operator/step-up",
+            authorization=f"Bearer {_BOOTSTRAP.value}",
+            cookie=cookie,
+            origin=origin,
+            csrf=csrf,
+            body=step_up_body,
+        )
+        created_status, _, created = await _request(
+            server,
+            "POST",
+            "/v1/control-plane/operators",
+            cookie=cookie,
+            origin=origin,
+            csrf=csrf,
+            step_up=proof["step_up_proof"],
+            body=create_body,
+        )
+    finally:
+        await runtime.stop()
+
+    assert rejected_status == 403
+    assert rejected == {"error": "request_rejected"}
+    assert proof_status == 200
+    assert proof["action"] == "create-maintainer"
+    assert created_status == 201
+    assert created["username"] == "second-maintainer"
+    assert created["role"] == "maintainer"
+    assert isinstance(created["token"], str)
 
 
 @pytest.mark.asyncio
@@ -223,13 +335,16 @@ async def test_runtime_closes_operator_access_before_registry_owner() -> None:
     runtime = await _runtime()
     access = runtime.service("control_plane.operator-access")
     registry = runtime.service("control_plane.operator-registry")
-    assert isinstance(access, ControlPlaneOperatorAccessService)
+    assert isinstance(access, ControlPlaneDurableSessionAccessService)
     assert isinstance(registry, InMemoryControlPlaneOperatorRegistry)
 
     await runtime.start()
     await runtime.stop()
 
     assert (await access.snapshot()).closed
+    sessions = runtime.service("control_plane.operator-sessions")
+    assert isinstance(sessions, InMemoryControlPlaneDurableSessionRepository)
+    assert sessions.closed
     assert registry.closed
 
 

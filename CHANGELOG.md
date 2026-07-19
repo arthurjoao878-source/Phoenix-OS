@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.21.0] - 2026-07-19
+
+### Added
+- Accepted RFC-0021 and ADR-0042/0043.
+- State Store-backed durable operator sessions with checksum and index corruption detection.
+- Absolute/idle expiry, atomic token and CSRF rotation, replay-resistant lineage, and restart recovery.
+- Authenticated session history, exact operator/status filters, and terminal-only bounded retention.
+- HttpOnly SameSite=Strict Dashboard cookies with no browser-readable session bearer.
+- Session-bound rotating CSRF and action-specific recent step-up authentication.
+- Dashboard session inspection, individual termination, and global operator-session revocation.
+- RuntimeAssembler persistence selection and lifecycle ownership for access, recovery, retention, and HTTP.
+
+
 ## [0.20.0] - 2026-07-19
 
 ### Added

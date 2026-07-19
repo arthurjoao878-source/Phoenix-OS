@@ -104,21 +104,27 @@ def test_dashboard_html_exposes_operator_management_and_history_filter() -> None
     assert 'id="operators-panel"' in html
     assert 'id="create-operator-form"' in html
     assert 'id="history-operator"' in html
-    assert "Phoenix OS v0.20.0" in html
+    assert 'id="sessions-panel"' in html
+    assert 'id="sessions-status"' in html
+    assert "HttpOnly" in html
+    assert "Phoenix OS v0.21.0" in html
     assert "token_digest" not in html
 
 
-def test_dashboard_javascript_keeps_token_in_tab_session_only() -> None:
+def test_dashboard_javascript_uses_httponly_cookie_without_browser_token_storage() -> None:
     asset = DashboardAssets().get("/dashboard/app.js")
     assert asset is not None
     javascript = asset.body.decode("utf-8")
 
-    assert "sessionStorage" in javascript
+    assert "sessionStorage" not in javascript
     assert "localStorage" not in javascript
+    assert 'credentials: "same-origin"' in javascript
     assert "/v1/control-plane/operator/login" in javascript
+    assert "/v1/control-plane/operator/step-up" in javascript
+    assert "/v1/control-plane/operator-sessions" in javascript
     assert "/v1/control-plane/operators" in javascript
-    assert "temporarySession" in javascript
-    assert 'headers.set("Authorization", `Bearer ${state.token}`)' in javascript
+    assert "session_token" not in javascript
+    assert "X-Phoenix-Step-Up" in javascript
     assert "innerHTML" not in javascript
     assert "eval(" not in javascript
 
