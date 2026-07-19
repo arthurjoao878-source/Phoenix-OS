@@ -1,8 +1,8 @@
-# Validation — Phoenix OS v0.18.0
+# Validation — Phoenix OS v0.19.0
 
-RFC-0018 was validated against the complete Phoenix OS regression suite with strict static analysis,
-loopback command integration, browser protection coverage, Runtime lifecycle tests, and packaging
-checks.
+RFC-0019 was validated against the complete Phoenix OS regression suite with strict static analysis,
+State Store persistence, recovery, retention, loopback history integration, Runtime lifecycle, and
+packaging checks.
 
 ## Commands
 
@@ -21,29 +21,25 @@ python .\examples\control_plane_dashboard.py
 - mypy strict passed for source, tests, and examples;
 - complete regression suite passed;
 - wheel and source distribution passed Twine validation;
-- wheel contains the packaged Dashboard HTML, CSS, JavaScript, and SVG assets;
-- package and plugin compatibility metadata report 0.18.0.
+- wheel contains Dashboard assets and durable command-journal modules;
+- package and plugin compatibility metadata report 0.19.0.
 
 ## Validated behavior
 
-- immutable command intents, receipts, action permissions, and bounded idempotency;
-- SHA-256 storage keys and command fingerprints without retained request payloads;
-- replay of matching requests and conflict rejection for key reuse with another fingerprint;
-- origin-bound HMAC CSRF issuance, expiry, exact-loopback validation, and constant-time verification;
-- one-time destructive confirmation proofs with expiry, bounded retention, and replay rejection;
-- deeply validated immutable JSON job arguments and bounded scheduling parameters;
-- capability existence, permission, risk, and confirmation-policy checks before job scheduling;
-- deterministic command/job UUID recovery after concurrent or partial scheduler success;
-- safe job cancellation, dead-letter retry, and workflow cancellation reconciliation;
-- fixed authenticated POST routes with strict media type, body, header, query, and concurrency limits;
-- exact operation availability without exposing a principal's full permission set;
-- safe receipts without arguments, outputs, contexts, tokens, proofs, keys, or exception text;
-- payload-free command facts and Security Journal authorization categorization;
-- Dashboard tab-scoped bearer/CSRF storage, fresh idempotency keys, and two-step cancellation flow;
-- no inline/external scripts, `innerHTML`, `eval`, CDN assets, cookies, or arbitrary route dispatch;
-- Runtime-owned command API startup and reverse shutdown between HTTP and Event Bus lifecycles;
-- all previously validated kernel, events, capabilities, runtime, configuration, observability,
-  state, plugins, policy, identity, secrets, audit, jobs, workflows, and read-only Dashboard behavior.
+- immutable schema-versioned command records and lifecycle transitions;
+- bounded in-memory repository with unique command and idempotency indexes;
+- State Store-backed atomic records/indexes and optimistic revisions;
+- canonical checksums, strict allowlists, and fail-closed corruption detection;
+- restart-safe journal-backed idempotency and terminal receipt replay;
+- deterministic side-effect probes and deferred uncertain recovery;
+- bounded Runtime-owned recovery and terminal-retention workers;
+- newest-first authenticated command-history pagination;
+- omission of payloads, arguments, outputs, tokens, proofs, secrets, digests, and exception text;
+- Dashboard command-history rendering through DOM text nodes only;
+- automatic RuntimeAssembler selection of State Store or bounded in-memory journal;
+- reverse shutdown that stops HTTP and workers before closing the journal;
+- all previously validated kernel, events, capabilities, runtime, configuration, observability, state,
+  plugins, policy, identity, secrets, audit, jobs, workflows, and Dashboard operations.
 
-Phoenix OS v0.18.0 satisfies RFC-0018 while retaining a local, allowlisted, capability-only command
-boundary. Remote administration and generic object mutation remain outside the built-in control plane.
+Phoenix OS v0.19.0 satisfies RFC-0019 while preserving the loopback-only, capability-only,
+authenticated command boundary established by RFC-0018.

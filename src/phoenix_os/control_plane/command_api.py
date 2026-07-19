@@ -16,6 +16,7 @@ from phoenix_os.control_plane.commands import (
     ControlPlaneCommandAction,
     ControlPlaneCommandIntent,
     ControlPlaneCommandReceipt,
+    ControlPlaneIdempotencyStore,
     IdempotencyKey,
 )
 from phoenix_os.control_plane.confirmation import (
@@ -28,7 +29,6 @@ from phoenix_os.control_plane.csrf import (
     ControlPlaneCsrfProtector,
     ControlPlaneCsrfToken,
 )
-from phoenix_os.control_plane.idempotency import InMemoryControlPlaneIdempotencyStore
 from phoenix_os.control_plane.job_commands import (
     ControlPlaneCancelJobCommand,
     ControlPlaneCreateJobCommand,
@@ -73,7 +73,7 @@ class ControlPlaneCommandApi:
         *,
         csrf: ControlPlaneCsrfProtector,
         confirmations: ControlPlaneConfirmationService,
-        idempotency: InMemoryControlPlaneIdempotencyStore,
+        idempotency: ControlPlaneIdempotencyStore,
         authorizer: ControlPlaneCommandAuthorizer,
         events: EventBus,
         jobs: ControlPlaneJobCommandHandler | None = None,

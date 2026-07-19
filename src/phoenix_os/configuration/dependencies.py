@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from phoenix_os.audit import AuditLedger
     from phoenix_os.control_plane import (
         AdminTokenAuthenticator,
+        ControlPlaneCommandJournalRepository,
+        ControlPlaneCommandRetentionPolicy,
         ControlPlaneEventStreamConfig,
         ControlPlaneHttpConfig,
         JobRecordSource,
@@ -51,6 +53,10 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "control_plane",
         "control_plane.events",
         "control_plane.commands",
+        "control_plane.command-journal",
+        "control_plane.command-history",
+        "control_plane.command-recovery",
+        "control_plane.command-retention",
         "control_plane.http",
         "observability",
         "plugins",
@@ -241,6 +247,12 @@ class RuntimeAssembler:
         control_plane_http_config: ControlPlaneHttpConfig | None = None,
         control_plane_event_config: ControlPlaneEventStreamConfig | None = None,
         control_plane_job_records: JobRecordSource | None = None,
+        control_plane_command_journal: ControlPlaneCommandJournalRepository | None = None,
+        control_plane_command_journal_capacity: int = 4096,
+        control_plane_command_recovery_poll_interval: float = 1.0,
+        control_plane_command_recovery_batch_size: int = 100,
+        control_plane_command_retention_policy: ControlPlaneCommandRetentionPolicy | None = None,
+        control_plane_command_retention_poll_interval: float = 3600.0,
         observe_events: bool = True,
         journal_events: bool = True,
         metadata: Mapping[str, str] | None = None,
@@ -269,6 +281,16 @@ class RuntimeAssembler:
         self._control_plane_http_config = control_plane_http_config
         self._control_plane_event_config = control_plane_event_config
         self._control_plane_job_records = control_plane_job_records
+        self._control_plane_command_journal = control_plane_command_journal
+        self._control_plane_command_journal_capacity = control_plane_command_journal_capacity
+        self._control_plane_command_recovery_poll_interval = (
+            control_plane_command_recovery_poll_interval
+        )
+        self._control_plane_command_recovery_batch_size = control_plane_command_recovery_batch_size
+        self._control_plane_command_retention_policy = control_plane_command_retention_policy
+        self._control_plane_command_retention_poll_interval = (
+            control_plane_command_retention_poll_interval
+        )
         if workflows is not None and jobs is None:
             raise ValueError("workflow orchestration requires a Runtime-owned job scheduler")
         if control_plane_authenticator is None and any(
@@ -277,6 +299,8 @@ class RuntimeAssembler:
                 control_plane_http_config,
                 control_plane_event_config,
                 control_plane_job_records,
+                control_plane_command_journal,
+                control_plane_command_retention_policy,
             )
         ):
             raise ValueError("control plane options require an authenticator")
@@ -383,7 +407,31 @@ class RuntimeAssembler:
 
         control_plane_stack = None
         if self._control_plane_authenticator is not None:
+            from phoenix_os.control_plane.journal_memory import (
+                InMemoryControlPlaneCommandJournalRepository,
+            )
+            from phoenix_os.control_plane.journal_state import (
+                StateControlPlaneCommandJournalRepository,
+            )
             from phoenix_os.control_plane.runtime import ControlPlaneRuntimeStack
+
+            command_journal = self._control_plane_command_journal
+            if command_journal is None:
+                state_store: StateStore | None
+                if isinstance(self._state, StateStoreRegistry):
+                    state_store = None if self._state.default_name is None else self._state.store()
+                else:
+                    state_store = self._state
+                command_journal = (
+                    InMemoryControlPlaneCommandJournalRepository(
+                        capacity=self._control_plane_command_journal_capacity
+                    )
+                    if state_store is None
+                    else StateControlPlaneCommandJournalRepository(
+                        state_store,
+                        capacity=self._control_plane_command_journal_capacity,
+                    )
+                )
 
             control_plane_stack = ControlPlaneRuntimeStack.create(
                 event_bus=self._events,
@@ -400,11 +448,31 @@ class RuntimeAssembler:
                 event_config=self._control_plane_event_config,
                 job_commands=self._jobs,
                 workflow_commands=self._workflows,
+                command_journal=command_journal,
+                command_recovery_poll_interval=(self._control_plane_command_recovery_poll_interval),
+                command_recovery_batch_size=self._control_plane_command_recovery_batch_size,
+                command_retention_policy=self._control_plane_command_retention_policy,
+                command_retention_poll_interval=(
+                    self._control_plane_command_retention_poll_interval
+                ),
             )
             custom_services["control_plane"] = control_plane_stack.service
+            custom_services["control_plane.command-journal"] = control_plane_stack.journal
+            custom_services["control_plane.command-history"] = control_plane_stack.history
+            custom_services["control_plane.command-recovery"] = control_plane_stack.recovery
+            custom_services["control_plane.command-retention"] = control_plane_stack.retention
             custom_services["control_plane.events"] = control_plane_stack.events
             custom_services["control_plane.commands"] = control_plane_stack.commands
             custom_services["control_plane.http"] = control_plane_stack.http
+            components.append(
+                ComponentSpec("control_plane.command-journal", control_plane_stack.journal_owner)
+            )
+            components.append(
+                ComponentSpec("control_plane.command-recovery", control_plane_stack.recovery)
+            )
+            components.append(
+                ComponentSpec("control_plane.command-retention", control_plane_stack.retention)
+            )
             components.append(ComponentSpec("control_plane.events", control_plane_stack.events))
             components.append(ComponentSpec("control_plane.commands", control_plane_stack.commands))
 

@@ -12,6 +12,7 @@ from uuid import UUID
 
 from phoenix_os.audit import AuditLedgerSnapshot
 from phoenix_os.capabilities import CapabilityDescriptor, RiskLevel
+from phoenix_os.control_plane.journal_contracts import ControlPlaneCommandJournalSnapshot
 from phoenix_os.events import Event
 from phoenix_os.jobs import (
     JobRecord,
@@ -571,6 +572,7 @@ class ControlPlaneSnapshot:
     workflows: WorkflowSummary
     job_worker: JobWorkerSnapshot | None = None
     workflow_worker: WorkflowWorkerSnapshot | None = None
+    command_journal: ControlPlaneCommandJournalSnapshot | None = None
     schema_version: int = 1
 
     def __post_init__(self) -> None:

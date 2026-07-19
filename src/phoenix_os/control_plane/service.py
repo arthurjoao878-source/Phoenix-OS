@@ -31,6 +31,10 @@ from phoenix_os.control_plane.contracts import (
     WorkflowView,
     WorkflowWorkerSnapshotSource,
 )
+from phoenix_os.control_plane.journal_contracts import (
+    ControlPlaneCommandJournalSnapshot,
+    ControlPlaneCommandJournalSnapshotSource,
+)
 from phoenix_os.jobs import JobSchedulerSnapshot, JobWorkerSnapshot
 from phoenix_os.runtime import RuntimeSnapshot, RuntimeState
 from phoenix_os.workflows import WorkflowWorkerSnapshot
@@ -57,6 +61,7 @@ class ControlPlaneService:
         audit: AuditSnapshotSource | None = None,
         job_worker: JobWorkerSnapshotSource | None = None,
         workflow_worker: WorkflowWorkerSnapshotSource | None = None,
+        command_journal: ControlPlaneCommandJournalSnapshotSource | None = None,
         clock: ControlPlaneClock = _utc_now,
     ) -> None:
         if not callable(clock):
@@ -70,6 +75,7 @@ class ControlPlaneService:
         self._audit = audit
         self._job_worker = job_worker
         self._workflow_worker = workflow_worker
+        self._command_journal = command_journal
         self._clock = clock
 
     async def snapshot(self) -> ControlPlaneSnapshot:
@@ -86,7 +92,17 @@ class ControlPlaneService:
         workflow_worker = (
             None if self._workflow_worker is None else await self._workflow_worker.snapshot()
         )
-        health = _derive_health(runtime, jobs, workflows, job_worker, workflow_worker)
+        command_journal = (
+            None if self._command_journal is None else await self._command_journal.snapshot()
+        )
+        health = _derive_health(
+            runtime,
+            jobs,
+            workflows,
+            job_worker,
+            workflow_worker,
+            command_journal,
+        )
         return ControlPlaneSnapshot(
             generated_at=generated_at,
             health=health,
@@ -95,6 +111,7 @@ class ControlPlaneService:
             workflows=workflows,
             job_worker=job_worker,
             workflow_worker=workflow_worker,
+            command_journal=command_journal,
         )
 
     async def list_jobs(self, page: PageRequest = DEFAULT_PAGE_REQUEST) -> JobPage:
@@ -177,6 +194,7 @@ def _derive_health(
     workflows: WorkflowSummary,
     job_worker: JobWorkerSnapshot | None,
     workflow_worker: WorkflowWorkerSnapshot | None,
+    command_journal: ControlPlaneCommandJournalSnapshot | None,
 ) -> ControlPlaneHealth:
     if runtime.state in {RuntimeState.CREATED, RuntimeState.STOPPED}:
         return ControlPlaneHealth.STOPPED
@@ -189,5 +207,7 @@ def _derive_health(
     if workflow_worker is not None and (
         workflow_worker.failures > 0 or workflow_worker.last_error is not None
     ):
+        return ControlPlaneHealth.DEGRADED
+    if command_journal is not None and command_journal.closed:
         return ControlPlaneHealth.DEGRADED
     return ControlPlaneHealth.HEALTHY

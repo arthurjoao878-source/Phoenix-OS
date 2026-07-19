@@ -29,10 +29,16 @@ from phoenix_os.control_plane.errors import (
     ControlPlaneEventStreamStateError,
     ControlPlaneServerStateError,
 )
+from phoenix_os.control_plane.journal_contracts import (
+    DEFAULT_COMMAND_JOURNAL_PAGE_SIZE,
+    ControlPlaneCommandJournalPageRequest,
+)
+from phoenix_os.control_plane.journal_history import ControlPlaneCommandHistoryReader
 from phoenix_os.control_plane.serialization import (
     audit_summary_to_dict,
     capability_page_to_dict,
     command_availability_to_dict,
+    command_history_page_to_dict,
     event_batch_to_dict,
     job_page_to_dict,
     plugin_page_to_dict,
@@ -143,12 +149,14 @@ class ControlPlaneHttpServer:
         event_stream: EventStreamReader | None = None,
         dashboard_assets: DashboardAssets | None = None,
         command_api: ControlPlaneCommandApi | None = None,
+        command_history: ControlPlaneCommandHistoryReader | None = None,
     ) -> None:
         self._reader = reader
         self._authenticator = authenticator
         self._config = config or ControlPlaneHttpConfig()
         self._event_stream = event_stream
         self._dashboard_assets = dashboard_assets or DashboardAssets()
+        self._command_history = command_history
         self._command_http = (
             None
             if command_api is None
@@ -458,6 +466,26 @@ class ControlPlaneHttpServer:
                 command_availability_to_dict(self._command_http.api.availability(principal)),
                 {},
             )
+        if request.path == "/v1/control-plane/commands/history":
+            if request.method != "GET" or request.body:
+                return (
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    {"error": "method_not_allowed"},
+                    {"Allow": "GET"},
+                )
+            if self._command_history is None:
+                return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "history_unavailable"}, {}
+            try:
+                history_request = _command_journal_page_request(request.query)
+            except ValueError:
+                return HTTPStatus.BAD_REQUEST, {"error": "invalid_pagination"}, {}
+            return (
+                HTTPStatus.OK,
+                command_history_page_to_dict(
+                    await self._command_history.list_history(principal, history_request)
+                ),
+                {},
+            )
         if request.method != "GET" or request.body:
             return HTTPStatus.METHOD_NOT_ALLOWED, {"error": "method_not_allowed"}, {"Allow": "GET"}
 
@@ -617,6 +645,19 @@ def _page_request(query: Mapping[str, tuple[str, ...]]) -> PageRequest:
             raise ValueError(f"invalid {name}")
         values[name] = int(raw[0])
     return PageRequest(**values)
+
+
+def _command_journal_page_request(
+    query: Mapping[str, tuple[str, ...]],
+) -> ControlPlaneCommandJournalPageRequest:
+    if set(query) - {"offset", "limit"}:
+        raise ValueError("unsupported pagination parameter")
+    offset = _single_unsigned_integer(query, "offset")
+    limit = _single_unsigned_integer(query, "limit")
+    return ControlPlaneCommandJournalPageRequest(
+        offset=0 if offset is None else offset,
+        limit=DEFAULT_COMMAND_JOURNAL_PAGE_SIZE if limit is None else limit,
+    )
 
 
 def _event_stream_request(
