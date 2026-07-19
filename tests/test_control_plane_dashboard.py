@@ -96,6 +96,18 @@ def test_dashboard_html_uses_only_packaged_scripts_and_styles() -> None:
     assert "https://" not in html
 
 
+def test_dashboard_html_exposes_operator_management_and_history_filter() -> None:
+    asset = DashboardAssets().get("/dashboard/")
+    assert asset is not None
+    html = asset.body.decode("utf-8")
+
+    assert 'id="operators-panel"' in html
+    assert 'id="create-operator-form"' in html
+    assert 'id="history-operator"' in html
+    assert "Phoenix OS v0.20.0" in html
+    assert "token_digest" not in html
+
+
 def test_dashboard_javascript_keeps_token_in_tab_session_only() -> None:
     asset = DashboardAssets().get("/dashboard/app.js")
     assert asset is not None
@@ -103,6 +115,9 @@ def test_dashboard_javascript_keeps_token_in_tab_session_only() -> None:
 
     assert "sessionStorage" in javascript
     assert "localStorage" not in javascript
+    assert "/v1/control-plane/operator/login" in javascript
+    assert "/v1/control-plane/operators" in javascript
+    assert "temporarySession" in javascript
     assert 'headers.set("Authorization", `Bearer ${state.token}`)' in javascript
     assert "innerHTML" not in javascript
     assert "eval(" not in javascript

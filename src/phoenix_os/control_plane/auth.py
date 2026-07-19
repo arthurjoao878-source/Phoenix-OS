@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from phoenix_os.control_plane.commands import (
     ControlPlaneCommandAction,
@@ -35,6 +37,15 @@ class ControlPlanePrincipal:
             raise ValueError("control plane principal requires control-plane.read")
         object.__setattr__(self, "name", normalized)
         object.__setattr__(self, "permissions", permissions)
+
+
+class ControlPlaneAuthenticator(Protocol):
+    """Resolve an authorization header to one authenticated local principal."""
+
+    def authenticate(
+        self,
+        authorization: str | None,
+    ) -> ControlPlanePrincipal | None | Awaitable[ControlPlanePrincipal | None]: ...
 
 
 class ControlPlaneCommandAuthorizer:

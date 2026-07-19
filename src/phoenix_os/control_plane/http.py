@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import ipaddress
 import json
 import math
@@ -13,7 +14,7 @@ from http import HTTPStatus
 from urllib.parse import parse_qs, urlsplit
 
 from phoenix_os.control_plane.assets import DashboardAssets
-from phoenix_os.control_plane.auth import AdminTokenAuthenticator
+from phoenix_os.control_plane.auth import ControlPlaneAuthenticator, ControlPlanePrincipal
 from phoenix_os.control_plane.command_api import ControlPlaneCommandApi
 from phoenix_os.control_plane.command_http import ControlPlaneCommandHttpAdapter
 from phoenix_os.control_plane.contracts import (
@@ -34,6 +35,7 @@ from phoenix_os.control_plane.journal_contracts import (
     ControlPlaneCommandJournalPageRequest,
 )
 from phoenix_os.control_plane.journal_history import ControlPlaneCommandHistoryReader
+from phoenix_os.control_plane.operator_http import ControlPlaneOperatorHttpAdapter
 from phoenix_os.control_plane.serialization import (
     audit_summary_to_dict,
     capability_page_to_dict,
@@ -143,13 +145,14 @@ class ControlPlaneHttpServer:
     def __init__(
         self,
         reader: ControlPlaneReader,
-        authenticator: AdminTokenAuthenticator,
+        authenticator: ControlPlaneAuthenticator,
         *,
         config: ControlPlaneHttpConfig | None = None,
         event_stream: EventStreamReader | None = None,
         dashboard_assets: DashboardAssets | None = None,
         command_api: ControlPlaneCommandApi | None = None,
         command_history: ControlPlaneCommandHistoryReader | None = None,
+        operator_http: ControlPlaneOperatorHttpAdapter | None = None,
     ) -> None:
         self._reader = reader
         self._authenticator = authenticator
@@ -157,6 +160,7 @@ class ControlPlaneHttpServer:
         self._event_stream = event_stream
         self._dashboard_assets = dashboard_assets or DashboardAssets()
         self._command_history = command_history
+        self._operator_http = operator_http
         self._command_http = (
             None
             if command_api is None
@@ -430,7 +434,14 @@ class ControlPlaneHttpServer:
                 )
             return HTTPStatus.OK, {"status": "ok"}, {}
         authorization = _single_header(request.headers, "authorization")
-        principal = self._authenticator.authenticate(authorization)
+        if self._operator_http is not None and self._operator_http.handles_public(request.path):
+            return await self._operator_http.dispatch_public(
+                method=request.method,
+                authorization=authorization,
+                body=request.body,
+                query=request.query,
+            )
+        principal = await self._authenticate(authorization)
         if principal is None:
             async with self._counter_lock:
                 self._unauthorized += 1
@@ -443,6 +454,18 @@ class ControlPlaneHttpServer:
             async with self._counter_lock:
                 self._unauthorized += 1
             return HTTPStatus.FORBIDDEN, {"error": "forbidden"}, {}
+
+        if self._operator_http is not None and self._operator_http.handles(request.path):
+            return await self._operator_http.dispatch(
+                principal=principal,
+                authorization=authorization,
+                method=request.method,
+                path=request.path,
+                query=request.query,
+                headers=request.headers,
+                body=request.body,
+                server_origin=self._server_origin(),
+            )
 
         if self._command_http is not None and self._command_http.handles(request.path):
             if request.query:
@@ -476,13 +499,15 @@ class ControlPlaneHttpServer:
             if self._command_history is None:
                 return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "history_unavailable"}, {}
             try:
-                history_request = _command_journal_page_request(request.query)
+                history_request, operator_filter = _command_journal_page_request(request.query)
             except ValueError:
                 return HTTPStatus.BAD_REQUEST, {"error": "invalid_pagination"}, {}
             return (
                 HTTPStatus.OK,
                 command_history_page_to_dict(
-                    await self._command_history.list_history(principal, history_request)
+                    await self._command_history.list_history(
+                        principal, history_request, operator=operator_filter
+                    )
                 ),
                 {},
             )
@@ -558,6 +583,15 @@ class ControlPlaneHttpServer:
                 {},
             )
         return HTTPStatus.OK, plugin_page_to_dict(await self._reader.list_plugins(page)), {}
+
+    async def _authenticate(
+        self,
+        authorization: str | None,
+    ) -> ControlPlanePrincipal | None:
+        result = self._authenticator.authenticate(authorization)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     def _server_origin(self) -> ControlPlaneBrowserOrigin:
         if self._port is None:
@@ -649,14 +683,23 @@ def _page_request(query: Mapping[str, tuple[str, ...]]) -> PageRequest:
 
 def _command_journal_page_request(
     query: Mapping[str, tuple[str, ...]],
-) -> ControlPlaneCommandJournalPageRequest:
-    if set(query) - {"offset", "limit"}:
+) -> tuple[ControlPlaneCommandJournalPageRequest, str | None]:
+    if set(query) - {"offset", "limit", "operator"}:
         raise ValueError("unsupported pagination parameter")
     offset = _single_unsigned_integer(query, "offset")
     limit = _single_unsigned_integer(query, "limit")
-    return ControlPlaneCommandJournalPageRequest(
-        offset=0 if offset is None else offset,
-        limit=DEFAULT_COMMAND_JOURNAL_PAGE_SIZE if limit is None else limit,
+    operator_values = query.get("operator")
+    operator = None
+    if operator_values is not None:
+        if len(operator_values) != 1 or not operator_values[0].strip():
+            raise ValueError("invalid operator filter")
+        operator = operator_values[0].strip().lower()
+    return (
+        ControlPlaneCommandJournalPageRequest(
+            offset=0 if offset is None else offset,
+            limit=DEFAULT_COMMAND_JOURNAL_PAGE_SIZE if limit is None else limit,
+        ),
+        operator,
     )
 
 

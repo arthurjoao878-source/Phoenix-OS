@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.20.0] - 2026-07-19
+
+### Added
+- Accepted RFC-0020 and ADR-0040/0041.
+- Identified local operators with Viewer, Operator, and Maintainer roles.
+- Bounded in-memory and State Store-backed operator registries with protected digest indexes.
+- Constant-time authentication, generic failures, rotation, disablement, reactivation, and revocation.
+- Temporary expiring sessions, bounded login throttling, logout, and administrative session revocation.
+- Strict CSRF-protected operator management HTTP routes and allowlisted serializers.
+- Dashboard operator administration and operator-filtered durable command history.
+- RuntimeAssembler registry selection, bootstrap maintainer, lifecycle ownership, and exact journal attribution.
+
+
 ## [0.19.0] - 2026-07-19
 
 ### Added

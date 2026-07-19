@@ -66,3 +66,13 @@ button.small { padding: .4rem .62rem; font-size: .72rem; }
 button:disabled { cursor: not-allowed; opacity: .45; filter: none; }
 .row-actions { display: flex; gap: .4rem; align-items: center; }
 @media (max-width: 900px) { .command-form { grid-template-columns: 1fr; } }
+select { min-width: 0; background: #06101a; color: #fff; border: 1px solid #36516a; border-radius: .7rem; padding: .72rem .8rem; font: inherit; }
+select:focus { outline: 2px solid #ff7a3d; outline-offset: 2px; }
+.operator-form { display: grid; grid-template-columns: repeat(3, minmax(10rem, 1fr)) auto; gap: .8rem; align-items: end; margin-bottom: .8rem; }
+.operator-form label { color: #c7d8e7; font-size: .78rem; display: grid; gap: .4rem; }
+.credential-output { border: 1px dashed #465e73; border-radius: .7rem; padding: .7rem; margin: .5rem 0 .8rem; word-break: break-all; }
+.history-tools { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; justify-content: flex-end; }
+.history-tools label { color: #89a3b8; font-size: .75rem; }
+.history-tools select { padding: .4rem .55rem; }
+@media (max-width: 900px) { .operator-form { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 620px) { .operator-form { grid-template-columns: 1fr; } .history-tools { justify-content: flex-start; } }

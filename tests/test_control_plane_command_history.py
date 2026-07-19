@@ -55,6 +55,7 @@ def _record(
     index: int = 1,
     *,
     status: ControlPlaneCommandJournalStatus = ControlPlaneCommandJournalStatus.PENDING,
+    principal: str = "dashboard.operator",
 ) -> ControlPlaneCommandJournalRecord:
     requested_at = _NOW + timedelta(minutes=index)
     terminal = status.terminal
@@ -62,7 +63,7 @@ def _record(
         command_id=UUID(int=index),
         action=ControlPlaneCommandAction.CREATE_JOB,
         target=f"job:history-{index}",
-        principal="dashboard.operator",
+        principal=principal,
         idempotency_digest=_digest(f"key-{index}"),
         fingerprint=_digest(f"fingerprint-{index}"),
         status=status,
@@ -247,6 +248,92 @@ async def test_history_service_ignores_closed_event_bus() -> None:
     page = await service.list_history(ControlPlanePrincipal("operator"))
 
     assert page.page.total == 1
+
+
+@pytest.mark.asyncio
+async def test_history_service_filters_exact_operator_before_paginating() -> None:
+    repository = InMemoryControlPlaneCommandJournalRepository()
+    principals = ("alice", "bob", "alice", "carol", "alice")
+    for index, principal in enumerate(principals, start=1):
+        await repository.add(_record(index, principal=principal))
+    service = ControlPlaneCommandHistoryService(repository)
+
+    page = await service.list_history(
+        ControlPlanePrincipal("maintainer"),
+        ControlPlaneCommandJournalPageRequest(offset=1, limit=2),
+        operator=" Alice ",
+    )
+
+    assert tuple(item.command_id for item in page.items) == (UUID(int=3), UUID(int=1))
+    assert all(item.principal == "alice" for item in page.items)
+    assert page.page.total == 3
+    assert page.page.next_offset is None
+
+
+@pytest.mark.asyncio
+async def test_history_service_operator_filter_is_included_as_safe_audit_fact() -> None:
+    repository = InMemoryControlPlaneCommandJournalRepository()
+    await repository.add(_record(1, principal="alice"))
+    events = EventBus()
+    captured: list[Event] = []
+    await events.subscribe("*", captured.append)
+    service = ControlPlaneCommandHistoryService(repository, events=events)
+
+    await service.list_history(ControlPlanePrincipal("maintainer"), operator="alice")
+
+    assert captured[-1].payload["operator"] == "alice"
+    assert "digest" not in repr(captured[-1].payload)
+
+
+@pytest.mark.asyncio
+async def test_http_history_endpoint_filters_by_operator() -> None:
+    repository = InMemoryControlPlaneCommandJournalRepository()
+    await repository.add(_record(1, principal="alice"))
+    await repository.add(_record(2, principal="bob"))
+    await repository.add(_record(3, principal="alice"))
+    server = ControlPlaneHttpServer(
+        _Reader(),
+        AdminTokenAuthenticator(_TOKEN),
+        command_history=ControlPlaneCommandHistoryService(repository),
+    )
+    await server.start()
+    try:
+        status, payload = await _request(
+            server,
+            "/v1/control-plane/commands/history?operator=alice&limit=20",
+        )
+    finally:
+        await server.stop()
+
+    assert status == 200
+    assert payload["page"]["total"] == 2
+    assert [item["principal"] for item in payload["items"]] == ["alice", "alice"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/control-plane/commands/history?operator=",
+        "/v1/control-plane/commands/history?operator=alice&operator=bob",
+    ],
+)
+async def test_http_history_endpoint_rejects_invalid_operator_filter(path: str) -> None:
+    server = ControlPlaneHttpServer(
+        _Reader(),
+        AdminTokenAuthenticator(_TOKEN),
+        command_history=ControlPlaneCommandHistoryService(
+            InMemoryControlPlaneCommandJournalRepository()
+        ),
+    )
+    await server.start()
+    try:
+        status, payload = await _request(server, path)
+    finally:
+        await server.stop()
+
+    assert status == 400
+    assert payload == {"error": "invalid_pagination"}
 
 
 def test_command_history_serializer_is_allowlisted() -> None:

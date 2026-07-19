@@ -24,14 +24,14 @@
   <main>
     <section id="login-panel" class="login-panel" aria-labelledby="login-title">
       <div>
-        <p class="eyebrow">Local administrator access</p>
+        <p class="eyebrow">Local operator access</p>
         <h2 id="login-title">Connect to the dashboard</h2>
-        <p>The token stays in this browser tab and is sent only to the loopback API.</p>
+        <p>The long-lived credential is exchanged for a temporary session kept only in this browser tab.</p>
       </div>
       <form id="login-form" autocomplete="off">
-        <label for="token">Administrator token</label>
+        <label for="token">Operator credential</label>
         <div class="token-row">
-          <input id="token" name="token" type="password" minlength="24" required spellcheck="false" autocomplete="off">
+          <input id="token" name="token" type="password" minlength="32" required spellcheck="false" autocomplete="off">
           <button type="submit">Connect</button>
         </div>
         <p id="login-error" class="error" role="alert"></p>
@@ -42,6 +42,7 @@
       <nav class="actions" aria-label="Dashboard actions">
         <button id="refresh" type="button">Refresh now</button>
         <button id="disconnect" type="button" class="secondary">Disconnect</button>
+        <span id="operator-identity">Anonymous</span>
         <span id="last-updated">Not updated</span>
       </nav>
 
@@ -84,6 +85,18 @@
           <p class="muted">Commands use origin-bound CSRF protection, per-action permissions, idempotency keys, and one-time confirmation for cancellation.</p>
         </article>
 
+        <article id="operators-panel" class="panel wide hidden">
+          <div class="panel-heading"><div><p class="eyebrow">Local access</p><h2>Operators</h2></div><span id="operators-page" class="muted"></span></div>
+          <form id="create-operator-form" class="operator-form" autocomplete="off">
+            <label>Username<input id="operator-username" required maxlength="64" spellcheck="false"></label>
+            <label>Display name<input id="operator-display-name" required maxlength="128"></label>
+            <label>Role<select id="operator-role"><option value="viewer">Viewer</option><option value="operator">Operator</option><option value="maintainer">Maintainer</option></select></label>
+            <button id="create-operator-submit" type="submit">Create operator</button>
+          </form>
+          <p id="operator-token-output" class="credential-output muted">New credentials appear here once and are never stored by Phoenix OS.</p>
+          <div class="table-wrap"><table><thead><tr><th>Operator</th><th>Role</th><th>Status</th><th>Revision</th><th>Action</th></tr></thead><tbody id="operators-table"></tbody></table></div>
+        </article>
+
         <article class="panel wide">
           <div class="panel-heading"><div><p class="eyebrow">Execution</p><h2>Recent jobs</h2></div><span id="jobs-page" class="muted"></span></div>
           <div class="table-wrap"><table><thead><tr><th>Capability</th><th>Status</th><th>Attempts</th><th>Next run</th><th>Action</th></tr></thead><tbody id="jobs-table"></tbody></table></div>
@@ -105,7 +118,7 @@
         </article>
 
         <article class="panel wide">
-          <div class="panel-heading"><div><p class="eyebrow">Durable operations</p><h2>Command history</h2></div><span id="commands-page" class="muted"></span></div>
+          <div class="panel-heading"><div><p class="eyebrow">Durable operations</p><h2>Command history</h2></div><div class="history-tools"><label for="history-operator">Operator</label><select id="history-operator"><option value="">All</option></select><span id="commands-page" class="muted"></span></div></div>
           <div class="table-wrap"><table><thead><tr><th>Requested</th><th>Action</th><th>Target</th><th>Status</th><th>Result</th><th>Principal</th></tr></thead><tbody id="commands-table"></tbody></table></div>
         </article>
 
@@ -117,6 +130,6 @@
     </section>
   </main>
 
-  <footer>Loopback-only · Authenticated safe operations · Phoenix OS v0.19.0</footer>
+  <footer>Loopback-only · Authenticated safe operations · Phoenix OS v0.20.0</footer>
 </body>
 </html>

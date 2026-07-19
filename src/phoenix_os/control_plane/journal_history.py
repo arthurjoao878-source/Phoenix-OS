@@ -99,6 +99,8 @@ class ControlPlaneCommandHistoryReader(Protocol):
         self,
         principal: ControlPlanePrincipal,
         request: ControlPlaneCommandJournalPageRequest = DEFAULT_COMMAND_JOURNAL_PAGE_REQUEST,
+        *,
+        operator: str | None = None,
     ) -> Awaitable[ControlPlaneCommandHistoryPage]: ...
 
 
@@ -118,11 +120,21 @@ class ControlPlaneCommandHistoryService:
         self,
         principal: ControlPlanePrincipal,
         request: ControlPlaneCommandJournalPageRequest = DEFAULT_COMMAND_JOURNAL_PAGE_REQUEST,
+        *,
+        operator: str | None = None,
     ) -> ControlPlaneCommandHistoryPage:
-        page = await self._repository.list_page(request)
+        normalized_operator = None if operator is None else operator.strip().lower()
+        if normalized_operator == "":
+            raise ValueError("history operator filter must not be blank")
+        if normalized_operator is None:
+            page = await self._repository.list_page(request)
+            items = page.items
+            page_info = page.page
+        else:
+            items, page_info = await self._filtered_page(request, normalized_operator)
         history = ControlPlaneCommandHistoryPage(
-            items=tuple(ControlPlaneCommandHistoryView.from_record(item) for item in page.items),
-            page=page.page,
+            items=tuple(ControlPlaneCommandHistoryView.from_record(item) for item in items),
+            page=page_info,
         )
         await self._safe_emit(
             "control-plane.command.journal.history-read",
@@ -134,9 +146,32 @@ class ControlPlaneCommandHistoryService:
                 "returned": history.page.returned,
                 "status": "succeeded",
                 "total": history.page.total,
+                **({} if normalized_operator is None else {"operator": normalized_operator}),
             },
         )
         return history
+
+    async def _filtered_page(
+        self,
+        request: ControlPlaneCommandJournalPageRequest,
+        operator: str,
+    ) -> tuple[tuple[ControlPlaneCommandJournalRecord, ...], ControlPlaneCommandJournalPageInfo]:
+        matching: list[ControlPlaneCommandJournalRecord] = []
+        offset = 0
+        while True:
+            page = await self._repository.list_page(
+                ControlPlaneCommandJournalPageRequest(offset=offset, limit=200)
+            )
+            matching.extend(item for item in page.items if item.principal.lower() == operator)
+            if page.page.next_offset is None:
+                break
+            offset = page.page.next_offset
+        selected = tuple(matching[request.offset : request.offset + request.limit])
+        return selected, ControlPlaneCommandJournalPageInfo.from_slice(
+            request,
+            returned=len(selected),
+            total=len(matching),
+        )
 
     async def _safe_emit(self, name: str, payload: Mapping[str, object]) -> None:
         if self._events is None:

@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.19.0` implements nineteen accepted specifications:
+Version `0.20.0` implements twenty accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -43,7 +43,12 @@ Version `0.19.0` implements nineteen accepted specifications:
   idempotency, origin-bound CSRF, one-time destructive confirmations, safe command handlers, audited
   fixed POST routes, and Dashboard operation controls.
 
-- **RFC-0019 — Durable Command Journal and Recovery:** payload-free State Store persistence, restart-safe idempotency, interrupted-command reconciliation, bounded history, and terminal-only retention.
+- **RFC-0019 — Durable Command Journal and Recovery:** payload-free State Store persistence,
+  restart-safe idempotency, interrupted-command reconciliation, bounded history, and terminal-only
+  retention.
+- **RFC-0020 — Local Operator Identity and Role-Based Access Control:** identified local operators,
+  deterministic Viewer/Operator/Maintainer roles, protected credential digests, temporary sessions,
+  generic login failures, bounded throttling, operator management, and exact journal attribution.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -82,21 +87,25 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 python .\examples\control_plane_dashboard.py
 ```
 
-Open the printed loopback URL and enter the one-time administrator token. The dashboard serves only
-packaged HTML, CSS, JavaScript, and SVG assets; it loads no external scripts or fonts. Read requests
-remain authenticated with `control-plane.read` and use explicit serializers that omit job arguments,
-workflow inputs and outputs, plugin metadata, audit bodies, Event Bus payloads, and secrets.
+Open the printed loopback URL and enter the bootstrap Maintainer credential. The Dashboard exchanges
+it for a temporary process-local session and does not retain the long-lived credential. Packaged HTML,
+CSS, JavaScript, and SVG assets load without external scripts or fonts. Read responses use explicit
+serializers that omit credential digests, session tokens, job arguments, workflow inputs and outputs,
+plugin metadata, audit bodies, Event Bus payloads, and secrets.
 
 When the authenticated principal has exact command permissions, the Dashboard can create safe
 capability-backed jobs, cancel jobs or workflows, and retry eligible dead-letter jobs. Browser
 commands require an exact loopback origin, a short-lived CSRF token, a fresh idempotency key, and a
-one-time confirmation proof for cancellation. The bearer and CSRF values are retained only in browser
-`sessionStorage` for the active tab.
+one-time confirmation proof for cancellation. The temporary session bearer and CSRF value are retained only in browser `sessionStorage` for the
+active tab. Maintainers can create, update, disable, reactivate, rotate, and revoke local operators;
+creation and rotation display a new long-lived credential exactly once.
 
-`RuntimeAssembler` owns `ControlPlaneEventStream`, `ControlPlaneCommandApi`, and
-`ControlPlaneHttpServer` when it receives an `AdminTokenAuthenticator`. Static routes are public
-because they contain no operational data; every operational route remains bearer-authenticated.
-Read permission alone never grants a command action.
+`RuntimeAssembler` owns the operator registry, temporary access service, command journal, event
+stream, command API, and HTTP server when it receives `control_plane_operator_token`. It selects a
+State Store-backed registry when a default State Store exists and otherwise uses a bounded in-memory
+registry. Static routes are public because they contain no operational data; every operational route
+requires a temporary operator session. Legacy `AdminTokenAuthenticator` remains available as a
+mutually exclusive compatibility mode. Read permission alone never grants a command action.
 
 ## Durable workflow example
 

@@ -7,7 +7,6 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 from phoenix_os import (
-    AdminTokenAuthenticator,
     AllowAllAuthorizer,
     CapabilityDescriptor,
     CapabilityInvocation,
@@ -15,6 +14,7 @@ from phoenix_os import (
     ConfigLoader,
     ConfigSchema,
     ControlPlaneHttpConfig,
+    ControlPlaneOperatorToken,
     EventBus,
     InMemoryJobRepository,
     InMemoryWorkflowRepository,
@@ -26,11 +26,6 @@ from phoenix_os import (
     Router,
     RuntimeAssembler,
     WorkflowOrchestrator,
-)
-from phoenix_os.control_plane import (
-    CONTROL_PLANE_READ_PERMISSION,
-    ControlPlaneCommandAction,
-    ControlPlanePrincipal,
 )
 
 
@@ -57,7 +52,7 @@ async def main() -> None:
         ConfigSchema(()),
         (MappingConfigSource({}),),
     ).load()
-    token = secrets.token_urlsafe(32)
+    token = ControlPlaneOperatorToken(secrets.token_urlsafe(32))
     runtime = await RuntimeAssembler(
         kernel=Kernel(
             router=Router(),
@@ -69,18 +64,9 @@ async def main() -> None:
         configuration=configuration,
         jobs=jobs,
         workflows=workflows,
-        control_plane_authenticator=AdminTokenAuthenticator(
-            token,
-            principal=ControlPlanePrincipal(
-                "phoenix.dashboard",
-                frozenset(
-                    {
-                        CONTROL_PLANE_READ_PERMISSION,
-                        *(action.permission for action in ControlPlaneCommandAction),
-                    }
-                ),
-            ),
-        ),
+        control_plane_operator_token=token,
+        control_plane_operator_username="phoenix-maintainer",
+        control_plane_operator_display_name="Phoenix Maintainer",
         control_plane_http_config=ControlPlaneHttpConfig(port=8765),
         control_plane_job_records=jobs_repository,
     ).assemble()
@@ -93,7 +79,7 @@ async def main() -> None:
         )
     )
     print("Phoenix OS dashboard: http://127.0.0.1:8765/dashboard/")
-    print(f"Administrator token: {token}")
+    print(f"Bootstrap Maintainer credential: {token.value}")
     try:
         await asyncio.to_thread(input, "Press Enter to stop Phoenix OS... ")
     finally:

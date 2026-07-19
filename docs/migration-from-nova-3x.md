@@ -433,3 +433,18 @@ When a default Phoenix State Store is configured, the Dashboard command journal 
 automatically. Existing 0.18 deployments without a State Store continue with a bounded in-memory
 repository. Do not migrate command request bodies or plaintext idempotency keys: RFC-0019 stores only
 allowlisted identity, protected digests, lifecycle timestamps, revisions, and stable result codes.
+
+## Phoenix OS 0.20 local operator migration
+
+New deployments should pass a `ControlPlaneOperatorToken` to
+`RuntimeAssembler(control_plane_operator_token=...)` instead of constructing one shared
+`AdminTokenAuthenticator`. The first successful Runtime start creates the bootstrap Maintainer in the
+default State Store-backed registry, or in the bounded in-memory registry when no State Store exists.
+Later starts reuse that operator and never replace its credential automatically.
+
+After signing in, the Dashboard exchanges the long-lived credential for a temporary session. Create
+separate Viewer, Operator, and Maintainer identities for people or local automation, then rotate the
+bootstrap credential and store each one in an appropriate secret provider. Do not share temporary
+session tokens, copy credential digests, migrate plaintext browser storage, or infer an operator's
+existence from login failures. Legacy `AdminTokenAuthenticator` remains available only as a
+transitional compatibility mode and cannot be combined with the new operator registry mode.

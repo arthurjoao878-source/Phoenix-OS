@@ -25,6 +25,12 @@ from phoenix_os.control_plane.journal_contracts import (
     ControlPlaneCommandJournalSnapshot,
 )
 from phoenix_os.control_plane.journal_history import ControlPlaneCommandHistoryPage
+from phoenix_os.control_plane.operator_api import (
+    ControlPlaneOperatorCredentialGrant,
+    ControlPlaneOperatorView,
+    ControlPlaneOperatorViewPage,
+)
+from phoenix_os.control_plane.operator_management import ControlPlaneOperatorMutationReceipt
 from phoenix_os.control_plane.workflow_commands import ControlPlaneWorkflowCommandResult
 from phoenix_os.jobs import JobSchedulerSnapshot, JobWorkerSnapshot
 from phoenix_os.runtime import RuntimeSnapshot
@@ -88,6 +94,65 @@ def workflow_command_result_to_dict(
     result: ControlPlaneWorkflowCommandResult,
 ) -> dict[str, object]:
     return command_receipt_to_dict(result.receipt)
+
+
+def operator_view_to_dict(view: ControlPlaneOperatorView) -> dict[str, object]:
+    """Serialize operator metadata without token digests or plaintext credentials."""
+
+    return {
+        "schema_version": view.schema_version,
+        "operator_id": str(view.operator_id),
+        "username": view.username,
+        "display_name": view.display_name,
+        "role": view.role.value,
+        "status": view.status.value,
+        "additional_permissions": list(view.additional_permissions),
+        "effective_permissions": list(view.effective_permissions),
+        "created_at": _timestamp(view.created_at),
+        "updated_at": _timestamp(view.updated_at),
+        "disabled_at": _optional_timestamp(view.disabled_at),
+        "revoked_at": _optional_timestamp(view.revoked_at),
+        "token_version": view.token_version,
+        "revision": view.revision,
+    }
+
+
+def operator_view_page_to_dict(page: ControlPlaneOperatorViewPage) -> dict[str, object]:
+    return {
+        "schema_version": page.schema_version,
+        "items": [operator_view_to_dict(item) for item in page.items],
+        "page": {
+            "offset": page.page.offset,
+            "limit": page.page.limit,
+            "returned": page.page.returned,
+            "total": page.page.total,
+            "next_offset": page.page.next_offset,
+        },
+    }
+
+
+def operator_credential_grant_to_dict(
+    grant: ControlPlaneOperatorCredentialGrant,
+) -> dict[str, object]:
+    payload = operator_view_to_dict(grant.operator)
+    payload.update({"result_code": grant.result_code, "token": grant.token.value})
+    return payload
+
+
+def operator_mutation_receipt_to_dict(
+    receipt: ControlPlaneOperatorMutationReceipt,
+) -> dict[str, object]:
+    return {
+        "schema_version": receipt.schema_version,
+        "operator_id": str(receipt.operator_id),
+        "username": receipt.username,
+        "action": receipt.action.value,
+        "status": receipt.status.value,
+        "token_version": receipt.token_version,
+        "revision": receipt.revision,
+        "changed_at": _timestamp(receipt.changed_at),
+        "result_code": receipt.result_code,
+    }
 
 
 def snapshot_to_dict(snapshot: ControlPlaneSnapshot) -> dict[str, object]:

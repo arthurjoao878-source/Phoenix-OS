@@ -24,6 +24,9 @@ _IDENTIFIER_SANITIZER = re.compile(r"[^a-z0-9_.-]+")
 _ACTION_SANITIZER = re.compile(r"[^a-z0-9_.:*?/-]+")
 
 _CATEGORY_PREFIXES: tuple[tuple[str, AuditCategory], ...] = (
+    ("control-plane.operator.authentication.", AuditCategory.AUTHENTICATION),
+    ("control-plane.operator.session.", AuditCategory.AUTHENTICATION),
+    ("control-plane.operator.", AuditCategory.IDENTITY),
     ("control-plane.command.", AuditCategory.AUTHORIZATION),
     ("identity.authentication.", AuditCategory.AUTHENTICATION),
     ("identity.session.", AuditCategory.AUTHENTICATION),
