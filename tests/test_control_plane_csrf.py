@@ -39,6 +39,8 @@ def _nonce(size: int) -> bytes:
         ("http://127.0.0.1:8765", "http://127.0.0.1:8765"),
         ("http://[::1]", "http://[::1]"),
         ("http://[0:0:0:0:0:0:0:1]:8765", "http://[::1]:8765"),
+        ("https://Admin.Example.com:443", "https://admin.example.com"),
+        ("https://[2001:db8::1]:8443", "https://[2001:db8::1]:8443"),
     ],
 )
 def test_browser_origin_accepts_and_canonicalizes_loopback(raw: str, canonical: str) -> None:
@@ -48,7 +50,6 @@ def test_browser_origin_accepts_and_canonicalizes_loopback(raw: str, canonical: 
 @pytest.mark.parametrize(
     "raw",
     [
-        "https://127.0.0.1:8765",
         "http://localhost:8765",
         "http://192.168.1.10:8765",
         "http://127.0.0.1:8765/",
@@ -58,11 +59,23 @@ def test_browser_origin_accepts_and_canonicalizes_loopback(raw: str, canonical: 
         " http://127.0.0.1:8765",
         "http://127.0.0.1:0",
         "http://127.0.0.1:99999",
+        "https://example.com/path",
+        "https://user@example.com",
     ],
 )
 def test_browser_origin_rejects_non_exact_loopback_origins(raw: str) -> None:
     with pytest.raises(ValueError, match="origin"):
         ControlPlaneBrowserOrigin(raw)
+
+
+def test_browser_origin_reports_secure_and_loopback_facts() -> None:
+    remote = ControlPlaneBrowserOrigin("https://admin.example.com")
+    local = ControlPlaneBrowserOrigin("http://127.0.0.1:8765")
+
+    assert remote.secure
+    assert not remote.loopback
+    assert not local.secure
+    assert local.loopback
 
 
 def test_csrf_token_redacts_representation_and_has_stable_digest() -> None:

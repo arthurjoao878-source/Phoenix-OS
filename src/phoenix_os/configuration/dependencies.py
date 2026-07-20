@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from phoenix_os.audit import AuditLedger
     from phoenix_os.control_plane import (
         AdminTokenAuthenticator,
+        ControlPlaneClientRateLimitPolicy,
         ControlPlaneCommandJournalRepository,
         ControlPlaneCommandRetentionPolicy,
         ControlPlaneDurableSessionCookiePolicy,
@@ -39,9 +40,12 @@ if TYPE_CHECKING:
         ControlPlaneDurableSessionRetentionPolicy,
         ControlPlaneEventStreamConfig,
         ControlPlaneHttpConfig,
+        ControlPlaneNetworkPolicy,
         ControlPlaneOperatorRegistry,
         ControlPlaneOperatorToken,
+        ControlPlaneRemoteLoginThrottlePolicy,
         ControlPlaneStepUpPolicy,
+        ControlPlaneTlsListenerConfig,
         JobRecordSource,
     )
     from phoenix_os.identity import AuthenticationManager
@@ -74,6 +78,11 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "control_plane.operator-step-up",
         "control_plane.operators",
         "control_plane.http",
+        "control_plane.network",
+        "control_plane.network-guard",
+        "control_plane.secure-http",
+        "control_plane.remote-login",
+        "control_plane.remote-audit",
         "observability",
         "plugins",
         "policy",
@@ -279,6 +288,11 @@ class RuntimeAssembler:
         control_plane_durable_session_retention_poll_interval: float = 3600.0,
         control_plane_step_up_policy: ControlPlaneStepUpPolicy | None = None,
         control_plane_http_config: ControlPlaneHttpConfig | None = None,
+        control_plane_network_policy: ControlPlaneNetworkPolicy | None = None,
+        control_plane_client_rate_limit: ControlPlaneClientRateLimitPolicy | None = None,
+        control_plane_tls_listener_config: ControlPlaneTlsListenerConfig | None = None,
+        control_plane_remote_login_policy: ControlPlaneRemoteLoginThrottlePolicy | None = None,
+        control_plane_remote_address_secret: bytes | bytearray | memoryview | None = None,
         control_plane_event_config: ControlPlaneEventStreamConfig | None = None,
         control_plane_job_records: JobRecordSource | None = None,
         control_plane_command_journal: ControlPlaneCommandJournalRepository | None = None,
@@ -338,6 +352,11 @@ class RuntimeAssembler:
         )
         self._control_plane_step_up_policy = control_plane_step_up_policy
         self._control_plane_http_config = control_plane_http_config
+        self._control_plane_network_policy = control_plane_network_policy
+        self._control_plane_client_rate_limit = control_plane_client_rate_limit
+        self._control_plane_tls_listener_config = control_plane_tls_listener_config
+        self._control_plane_remote_login_policy = control_plane_remote_login_policy
+        self._control_plane_remote_address_secret = control_plane_remote_address_secret
         self._control_plane_event_config = control_plane_event_config
         self._control_plane_job_records = control_plane_job_records
         self._control_plane_command_journal = control_plane_command_journal
@@ -362,6 +381,11 @@ class RuntimeAssembler:
             item is not None
             for item in (
                 control_plane_http_config,
+                control_plane_network_policy,
+                control_plane_client_rate_limit,
+                control_plane_tls_listener_config,
+                control_plane_remote_login_policy,
+                control_plane_remote_address_secret,
                 control_plane_event_config,
                 control_plane_job_records,
                 control_plane_command_journal,
@@ -374,6 +398,43 @@ class RuntimeAssembler:
             )
         ):
             raise ValueError("control plane options require an authenticator or operator registry")
+        if control_plane_network_policy is not None:
+            from phoenix_os.control_plane.network_contracts import (
+                ControlPlaneExposureMode,
+            )
+
+            if control_plane_network_policy.port == 0:
+                raise ValueError(
+                    "explicit control-plane network policy requires a fixed nonzero port"
+                )
+            if control_plane_http_config is not None and (
+                control_plane_http_config.host != "127.0.0.1" or control_plane_http_config.port != 0
+            ):
+                raise ValueError("HTTP host and port must come only from the network policy")
+            if (
+                control_plane_network_policy.exposure is ControlPlaneExposureMode.REMOTE
+                and not operator_mode
+            ):
+                raise ValueError("remote control-plane exposure requires durable operator mode")
+            if control_plane_network_policy.exposure is not ControlPlaneExposureMode.REMOTE and any(
+                item is not None
+                for item in (
+                    control_plane_remote_login_policy,
+                    control_plane_remote_address_secret,
+                )
+            ):
+                raise ValueError("remote login options require remote exposure")
+        elif any(
+            item is not None
+            for item in (
+                control_plane_client_rate_limit,
+                control_plane_tls_listener_config,
+                control_plane_remote_login_policy,
+                control_plane_remote_address_secret,
+            )
+        ):
+            raise ValueError("network admission options require a control-plane network policy")
+
         if control_plane_operator_capacity <= 0 or control_plane_operator_capacity > 10_000:
             raise ValueError("control-plane operator capacity is outside supported bounds")
         if (
@@ -620,6 +681,11 @@ class RuntimeAssembler:
                 job_worker=job_worker_service,
                 workflow_worker=workflow_worker_service,
                 http_config=self._control_plane_http_config,
+                network_policy=self._control_plane_network_policy,
+                client_rate_limit=self._control_plane_client_rate_limit,
+                tls_listener_config=self._control_plane_tls_listener_config,
+                remote_login_policy=self._control_plane_remote_login_policy,
+                remote_address_secret=self._control_plane_remote_address_secret,
                 event_config=self._control_plane_event_config,
                 job_commands=self._jobs,
                 workflow_commands=self._workflows,
@@ -639,6 +705,22 @@ class RuntimeAssembler:
             custom_services["control_plane.events"] = control_plane_stack.events
             custom_services["control_plane.commands"] = control_plane_stack.commands
             custom_services["control_plane.http"] = control_plane_stack.http
+            if control_plane_stack.secure_http is not None:
+                custom_services["control_plane.secure-http"] = control_plane_stack.secure_http
+                custom_services["control_plane.network"] = (
+                    control_plane_stack.secure_http.network_policy
+                )
+                custom_services["control_plane.network-guard"] = (
+                    control_plane_stack.secure_http.network_guard
+                )
+                if control_plane_stack.secure_http.remote_login is not None:
+                    custom_services["control_plane.remote-login"] = (
+                        control_plane_stack.secure_http.remote_login
+                    )
+                if control_plane_stack.secure_http.remote_audit is not None:
+                    custom_services["control_plane.remote-audit"] = (
+                        control_plane_stack.secure_http.remote_audit
+                    )
             if control_plane_stack.operator_registry is not None:
                 custom_services["control_plane.operator-registry"] = (
                     control_plane_stack.operator_registry

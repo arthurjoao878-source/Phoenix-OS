@@ -78,6 +78,13 @@ from phoenix_os.control_plane.journal_retention import (
     ControlPlaneCommandRetentionService,
     ControlPlaneCommandRetentionWorker,
 )
+from phoenix_os.control_plane.network_contracts import (
+    ControlPlaneExposureMode,
+    ControlPlaneNetworkPolicy,
+)
+from phoenix_os.control_plane.network_guard import (
+    ControlPlaneClientRateLimitPolicy,
+)
 from phoenix_os.control_plane.operator_api import ControlPlaneOperatorApi
 from phoenix_os.control_plane.operator_authentication import ControlPlaneOperatorAuthenticator
 from phoenix_os.control_plane.operator_contracts import (
@@ -86,11 +93,20 @@ from phoenix_os.control_plane.operator_contracts import (
 )
 from phoenix_os.control_plane.operator_management import ControlPlaneOperatorManager
 from phoenix_os.control_plane.protection import ControlPlaneCommandProtector
+from phoenix_os.control_plane.remote_security import (
+    ControlPlaneRemoteAddressProtector,
+    ControlPlaneRemoteAudit,
+    ControlPlaneRemoteAuthenticationService,
+    ControlPlaneRemoteLoginThrottle,
+    ControlPlaneRemoteLoginThrottlePolicy,
+)
+from phoenix_os.control_plane.secure_http import ControlPlaneSecureHttpServer
 from phoenix_os.control_plane.service import ControlPlaneService
 from phoenix_os.control_plane.step_up import (
     ControlPlaneOperatorStepUpService,
     ControlPlaneStepUpPolicy,
 )
+from phoenix_os.control_plane.tls_listener import ControlPlaneTlsListenerConfig
 from phoenix_os.control_plane.workflow_commands import (
     ControlPlaneWorkflowCommandHandler,
     ControlPlaneWorkflowOrchestrator,
@@ -207,6 +223,7 @@ class ControlPlaneRuntimeStack:
     events: ControlPlaneEventStream
     commands: ControlPlaneCommandApi
     http: ControlPlaneHttpServer
+    secure_http: ControlPlaneSecureHttpServer | None
     operator_registry: ControlPlaneOperatorRegistry | None
     operator_registry_owner: _OperatorRegistryOwner | None
     operator_access: ControlPlaneDurableSessionAccessService | None
@@ -244,6 +261,11 @@ class ControlPlaneRuntimeStack:
         job_worker: JobWorkerSnapshotSource | None = None,
         workflow_worker: WorkflowWorkerSnapshotSource | None = None,
         http_config: ControlPlaneHttpConfig | None = None,
+        network_policy: ControlPlaneNetworkPolicy | None = None,
+        client_rate_limit: ControlPlaneClientRateLimitPolicy | None = None,
+        tls_listener_config: ControlPlaneTlsListenerConfig | None = None,
+        remote_login_policy: ControlPlaneRemoteLoginThrottlePolicy | None = None,
+        remote_address_secret: bytes | bytearray | memoryview | None = None,
         event_config: ControlPlaneEventStreamConfig | None = None,
         job_commands: ControlPlaneJobScheduler | None = None,
         workflow_commands: ControlPlaneWorkflowOrchestrator | None = None,
@@ -261,6 +283,30 @@ class ControlPlaneRuntimeStack:
             raise ValueError("bootstrap operator requires an operator registry")
         if durable_session_repository is not None and operator_registry is None:
             raise ValueError("durable sessions require an operator registry")
+        if network_policy is not None and network_policy.port == 0:
+            raise ValueError("explicit control-plane network policy requires a fixed nonzero port")
+        if network_policy is None and any(
+            item is not None
+            for item in (
+                client_rate_limit,
+                tls_listener_config,
+                remote_login_policy,
+                remote_address_secret,
+            )
+        ):
+            raise ValueError("network admission options require a control-plane network policy")
+        if (
+            network_policy is not None
+            and network_policy.exposure is ControlPlaneExposureMode.REMOTE
+            and operator_registry is None
+        ):
+            raise ValueError("remote control-plane exposure requires durable operator mode")
+        if (
+            network_policy is not None
+            and network_policy.exposure is not ControlPlaneExposureMode.REMOTE
+            and any(item is not None for item in (remote_login_policy, remote_address_secret))
+        ):
+            raise ValueError("remote login options require remote control-plane exposure")
 
         runtime = _RuntimeSnapshotProxy()
         journal = command_journal or InMemoryControlPlaneCommandJournalRepository()
@@ -320,11 +366,19 @@ class ControlPlaneRuntimeStack:
                 durable_sessions,
                 events=event_bus,
             )
+            cookie_policy = durable_session_cookie_policy
+            if network_policy is not None:
+                if cookie_policy is None:
+                    cookie_policy = ControlPlaneDurableSessionCookiePolicy.for_public_origin(
+                        network_policy.public_origin
+                    )
+                cookie_policy.validate_for_origin(network_policy.public_origin)
             durable_boundary = ControlPlaneDurableSessionHttpBoundary(
                 authenticator=operator_authenticator,
                 access=operator_access,
                 repository=durable_sessions,
-                cookie_policy=durable_session_cookie_policy,
+                cookie_policy=cookie_policy,
+                public_origin=(None if network_policy is None else network_policy.public_origin),
             )
             operator_step_up = ControlPlaneOperatorStepUpService(
                 authenticator=operator_authenticator,
@@ -363,6 +417,31 @@ class ControlPlaneRuntimeStack:
         else:
             assert authenticator is not None
             default_principal = authenticator.principal.name
+
+        remote_login: ControlPlaneRemoteLoginThrottle | None = None
+        remote_audit: ControlPlaneRemoteAudit | None = None
+        remote_authentication: ControlPlaneRemoteAuthenticationService | None = None
+        if (
+            network_policy is not None
+            and network_policy.exposure is ControlPlaneExposureMode.REMOTE
+        ):
+            if durable_boundary is None:
+                raise AssertionError("remote operator mode lost its durable HTTP boundary")
+            remote_login = ControlPlaneRemoteLoginThrottle(remote_login_policy)
+            address_secret = (
+                secrets.token_bytes(32)
+                if remote_address_secret is None
+                else bytes(remote_address_secret)
+            )
+            remote_audit = ControlPlaneRemoteAudit(
+                event_bus,
+                ControlPlaneRemoteAddressProtector(address_secret),
+            )
+            remote_authentication = ControlPlaneRemoteAuthenticationService(
+                sessions=durable_boundary,
+                throttle=remote_login,
+                audit=remote_audit,
+            )
 
         idempotency = JournalControlPlaneIdempotencyStore(
             journal,
@@ -416,16 +495,36 @@ class ControlPlaneRuntimeStack:
             command_retention_policy or ControlPlaneCommandRetentionPolicy(),
             poll_interval=command_retention_poll_interval,
         )
-        http = ControlPlaneHttpServer(
-            service,
-            authenticator,
-            config=http_config,
-            event_stream=event_stream,
-            command_api=command_api,
-            command_history=history,
-            durable_session_http=durable_boundary,
-            durable_operator_http=durable_operator_http,
-        )
+        secure_http: ControlPlaneSecureHttpServer | None = None
+        if network_policy is None:
+            http: ControlPlaneHttpServer = ControlPlaneHttpServer(
+                service,
+                authenticator,
+                config=http_config,
+                event_stream=event_stream,
+                command_api=command_api,
+                command_history=history,
+                durable_session_http=durable_boundary,
+                durable_operator_http=durable_operator_http,
+            )
+        else:
+            secure_http = ControlPlaneSecureHttpServer(
+                service,
+                authenticator,
+                network_policy=network_policy,
+                config=http_config,
+                event_stream=event_stream,
+                command_api=command_api,
+                command_history=history,
+                durable_session_http=durable_boundary,
+                durable_operator_http=durable_operator_http,
+                client_rate_limit=client_rate_limit,
+                tls_config=tls_listener_config,
+                remote_authentication=remote_authentication,
+                remote_login=remote_login,
+                remote_audit=remote_audit,
+            )
+            http = secure_http
         return cls(
             service,
             journal,
@@ -436,6 +535,7 @@ class ControlPlaneRuntimeStack:
             event_stream,
             command_api,
             http,
+            secure_http,
             operator_registry,
             operator_owner,
             operator_access,

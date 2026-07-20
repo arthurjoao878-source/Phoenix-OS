@@ -1,8 +1,8 @@
-# Validation — Phoenix OS v0.19.0
 
-RFC-0019 was validated against the complete Phoenix OS regression suite with strict static analysis,
-State Store persistence, recovery, retention, loopback history integration, Runtime lifecycle, and
-packaging checks.
+# Validation — Phoenix OS v0.22.0
+
+RFC-0022 uses the complete Phoenix OS regression and packaging gates. Validation must run on the
+final checkout after all five slices are applied.
 
 ## Commands
 
@@ -11,35 +11,23 @@ python -m pip install -e ".[dev]"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 python -m build
 python -m twine check .\dist\*.whl .\dist\*.tar.gz
-python .\examples\control_plane_dashboard.py
 ```
 
-## Results
+## Required behavior
 
-- Ruff lint passed;
-- Ruff formatting check passed;
-- mypy strict passed for source, tests, and examples;
-- complete regression suite passed;
-- wheel and source distribution passed Twine validation;
-- wheel contains Dashboard assets and durable command-journal modules;
-- package and plugin compatibility metadata report 0.19.0.
-
-## Validated behavior
-
-- immutable schema-versioned command records and lifecycle transitions;
-- bounded in-memory repository with unique command and idempotency indexes;
-- State Store-backed atomic records/indexes and optimistic revisions;
-- canonical checksums, strict allowlists, and fail-closed corruption detection;
-- restart-safe journal-backed idempotency and terminal receipt replay;
-- deterministic side-effect probes and deferred uncertain recovery;
-- bounded Runtime-owned recovery and terminal-retention workers;
-- newest-first authenticated command-history pagination;
-- omission of payloads, arguments, outputs, tokens, proofs, secrets, digests, and exception text;
-- Dashboard command-history rendering through DOM text nodes only;
-- automatic RuntimeAssembler selection of State Store or bounded in-memory journal;
-- reverse shutdown that stops HTTP and workers before closing the journal;
-- all previously validated kernel, events, capabilities, runtime, configuration, observability, state,
-  plugins, policy, identity, secrets, audit, jobs, workflows, and Dashboard operations.
-
-Phoenix OS v0.19.0 satisfies RFC-0019 while preserving the loopback-only, capability-only,
-authenticated command boundary established by RFC-0018.
+- Ruff lint and formatting over source, tests, and examples;
+- strict mypy analysis;
+- complete regression suite;
+- unchanged legacy loopback HTTP behavior when no network policy is supplied;
+- explicit policy-selected fixed-port listener lifecycle;
+- native TLS and optional mutual-TLS handshakes;
+- certificate-health and reload snapshots without key or path disclosure;
+- exact Host and public-Origin binding;
+- direct and trusted-proxy identity resolution;
+- spoofed or ambiguous forwarding-header rejection;
+- client-network allowlists and bounded connection/request admission;
+- independent remote login admission by client and operator;
+- Secure HttpOnly cookies and origin-bound rotating CSRF;
+- protected remote-address audit facts without raw addresses or proxy chains;
+- Runtime service discovery and reverse shutdown;
+- wheel and source distribution metadata reporting 0.22.0.

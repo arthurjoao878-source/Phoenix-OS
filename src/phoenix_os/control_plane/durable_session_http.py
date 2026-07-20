@@ -24,7 +24,11 @@ from phoenix_os.control_plane.errors import (
     ControlPlaneDurableSessionCsrfRejectedError,
     ControlPlaneDurableSessionHttpRejectedError,
 )
-from phoenix_os.control_plane.operator_authentication import ControlPlaneOperatorAuthenticator
+from phoenix_os.control_plane.network_contracts import ControlPlanePublicOrigin
+from phoenix_os.control_plane.operator_authentication import (
+    ControlPlaneOperatorAuthentication,
+    ControlPlaneOperatorAuthenticator,
+)
 
 DEFAULT_DURABLE_SESSION_COOKIE_NAME = "phoenix_session"
 MAX_DURABLE_SESSION_COOKIE_HEADER_BYTES = 4096
@@ -37,7 +41,7 @@ _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 @dataclass(frozen=True, slots=True)
 class ControlPlaneDurableSessionCookiePolicy:
-    """Host-only cookie policy for the loopback dashboard."""
+    """Host-only cookie policy bound to the configured public origin."""
 
     name: str = DEFAULT_DURABLE_SESSION_COOKIE_NAME
     path: str = "/"
@@ -59,6 +63,33 @@ class ControlPlaneDurableSessionCookiePolicy:
         if self.schema_version != 1:
             raise ValueError("unsupported durable session cookie policy schema version")
         object.__setattr__(self, "name", name)
+
+    @classmethod
+    def for_public_origin(
+        cls,
+        origin: ControlPlanePublicOrigin | str,
+        *,
+        name: str = DEFAULT_DURABLE_SESSION_COOKIE_NAME,
+    ) -> ControlPlaneDurableSessionCookiePolicy:
+        """Build the only valid cookie transport for one canonical public origin."""
+
+        public = (
+            origin
+            if isinstance(origin, ControlPlanePublicOrigin)
+            else ControlPlanePublicOrigin(origin)
+        )
+        return cls(name=name, secure=public.tls)
+
+    def validate_for_origin(self, origin: ControlPlanePublicOrigin | str) -> None:
+        """Reject cookie policies whose Secure bit disagrees with the origin scheme."""
+
+        public = (
+            origin
+            if isinstance(origin, ControlPlanePublicOrigin)
+            else ControlPlanePublicOrigin(origin)
+        )
+        if self.secure is not public.tls:
+            raise ValueError("durable session cookie Secure policy must match the public origin")
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -131,6 +162,7 @@ class ControlPlaneDurableSessionHttpBoundary:
         access: ControlPlaneDurableSessionAccessService,
         repository: ControlPlaneDurableSessionRepository,
         cookie_policy: ControlPlaneDurableSessionCookiePolicy | None = None,
+        public_origin: ControlPlanePublicOrigin | str | None = None,
     ) -> None:
         self._authenticator = authenticator
         self._access = access
@@ -138,25 +170,64 @@ class ControlPlaneDurableSessionHttpBoundary:
         self._cookie = (
             ControlPlaneDurableSessionCookiePolicy() if cookie_policy is None else cookie_policy
         )
+        self._public_origin = (
+            None
+            if public_origin is None
+            else (
+                public_origin
+                if isinstance(public_origin, ControlPlanePublicOrigin)
+                else ControlPlanePublicOrigin(public_origin)
+            )
+        )
+        self._browser_origin = (
+            None
+            if self._public_origin is None
+            else ControlPlaneBrowserOrigin(str(self._public_origin))
+        )
+        if self._public_origin is not None:
+            self._cookie.validate_for_origin(self._public_origin)
 
     @property
     def cookie_policy(self) -> ControlPlaneDurableSessionCookiePolicy:
         return self._cookie
 
+    @property
+    def public_origin(self) -> ControlPlaneBrowserOrigin | None:
+        return self._browser_origin
+
     async def login(
         self,
         authorization: str | None,
         *,
-        origin: ControlPlaneBrowserOrigin,
+        origin: ControlPlaneBrowserOrigin | None = None,
     ) -> ControlPlaneDurableSessionHttpLogin:
         """Authenticate a durable credential and issue an HttpOnly session cookie."""
 
-        evidence = await self._authenticator.authenticate(authorization)
+        evidence = await self.authenticate_operator(authorization)
         if evidence is None:
             raise ControlPlaneDurableSessionHttpRejectedError("operator login rejected")
+        return await self.issue_login(evidence, origin=origin)
+
+    async def authenticate_operator(
+        self,
+        authorization: str | None,
+    ) -> ControlPlaneOperatorAuthentication | None:
+        """Authenticate a bearer without issuing a session, for remote admission checks."""
+
+        return await self._authenticator.authenticate(authorization)
+
+    async def issue_login(
+        self,
+        evidence: ControlPlaneOperatorAuthentication,
+        *,
+        origin: ControlPlaneBrowserOrigin | None = None,
+    ) -> ControlPlaneDurableSessionHttpLogin:
+        """Issue one session only after caller-controlled admission has succeeded."""
+
+        validated_origin = self._validated_origin(origin)
         grant = await self._access.issue(evidence)
         authentication = _authentication_from_grant(grant, evidence.principal)
-        csrf_token = _csrf_token(grant, origin)
+        csrf_token = _csrf_token(grant, validated_origin)
         return ControlPlaneDurableSessionHttpLogin(
             authentication=authentication,
             csrf_token=csrf_token,
@@ -171,10 +242,11 @@ class ControlPlaneDurableSessionHttpBoundary:
         self,
         cookie_header: str | None,
         *,
-        origin: ControlPlaneBrowserOrigin,
+        origin: ControlPlaneBrowserOrigin | None = None,
     ) -> ControlPlaneDurableSessionHttpAuthentication:
         """Authenticate one cookie and emit replacement material only after rotation."""
 
+        validated_origin = self._validated_origin(origin)
         token = self._cookie_value(cookie_header)
         authentication = await self._access.authenticate(token)
         if authentication is None:
@@ -182,7 +254,7 @@ class ControlPlaneDurableSessionHttpBoundary:
         grant = authentication.rotated_grant
         if grant is None:
             return ControlPlaneDurableSessionHttpAuthentication(authentication=authentication)
-        csrf_token = _csrf_token(grant, origin)
+        csrf_token = _csrf_token(grant, validated_origin)
         return ControlPlaneDurableSessionHttpAuthentication(
             authentication=authentication,
             rotated_csrf_token=csrf_token,
@@ -204,12 +276,13 @@ class ControlPlaneDurableSessionHttpBoundary:
         """Verify exact origin, session generation, and persisted CSRF digest in constant time."""
 
         try:
-            if supplied_origin != expected_origin:
+            validated_origin = self._validated_origin(expected_origin)
+            if supplied_origin != validated_origin:
                 raise ValueError("origin mismatch")
             token = ControlPlaneDurableSessionCsrfToken(token_value or "")
             session_id, generation, origin_digest, secret = _parse_csrf_token(token)
             expected_origin_digest = hashlib.sha256(
-                expected_origin.value.encode("ascii")
+                validated_origin.value.encode("ascii")
             ).hexdigest()
             if not hmac.compare_digest(origin_digest, expected_origin_digest):
                 raise ValueError("origin binding mismatch")
@@ -227,7 +300,11 @@ class ControlPlaneDurableSessionHttpBoundary:
                 )
             ):
                 raise ValueError("CSRF evidence mismatch")
-        except (TypeError, ValueError) as exception:
+        except (
+            ControlPlaneDurableSessionHttpRejectedError,
+            TypeError,
+            ValueError,
+        ) as exception:
             raise ControlPlaneDurableSessionCsrfRejectedError(
                 "durable session CSRF validation failed"
             ) from exception
@@ -268,6 +345,20 @@ class ControlPlaneDurableSessionHttpBoundary:
         if self._cookie.secure:
             attributes.append("Secure")
         return "; ".join(attributes)
+
+    def _validated_origin(
+        self,
+        origin: ControlPlaneBrowserOrigin | None,
+    ) -> ControlPlaneBrowserOrigin:
+        if self._browser_origin is None:
+            if origin is None:
+                raise ControlPlaneDurableSessionHttpRejectedError(
+                    "durable session public origin is required"
+                )
+            return origin
+        if origin is not None and origin != self._browser_origin:
+            raise ControlPlaneDurableSessionHttpRejectedError("durable session origin rejected")
+        return self._browser_origin
 
     def _cookie_value(self, cookie_header: str | None) -> str:
         value = self._cookie_value_or_none(cookie_header)
@@ -362,3 +453,14 @@ def origin_from_loopback_url(value: str) -> ControlPlaneBrowserOrigin:
     if parsed.path or parsed.query or parsed.fragment or parsed.port is None:
         raise ValueError("durable session origin must not contain a path, query, or fragment")
     return ControlPlaneBrowserOrigin(value)
+
+
+def origin_from_public_origin(
+    value: ControlPlanePublicOrigin | str,
+) -> ControlPlaneBrowserOrigin:
+    """Normalize a public HTTPS or literal-loopback HTTP browser origin."""
+
+    public = (
+        value if isinstance(value, ControlPlanePublicOrigin) else ControlPlanePublicOrigin(value)
+    )
+    return ControlPlaneBrowserOrigin(str(public))

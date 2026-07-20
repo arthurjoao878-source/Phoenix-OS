@@ -16,6 +16,7 @@ from phoenix_os.control_plane.durable_session_http import (
     ControlPlaneDurableSessionCsrfToken,
     ControlPlaneDurableSessionHttpBoundary,
     origin_from_loopback_url,
+    origin_from_public_origin,
 )
 from phoenix_os.control_plane.durable_session_memory import (
     InMemoryControlPlaneDurableSessionRepository,
@@ -24,6 +25,7 @@ from phoenix_os.control_plane.errors import (
     ControlPlaneDurableSessionCsrfRejectedError,
     ControlPlaneDurableSessionHttpRejectedError,
 )
+from phoenix_os.control_plane.network_contracts import ControlPlanePublicOrigin
 from phoenix_os.control_plane.operator_authentication import ControlPlaneOperatorAuthenticator
 from phoenix_os.control_plane.operator_contracts import (
     ControlPlaneOperatorRecord,
@@ -65,6 +67,7 @@ class _Secrets:
 async def _boundary(
     *,
     cookie_policy: ControlPlaneDurableSessionCookiePolicy | None = None,
+    public_origin: ControlPlanePublicOrigin | str | None = None,
 ) -> tuple[
     ControlPlaneDurableSessionHttpBoundary,
     InMemoryControlPlaneDurableSessionRepository,
@@ -97,6 +100,7 @@ async def _boundary(
         access=access,
         repository=repository,
         cookie_policy=cookie_policy,
+        public_origin=public_origin,
     )
     return boundary, repository, clock
 
@@ -127,6 +131,60 @@ def _cookie_value(set_cookie: str, name: str = "phoenix_session") -> str:
 def test_cookie_policy_rejects_unsafe_configuration(kwargs: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         ControlPlaneDurableSessionCookiePolicy(**kwargs)  # type: ignore[arg-type]
+
+
+def test_cookie_policy_tracks_public_origin_scheme() -> None:
+    local = ControlPlaneDurableSessionCookiePolicy.for_public_origin("http://127.0.0.1:8080")
+    remote = ControlPlaneDurableSessionCookiePolicy.for_public_origin("https://admin.example.com")
+
+    assert not local.secure
+    assert remote.secure
+    local.validate_for_origin("http://127.0.0.1:8080")
+    remote.validate_for_origin("https://admin.example.com")
+    with pytest.raises(ValueError, match="Secure"):
+        local.validate_for_origin("https://admin.example.com")
+
+
+@pytest.mark.asyncio
+async def test_bound_https_origin_requires_secure_cookie_policy() -> None:
+    with pytest.raises(ValueError, match="Secure"):
+        await _boundary(public_origin="https://admin.example.com")
+
+
+@pytest.mark.asyncio
+async def test_bound_https_origin_issues_secure_cookie_without_repeating_origin() -> None:
+    boundary, _, _ = await _boundary(
+        cookie_policy=ControlPlaneDurableSessionCookiePolicy(secure=True),
+        public_origin="https://admin.example.com:8443",
+    )
+
+    login = await boundary.login(f"Bearer {OPERATOR_TOKEN.value}")
+
+    assert boundary.public_origin == ControlPlaneBrowserOrigin("https://admin.example.com:8443")
+    assert "Secure" in _header(login.response_headers, "Set-Cookie")
+    with pytest.raises(ControlPlaneDurableSessionHttpRejectedError, match="origin"):
+        await boundary.login(
+            f"Bearer {OPERATOR_TOKEN.value}",
+            origin=ControlPlaneBrowserOrigin("https://other.example.com"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_bound_https_csrf_rejects_another_public_origin() -> None:
+    origin = ControlPlaneBrowserOrigin("https://admin.example.com")
+    boundary, _, _ = await _boundary(
+        cookie_policy=ControlPlaneDurableSessionCookiePolicy(secure=True),
+        public_origin=origin.value,
+    )
+    login = await boundary.login(f"Bearer {OPERATOR_TOKEN.value}")
+
+    with pytest.raises(ControlPlaneDurableSessionCsrfRejectedError):
+        await boundary.verify_csrf(
+            login.csrf_token.value,
+            login.authentication,
+            supplied_origin=ControlPlaneBrowserOrigin("https://other.example.com"),
+            expected_origin=origin,
+        )
 
 
 def test_csrf_token_is_redacted() -> None:
@@ -362,3 +420,14 @@ def test_origin_helper_accepts_exact_loopback_origins(value: str) -> None:
 def test_origin_helper_rejects_non_exact_loopback_origins(value: str) -> None:
     with pytest.raises(ValueError):
         origin_from_loopback_url(value)
+
+
+def test_public_origin_helper_accepts_https_and_normalizes_default_port() -> None:
+    assert origin_from_public_origin("https://Admin.Example.com:443").value == (
+        "https://admin.example.com"
+    )
+
+
+def test_public_origin_helper_rejects_non_loopback_http() -> None:
+    with pytest.raises(ValueError, match="loopback"):
+        origin_from_public_origin("http://192.0.2.10:8080")
