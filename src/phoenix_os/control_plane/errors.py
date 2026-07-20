@@ -215,3 +215,35 @@ class ControlPlaneStepUpRejectedError(PhoenixControlPlaneError):
 
 class ControlPlaneDurableSessionRetentionWorkerStateError(PhoenixControlPlaneError):
     """Raised when the durable session retention worker lifecycle is misused."""
+
+
+class ControlPlaneTlsMaterialError(PhoenixControlPlaneError):
+    """Raised when native TLS certificate material cannot be loaded safely."""
+
+
+class ControlPlaneTlsReloadError(PhoenixControlPlaneError):
+    """Raised when a controlled TLS reload fails while preserving the active context."""
+
+
+class ControlPlaneTlsContextStateError(PhoenixControlPlaneError):
+    """Raised when the one-shot TLS context lifecycle is used incorrectly."""
+
+
+class ControlPlaneTlsListenerStateError(PhoenixControlPlaneError):
+    """Raised when the one-shot native TLS listener lifecycle is used incorrectly."""
+
+
+class ControlPlaneNetworkRejectedError(PhoenixControlPlaneError):
+    """Raised with one generic message for rejected remote network evidence."""
+
+
+class ControlPlaneNetworkGuardClosedError(PhoenixControlPlaneError):
+    """Raised when a closed remote network guard receives new work."""
+
+
+class ControlPlaneRemoteLoginRejectedError(PhoenixControlPlaneError):
+    """Raised with one generic message for rejected remote operator login."""
+
+
+class ControlPlaneRemoteLoginThrottleClosedError(PhoenixControlPlaneError):
+    """Raised when a closed remote login throttle receives new work."""

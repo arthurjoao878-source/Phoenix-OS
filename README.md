@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.21.0` implements twenty-one accepted specifications:
+Version `0.22.0` implements twenty-two accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -52,10 +52,13 @@ Version `0.21.0` implements twenty-one accepted specifications:
 - **RFC-0021 — Durable Operator Sessions and Step-Up Authentication:** restart-safe rotating sessions,
   absolute and idle expiry, HttpOnly cookies, session-bound CSRF, recent step-up proofs, safe history,
   bounded retention, and Runtime-owned recovery.
+- **RFC-0022 — Secure Remote Control Plane and TLS:** opt-in native TLS, optional mutual TLS,
+  exact public-origin binding, trusted-proxy client identity, explicit CIDR allowlists, bounded
+  remote admission, protected address audit, and Runtime-owned listener health.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
-queue broker, audit signature provider, remote audit archive, telemetry vendor, hosted control plane, remote administration, or
+queue broker, audit signature provider, remote audit archive, telemetry vendor, hosted control-plane service, implicit remote exposure, or
 operating-system automation. The
 standard-library SQLite adapter is a local reference implementation; stronger storage remains behind
 the State Store and Audit Store protocols. Other integrations belong behind capability providers,
@@ -112,6 +115,40 @@ registry. Static routes are public because they contain no operational data; eve
 requires a temporary operator session. Legacy `AdminTokenAuthenticator` remains available as a
 mutually exclusive compatibility mode. Read permission alone never grants a command action.
 
+
+## Optional secure remote dashboard
+
+Remote exposure remains disabled unless an explicit `ControlPlaneNetworkPolicy` is supplied to
+`RuntimeAssembler`. The policy must use a fixed port and, for remote mode, an HTTPS public origin,
+native TLS, Secure cookies, explicit client networks, and durable operator authentication.
+
+```python
+from phoenix_os import (
+    ControlPlaneExposureMode,
+    ControlPlaneNetworkPolicy,
+    ControlPlaneTlsMode,
+    ControlPlaneTlsPolicy,
+)
+
+network = ControlPlaneNetworkPolicy(
+    exposure=ControlPlaneExposureMode.REMOTE,
+    bind_host="0.0.0.0",
+    port=8443,
+    public_origin="https://admin.example.com:8443",
+    tls=ControlPlaneTlsPolicy(
+        mode=ControlPlaneTlsMode.SERVER,
+        certificate_file="/etc/phoenix/tls/server.crt",
+        private_key_file="/etc/phoenix/tls/server.key",
+    ),
+    allowed_client_networks=("203.0.113.0/24",),
+    secure_cookies=True,
+)
+```
+
+Proxy headers remain disabled by default. Enabling them requires an explicit trusted-proxy CIDR
+and exactly one supported header format. Listener health exposes safe TLS, guard, throttle, and
+audit counters without private-key paths, raw client addresses, proxy chains, credentials, or
+browser security tokens.
 ## Durable workflow example
 
 ```python

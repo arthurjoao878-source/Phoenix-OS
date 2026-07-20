@@ -448,3 +448,54 @@ bootstrap credential and store each one in an appropriate secret provider. Do no
 session tokens, copy credential digests, migrate plaintext browser storage, or infer an operator's
 existence from login failures. Legacy `AdminTokenAuthenticator` remains available only as a
 transitional compatibility mode and cannot be combined with the new operator registry mode.
+
+
+## Phoenix OS 0.22 secure remote control-plane migration
+
+Existing Nova and Phoenix deployments do not become remotely reachable after upgrading. Omitting
+`control_plane_network_policy` preserves the v0.21 loopback HTTP listener and its ephemeral-port
+behavior.
+
+To opt into a reviewed remote boundary:
+
+1. use durable operator mode rather than the legacy administrator bearer;
+2. select a fixed nonzero listener port and an exact HTTPS public origin;
+3. provide absolute certificate and private-key paths;
+4. choose server-authenticated TLS or mutual TLS;
+5. declare the smallest client CIDR allowlist that matches the deployment;
+6. leave proxy headers disabled unless a specific trusted proxy CIDR is configured;
+7. select exactly one of `Forwarded` or `X-Forwarded-For` when proxy resolution is required;
+8. keep `Secure`, host-only, `HttpOnly`, `SameSite=Strict` session cookies;
+9. retain exact same-origin CSRF and step-up evidence for browser mutations;
+10. inspect safe fingerprints and counters rather than logging addresses or headers;
+11. rotate certificate material through the listener reload operation;
+12. test allowlist, proxy, TLS, cookie, and recovery behavior before opening a firewall rule.
+
+Example composition:
+
+```python
+network = ControlPlaneNetworkPolicy(
+    exposure=ControlPlaneExposureMode.REMOTE,
+    bind_host="0.0.0.0",
+    port=8443,
+    public_origin="https://admin.example.com:8443",
+    tls=ControlPlaneTlsPolicy(
+        mode=ControlPlaneTlsMode.SERVER,
+        certificate_file="/etc/phoenix/tls/server.crt",
+        private_key_file="/etc/phoenix/tls/server.key",
+    ),
+    allowed_client_networks=("203.0.113.0/24",),
+    secure_cookies=True,
+)
+
+runtime = await RuntimeAssembler(
+    ...,
+    control_plane_operator_token=bootstrap_token,
+    control_plane_network_policy=network,
+).assemble()
+```
+
+Do not place a wildcard client allowlist in front of an unreviewed Internet listener. TLS
+authenticates and encrypts the transport; it does not replace operator authorization, least
+privilege, host firewall policy, certificate operations, incident response, or deployment
+monitoring.

@@ -1,5 +1,19 @@
 # Changelog
 
+
+## [0.22.0] - 2026-07-19
+
+### Added
+- Accepted RFC-0022 and ADR-0044/0045.
+- Opt-in loopback or remote exposure policies with exact public-origin binding.
+- Native server TLS, optional mutual TLS, certificate health, and atomic reload.
+- Strict Host, Origin, direct-client, trusted-proxy, and client-CIDR validation.
+- Per-client connection/request bounds and independent client/operator login throttling.
+- Secure HttpOnly cookies, public-origin CSRF, and HTTPS-compatible packaged Dashboard assets.
+- HMAC-protected remote address audit facts without raw addresses or proxy chains.
+- RuntimeAssembler lifecycle ownership and safe combined listener-health snapshots.
+
+
 ## [0.21.0] - 2026-07-19
 
 ### Added

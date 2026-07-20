@@ -14,6 +14,10 @@ from urllib.parse import urlsplit
 
 from phoenix_os.control_plane.auth import ControlPlanePrincipal
 from phoenix_os.control_plane.errors import ControlPlaneCsrfRejectedError
+from phoenix_os.control_plane.network_contracts import (
+    ControlPlaneNetworkConfigurationError,
+    ControlPlanePublicOrigin,
+)
 
 _TOKEN_PATTERN = re.compile(r"v1\.[0-9]{1,12}\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}\Z")
 _TOKEN_COMPONENT_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
@@ -29,7 +33,7 @@ def _utc_now() -> datetime:
 
 @dataclass(frozen=True, slots=True)
 class ControlPlaneBrowserOrigin:
-    """Canonical literal-loopback HTTP origin accepted from browser requests."""
+    """Canonical loopback-HTTP or public-HTTPS origin accepted from browsers."""
 
     value: str
 
@@ -38,32 +42,44 @@ class ControlPlaneBrowserOrigin:
         if raw != self.value or not raw:
             raise ValueError("browser origin must not contain surrounding whitespace")
         parsed = urlsplit(raw)
-        if parsed.scheme.lower() != "http":
-            raise ValueError("browser origin must use http")
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("browser origin must not contain user information")
         if parsed.path or parsed.query or parsed.fragment:
             raise ValueError("browser origin must not contain a path, query, or fragment")
-        hostname = parsed.hostname
-        if hostname is None:
-            raise ValueError("browser origin requires a host")
         try:
-            address = ipaddress.ip_address(hostname)
-        except ValueError as exception:
-            raise ValueError("browser origin host must be a literal IP address") from exception
-        if not address.is_loopback:
-            raise ValueError("browser origin host must be loopback")
+            public = ControlPlanePublicOrigin(raw)
+        except ControlPlaneNetworkConfigurationError as exception:
+            raise ValueError("browser origin is invalid") from exception
+        if public.scheme == "http":
+            try:
+                address = ipaddress.ip_address(public.host)
+            except ValueError as exception:
+                raise ValueError(
+                    "HTTP browser origin host must be a literal IP address"
+                ) from exception
+            if not address.is_loopback:
+                raise ValueError("HTTP browser origin host must be loopback")
+        object.__setattr__(self, "value", public.value)
+
+    @property
+    def scheme(self) -> str:
+        return urlsplit(self.value).scheme
+
+    @property
+    def secure(self) -> bool:
+        return self.scheme == "https"
+
+    @property
+    def loopback(self) -> bool:
+        host = urlsplit(self.value).hostname
+        if host is None:  # pragma: no cover - protected by construction
+            raise AssertionError("validated browser origin lost its host")
+        if host == "localhost":
+            return True
         try:
-            port = parsed.port
-        except ValueError as exception:
-            raise ValueError("browser origin port is invalid") from exception
-        host = f"[{address.compressed}]" if address.version == 6 else address.compressed
-        canonical = f"http://{host}"
-        if port is not None:
-            if port == 0:
-                raise ValueError("browser origin port must be between 1 and 65535")
-            canonical = f"{canonical}:{port}"
-        object.__setattr__(self, "value", canonical)
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     def __str__(self) -> str:
         return self.value
