@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import ssl
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -242,6 +243,8 @@ async def test_context_manager_rejects_insecure_private_key_permissions(tmp_path
     if os.name == "nt":
         pytest.skip("POSIX permission enforcement is not available on Windows")
     assert policy.private_key_file is not None
+    private_key_info = await asyncio.to_thread(Path(policy.private_key_file).stat)
+    assert stat.S_IMODE(private_key_info.st_mode) == 0o600
     await asyncio.to_thread(Path(policy.private_key_file).chmod, 0o644)
     manager = ControlPlaneTlsContextManager(policy, clock=_Clock())
     with pytest.raises(ControlPlaneTlsMaterialError, match="permissions"):

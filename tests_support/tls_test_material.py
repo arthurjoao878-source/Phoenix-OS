@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 
 CA_CERTIFICATE_DER_HEX = (
@@ -135,11 +136,20 @@ def write_test_tls_material(directory: Path) -> tuple[Path, Path, Path, Path, Pa
     key_header = "-----BEGIN " + "PRIVATE KEY-----"
     key_footer = "-----END " + "PRIVATE KEY-----"
 
-    def write_pem(name: str, der_hex: str, header: str, footer: str) -> Path:
+    def write_pem(
+        name: str,
+        der_hex: str,
+        header: str,
+        footer: str,
+        *,
+        secret: bool = False,
+    ) -> Path:
         encoded = base64.b64encode(bytes.fromhex(der_hex)).decode("ascii")
         lines = [encoded[index : index + 64] for index in range(0, len(encoded), 64)]
         path = directory / name
         path.write_text("\n".join((header, *lines, footer, "")), encoding="ascii")
+        if secret and os.name != "nt":
+            path.chmod(0o600)
         return path
 
     server_certificate = write_pem(
@@ -153,6 +163,7 @@ def write_test_tls_material(directory: Path) -> tuple[Path, Path, Path, Path, Pa
         SERVER_PRIVATE_KEY_DER_HEX,
         key_header,
         key_footer,
+        secret=True,
     )
     ca_certificate = write_pem(
         "ca.crt",
@@ -171,6 +182,7 @@ def write_test_tls_material(directory: Path) -> tuple[Path, Path, Path, Path, Pa
         CLIENT_PRIVATE_KEY_DER_HEX,
         key_header,
         key_footer,
+        secret=True,
     )
     return (
         server_certificate,
