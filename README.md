@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.22.0` implements twenty-two accepted specifications:
+Version `0.23.0` implements twenty-three accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -55,6 +55,10 @@ Version `0.22.0` implements twenty-two accepted specifications:
 - **RFC-0022 — Secure Remote Control Plane and TLS:** opt-in native TLS, optional mutual TLS,
   exact public-origin binding, trusted-proxy client identity, explicit CIDR allowlists, bounded
   remote admission, protected address audit, and Runtime-owned listener health.
+- **RFC-0023 — Service Accounts and Scoped API Tokens:** durable machine identities,
+  one-time opaque credentials, exact scopes and resources, expiration, rotation, revocation,
+  replay protection, transport restrictions, protected audit, Dashboard administration, and
+  Runtime-owned lifecycle management.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job

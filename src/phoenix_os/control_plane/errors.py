@@ -137,6 +137,58 @@ class ControlPlaneOperatorSchemaError(ControlPlaneOperatorCorruptionError):
     """Raised when persisted operator data uses an unsupported schema."""
 
 
+class ControlPlaneServiceAccountAlreadyExistsError(PhoenixControlPlaneError):
+    """Raised for duplicated account ids or names."""
+
+
+class ControlPlaneServiceAccountNotFoundError(PhoenixControlPlaneError):
+    """Raised when a service account does not exist."""
+
+
+class ControlPlaneServiceAccountConflictError(PhoenixControlPlaneError):
+    """Raised for stale account revisions."""
+
+
+class ControlPlaneServiceAccountCapacityError(PhoenixControlPlaneError):
+    """Raised when account capacity is exhausted."""
+
+
+class ControlPlaneServiceAccountRepositoryClosedError(PhoenixControlPlaneError):
+    """Raised when a closed repository receives work."""
+
+
+class ControlPlaneServiceAccountLifecycleClosedError(PhoenixControlPlaneError):
+    """Raised when the service-account lifecycle service is closed."""
+
+
+class ControlPlaneServiceAccountPersistenceError(PhoenixControlPlaneError):
+    """Raised when durable account persistence fails."""
+
+
+class ControlPlaneServiceAccountCorruptionError(ControlPlaneServiceAccountPersistenceError):
+    """Raised when persisted account state is corrupt."""
+
+
+class ControlPlaneServiceAccountSchemaError(ControlPlaneServiceAccountCorruptionError):
+    """Raised for unsupported persisted schemas."""
+
+
+class ControlPlaneApiTokenAlreadyExistsError(PhoenixControlPlaneError):
+    """Raised for duplicated token ids or digests."""
+
+
+class ControlPlaneApiTokenNotFoundError(PhoenixControlPlaneError):
+    """Raised when API-token metadata does not exist."""
+
+
+class ControlPlaneApiTokenConflictError(PhoenixControlPlaneError):
+    """Raised for stale or unsafe token replacement."""
+
+
+class ControlPlaneApiTokenCapacityError(PhoenixControlPlaneError):
+    """Raised when an account reaches token capacity."""
+
+
 class ControlPlaneOperatorAccessRejectedError(PhoenixControlPlaneError):
     """Raised with one generic message for rejected operator login attempts."""
 

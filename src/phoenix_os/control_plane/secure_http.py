@@ -63,6 +63,17 @@ from phoenix_os.control_plane.remote_security import (
     ControlPlaneRemoteLoginThrottle,
     ControlPlaneRemoteLoginThrottleSnapshot,
 )
+from phoenix_os.control_plane.service_account_authentication import (
+    ControlPlaneServiceAccountAuthenticationContext,
+    ControlPlaneServiceAccountTransportContextError,
+    control_plane_service_account_authentication_context,
+)
+from phoenix_os.control_plane.service_account_http import (
+    ControlPlaneServiceAccountHttpAdapter,
+)
+from phoenix_os.control_plane.service_account_machine_http import (
+    ControlPlaneServiceAccountMachineHttpAdapter,
+)
 from phoenix_os.control_plane.tls_listener import (
     ControlPlaneTlsContextSnapshot,
     ControlPlaneTlsListener,
@@ -105,6 +116,8 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
         operator_http: ControlPlaneOperatorHttpAdapter | None = None,
         durable_session_http: ControlPlaneDurableSessionHttpBoundary | None = None,
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None,
+        service_account_http: ControlPlaneServiceAccountHttpAdapter | None = None,
+        service_account_machine_http: ControlPlaneServiceAccountMachineHttpAdapter | None = None,
         client_rate_limit: ControlPlaneClientRateLimitPolicy | None = None,
         tls_config: ControlPlaneTlsListenerConfig | None = None,
         remote_authentication: ControlPlaneRemoteAuthenticationService | None = None,
@@ -131,7 +144,9 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
             operator_http=operator_http,
             durable_session_http=durable_session_http,
             durable_operator_http=durable_operator_http,
+            service_account_http=service_account_http,
         )
+        self._service_account_machine_http = service_account_machine_http
         self._network_policy = network_policy
         self._network_guard = ControlPlaneNetworkGuard(
             network_policy,
@@ -145,6 +160,12 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
                 f"phoenix_control_plane_network_context_{id(self)}",
                 default=None,
             )
+        )
+        self._service_account_authentication_context: ContextVar[
+            ControlPlaneServiceAccountAuthenticationContext | None
+        ] = ContextVar(
+            f"phoenix_service_account_transport_context_{id(self)}",
+            default=None,
         )
         self._tls_listener = (
             None
@@ -283,6 +304,21 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
             raise ControlPlaneTlsListenerStateError("control plane native TLS is not configured")
         return await self._tls_listener.reload()
 
+    def _machine_http_handles(
+        self,
+        path: str,
+    ) -> bool:
+        return (
+            self._service_account_machine_http is not None
+            and self._service_account_machine_http.handles(path)
+        )
+
+    def _requires_browser_origin(
+        self,
+        request: _Request,
+    ) -> bool:
+        return request.method == "POST" and not self._machine_http_handles(request.path)
+
     async def _handle_connection(
         self,
         stream: asyncio.StreamReader,
@@ -290,50 +326,99 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
     ) -> None:
         async with self._connection_limit:
             await self._change_active_connections(1)
+
             lease: ControlPlaneClientConnectionLease | None = None
+
             network_context: ControlPlaneNetworkRequestContext | None = None
+
             context_token: Token[ControlPlaneNetworkRequestContext | None] | None = None
+
+            machine_context_token: (
+                Token[ControlPlaneServiceAccountAuthenticationContext | None] | None
+            ) = None
+
             connection_audited = False
+
             try:
                 try:
                     async with asyncio.timeout(self._config.request_timeout):
                         request = await self._read_request(stream)
+
                         peer_address = _peer_address(writer)
+
                         network_context = await self._network_guard.authorize_request(
                             peer_address,
                             request.headers,
-                            require_origin=request.method == "POST",
+                            require_origin=(self._requires_browser_origin(request)),
                         )
+
                         lease = await self._network_guard.acquire_connection(
                             network_context.identity
                         )
+
                         if self._remote_audit is not None:
                             await self._remote_audit.connection_accepted(network_context.identity)
+
                             connection_audited = True
+
                         context_token = self._request_network_context.set(network_context)
+
+                        if self._machine_http_handles(request.path):
+                            machine_context = control_plane_service_account_authentication_context(
+                                network_context,
+                                writer,
+                                tls_policy=(self._network_policy.tls),
+                            )
+
+                            machine_context_token = (
+                                self._service_account_authentication_context.set(machine_context)
+                            )
+
                         status, payload, headers = await self._dispatch(request)
+
                 except TimeoutError:
                     await self._record_rejection("RequestTimeout")
+
                     status, payload, headers = (
                         HTTPStatus.REQUEST_TIMEOUT,
-                        {"error": "request_timeout"},
+                        {
+                            "error": "request_timeout",
+                        },
                         {},
                     )
+
                 except _HttpRequestError as exception:
                     await self._record_rejection(exception.code)
+
                     status, payload, headers = (
                         exception.status,
-                        {"error": exception.code},
+                        {
+                            "error": exception.code,
+                        },
                         {},
                     )
+
+                except ControlPlaneServiceAccountTransportContextError:
+                    await self._record_rejection("ServiceAccountTransportRejected")
+
+                    status, payload, headers = (
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "request_rejected",
+                        },
+                        {},
+                    )
+
                 except (
                     ControlPlaneNetworkRejectedError,
                     ControlPlaneNetworkGuardClosedError,
                 ):
                     guard_snapshot = await self._network_guard.snapshot()
+
                     reason = (
                         guard_snapshot.last_rejection or ControlPlaneNetworkRejectionReason.PROXY
                     )
+
                     if self._remote_audit is not None:
                         await self._remote_audit.network_rejected(
                             reason,
@@ -341,41 +426,73 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
                                 None if network_context is None else network_context.identity
                             ),
                         )
+
                     limited = reason in {
                         ControlPlaneNetworkRejectionReason.RATE_LIMIT,
                         ControlPlaneNetworkRejectionReason.CONNECTION_LIMIT,
                     }
+
                     await self._record_rejection("NetworkRequestRejected")
+
                     status, payload, headers = (
                         (HTTPStatus.TOO_MANY_REQUESTS if limited else HTTPStatus.FORBIDDEN),
-                        {"error": "request_rejected"},
-                        {"Retry-After": "1"} if limited else {},
+                        {
+                            "error": "request_rejected",
+                        },
+                        (
+                            {
+                                "Retry-After": "1",
+                            }
+                            if limited
+                            else {}
+                        ),
                     )
+
                 except Exception as exception:
                     await self._record_error(type(exception).__name__)
+
                     status, payload, headers = (
                         HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": "service_unavailable"},
+                        {
+                            "error": "service_unavailable",
+                        },
                         {},
                     )
 
-                await self._write_response(writer, status, payload, headers)
+                await self._write_response(
+                    writer,
+                    status,
+                    payload,
+                    headers,
+                )
+
             finally:
+                if machine_context_token is not None:
+                    self._service_account_authentication_context.reset(machine_context_token)
+
                 if context_token is not None:
                     self._request_network_context.reset(context_token)
+
                 if (
                     connection_audited
                     and self._remote_audit is not None
                     and network_context is not None
                 ):
                     await self._remote_audit.connection_closed(network_context.identity)
+
                 if lease is not None:
                     await lease.close()
+
                 writer.close()
+
                 try:
                     await writer.wait_closed()
-                except (ConnectionError, RuntimeError):
+                except (
+                    ConnectionError,
+                    RuntimeError,
+                ):
                     pass
+
                 await self._change_active_connections(-1)
 
     async def _dispatch(
@@ -386,6 +503,34 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
         Mapping[str, object] | bytes,
         dict[str, str],
     ]:
+        if self._machine_http_handles(request.path):
+            async with self._counter_lock:
+                self._requests += 1
+
+            machine_context = self._service_account_authentication_context.get()
+
+            adapter = self._service_account_machine_http
+
+            if machine_context is None or adapter is None:
+                await self._record_rejection("ServiceAccountTransportUnavailable")
+
+                return (
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {
+                        "error": "machine_api_unavailable",
+                    },
+                    {},
+                )
+
+            return await adapter.dispatch(
+                context=machine_context,
+                method=request.method,
+                path=request.path,
+                query=request.query,
+                headers=request.headers,
+                body=request.body,
+            )
+
         if (
             request.path == "/v1/control-plane/operator/login"
             and self._remote_authentication is not None

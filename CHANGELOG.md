@@ -1,6 +1,19 @@
 # Changelog
 
 
+## [0.23.0] - 2026-07-21
+
+### Added
+- Accepted RFC-0023 and ADR-0046/0047.
+- Durable service accounts with active, disabled, revoked, and expired lifecycle states.
+- One-time API-token issuance, mandatory expiration, bounded rotation overlap, and revocation.
+- Protected digest persistence with strict decoding and corruption detection.
+- Exact action scopes, resource restrictions, and deny-by-default Policy Engine integration.
+- Optional client-CIDR and mutual-TLS identity binding with replay-resistant request evidence.
+- Independent client and account throttling, protected audit facts, and safe health metrics.
+- Maintainer routes, Dashboard administration, machine routes, and RuntimeAssembler ownership.
+
+
 ## [0.22.0] - 2026-07-19
 
 ### Added
