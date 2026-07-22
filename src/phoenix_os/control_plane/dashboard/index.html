@@ -118,6 +118,160 @@
           <p class="muted">Active sessions survive Runtime restarts, rotate automatically, and may be ended individually or globally.</p>
         </article>
 
+        <article id="service-accounts-panel" class="panel wide hidden">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Machine access</p>
+              <h2>Service accounts</h2>
+            </div>
+            <span id="service-accounts-page" class="muted"></span>
+          </div>
+
+          <form id="create-service-account-form" class="service-account-form" autocomplete="off">
+            <label>
+              Name
+              <input
+                id="service-account-name"
+                required
+                maxlength="128"
+                spellcheck="false"
+                placeholder="release.bot"
+              >
+            </label>
+            <label>
+              Display name
+              <input
+                id="service-account-display-name"
+                required
+                maxlength="256"
+                placeholder="Release Bot"
+              >
+            </label>
+            <button id="create-service-account-submit" type="submit">
+              Create service account
+            </button>
+          </form>
+
+          <p id="service-account-status" class="muted">
+            Maintainer-only administration with durable sessions and CSRF protection.
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Service account</th>
+                  <th>Status</th>
+                  <th>Revision</th>
+                  <th>Updated</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="service-accounts-table"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article id="service-account-tokens-panel" class="panel wide hidden">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Scoped machine credentials</p>
+              <h2 id="service-account-tokens-title">API tokens</h2>
+            </div>
+            <div class="history-tools">
+              <span id="api-tokens-page" class="muted"></span>
+              <button
+                id="close-service-account-tokens"
+                type="button"
+                class="small secondary"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+
+          <form id="issue-api-token-form" class="api-token-form" autocomplete="off">
+            <label>
+              Label
+              <input
+                id="api-token-label"
+                required
+                maxlength="128"
+                placeholder="deployment"
+              >
+            </label>
+            <label>
+              Expires
+              <input
+                id="api-token-expires-at"
+                type="datetime-local"
+                required
+              >
+            </label>
+            <label>
+              Scopes
+              <textarea
+                id="api-token-scopes"
+                rows="3"
+                required
+                spellcheck="false"
+                placeholder="jobs.read"
+              ></textarea>
+            </label>
+            <label>
+              Resources
+              <textarea
+                id="api-token-resources"
+                rows="3"
+                required
+                spellcheck="false"
+                placeholder="job:*"
+              ></textarea>
+            </label>
+            <label>
+              Client CIDRs
+              <textarea
+                id="api-token-networks"
+                rows="3"
+                spellcheck="false"
+                placeholder="10.0.0.0/24"
+              ></textarea>
+            </label>
+            <label>
+              mTLS certificate SHA-256
+              <input
+                id="api-token-mtls-sha256"
+                maxlength="64"
+                spellcheck="false"
+              >
+            </label>
+            <button id="issue-api-token-submit" type="submit">
+              Issue API token
+            </button>
+          </form>
+
+          <p id="api-token-output" class="credential-output muted">
+            A newly issued or rotated token appears here once. Phoenix OS never stores its plaintext.
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Token</th>
+                  <th>Scopes</th>
+                  <th>Resources</th>
+                  <th>Status</th>
+                  <th>Expires</th>
+                  <th>Revision</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="api-tokens-table"></tbody>
+            </table>
+          </div>
+        </article>
+
         <article class="panel wide">
           <div class="panel-heading"><div><p class="eyebrow">Execution</p><h2>Recent jobs</h2></div><span id="jobs-page" class="muted"></span></div>
           <div class="table-wrap"><table><thead><tr><th>Capability</th><th>Status</th><th>Attempts</th><th>Next run</th><th>Action</th></tr></thead><tbody id="jobs-table"></tbody></table></div>
@@ -151,6 +305,6 @@
     </section>
   </main>
 
-  <footer>Loopback-only · HttpOnly durable sessions · Step-up protected administration · Phoenix OS v0.21.0</footer>
+  <footer>Loopback-only · HttpOnly durable sessions · Step-up protected administration · Phoenix OS v0.23.0</footer>
 </body>
 </html>

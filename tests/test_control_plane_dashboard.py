@@ -107,7 +107,7 @@ def test_dashboard_html_exposes_operator_management_and_history_filter() -> None
     assert 'id="sessions-panel"' in html
     assert 'id="sessions-status"' in html
     assert "HttpOnly" in html
-    assert "Phoenix OS v0.21.0" in html
+    assert "Phoenix OS v0.23.0" in html
     assert "token_digest" not in html
 
 

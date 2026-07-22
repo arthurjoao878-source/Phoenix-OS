@@ -58,6 +58,9 @@ from phoenix_os.control_plane.serialization import (
     snapshot_to_dict,
     workflow_page_to_dict,
 )
+from phoenix_os.control_plane.service_account_http import (
+    ControlPlaneServiceAccountHttpAdapter,
+)
 
 
 class ControlPlaneHttpState(StrEnum):
@@ -166,11 +169,14 @@ class ControlPlaneHttpServer:
         operator_http: ControlPlaneOperatorHttpAdapter | None = None,
         durable_session_http: ControlPlaneDurableSessionHttpBoundary | None = None,
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None,
+        service_account_http: ControlPlaneServiceAccountHttpAdapter | None = None,
     ) -> None:
         if authenticator is None and durable_session_http is None:
             raise ValueError("control plane requires an authenticator or durable session boundary")
         if operator_http is not None and durable_operator_http is not None:
             raise ValueError("legacy and durable operator HTTP adapters are exclusive")
+        if service_account_http is not None and durable_session_http is None:
+            raise ValueError("service-account HTTP requires durable session authentication")
         self._reader = reader
         self._authenticator = authenticator
         self._config = config or ControlPlaneHttpConfig()
@@ -180,6 +186,7 @@ class ControlPlaneHttpServer:
         self._operator_http = operator_http
         self._durable_session_http = durable_session_http
         self._durable_operator_http = durable_operator_http
+        self._service_account_http = service_account_http
         self._command_http = (
             None
             if command_api is None
@@ -526,6 +533,20 @@ class ControlPlaneHttpServer:
             and self._durable_operator_http.handles(request.path)
         ):
             return await self._durable_operator_http.dispatch(
+                authentication=durable_authentication,
+                method=request.method,
+                path=request.path,
+                query=request.query,
+                headers=request.headers,
+                body=request.body,
+                server_origin=server_origin,
+            )
+        if (
+            durable_authentication is not None
+            and self._service_account_http is not None
+            and self._service_account_http.handles(request.path)
+        ):
+            return await self._service_account_http.dispatch(
                 authentication=durable_authentication,
                 method=request.method,
                 path=request.path,

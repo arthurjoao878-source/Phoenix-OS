@@ -48,6 +48,12 @@ if TYPE_CHECKING:
         ControlPlaneTlsListenerConfig,
         JobRecordSource,
     )
+    from phoenix_os.control_plane.service_account_contracts import (
+        ControlPlaneServiceAccountRepository,
+    )
+    from phoenix_os.control_plane.service_account_machine_http import (
+        ControlPlaneServiceAccountMachineRoute,
+    )
     from phoenix_os.identity import AuthenticationManager
     from phoenix_os.jobs import JobScheduler
     from phoenix_os.secrets import SecretsManager
@@ -287,6 +293,16 @@ class RuntimeAssembler:
         | None = None,
         control_plane_durable_session_retention_poll_interval: float = 3600.0,
         control_plane_step_up_policy: ControlPlaneStepUpPolicy | None = None,
+        control_plane_service_accounts_enabled: bool = False,
+        control_plane_service_account_repository: (
+            ControlPlaneServiceAccountRepository | None
+        ) = None,
+        control_plane_service_account_machine_routes: tuple[
+            ControlPlaneServiceAccountMachineRoute,
+            ...,
+        ] = (),
+        control_plane_service_account_audit_secret: (bytes | bytearray | memoryview | None) = None,
+        control_plane_service_account_replay_secret: (bytes | bytearray | memoryview | None) = None,
         control_plane_http_config: ControlPlaneHttpConfig | None = None,
         control_plane_network_policy: ControlPlaneNetworkPolicy | None = None,
         control_plane_client_rate_limit: ControlPlaneClientRateLimitPolicy | None = None,
@@ -351,6 +367,16 @@ class RuntimeAssembler:
             control_plane_durable_session_retention_poll_interval
         )
         self._control_plane_step_up_policy = control_plane_step_up_policy
+        self._control_plane_service_account_repository = control_plane_service_account_repository
+        self._control_plane_service_account_machine_routes = tuple(
+            control_plane_service_account_machine_routes
+        )
+        self._control_plane_service_account_audit_secret = (
+            control_plane_service_account_audit_secret
+        )
+        self._control_plane_service_account_replay_secret = (
+            control_plane_service_account_replay_secret
+        )
         self._control_plane_http_config = control_plane_http_config
         self._control_plane_network_policy = control_plane_network_policy
         self._control_plane_client_rate_limit = control_plane_client_rate_limit
@@ -374,6 +400,44 @@ class RuntimeAssembler:
         operator_mode = (
             control_plane_operator_registry is not None or control_plane_operator_token is not None
         )
+
+        if not isinstance(
+            control_plane_service_accounts_enabled,
+            bool,
+        ):
+            raise TypeError("service-account enabled flag must be bool")
+
+        service_accounts_enabled = (
+            control_plane_service_accounts_enabled
+            or control_plane_service_account_repository is not None
+            or bool(self._control_plane_service_account_machine_routes)
+        )
+
+        security_secrets_supplied = any(
+            secret is not None
+            for secret in (
+                control_plane_service_account_audit_secret,
+                control_plane_service_account_replay_secret,
+            )
+        )
+
+        if security_secrets_supplied and not service_accounts_enabled:
+            raise ValueError("service-account security secrets require service accounts")
+
+        if service_accounts_enabled and not operator_mode:
+            raise ValueError("service accounts require durable operator mode")
+
+        if (
+            self._control_plane_service_account_machine_routes
+            and control_plane_network_policy is None
+        ):
+            raise ValueError("machine routes require a secure network policy")
+
+        if self._control_plane_service_account_machine_routes and policy is None:
+            raise ValueError("machine routes require a PolicyEngine")
+
+        self._control_plane_service_accounts_enabled = service_accounts_enabled
+
         if control_plane_authenticator is not None and operator_mode:
             raise ValueError("legacy and operator control-plane authentication are exclusive")
         control_plane_enabled = control_plane_authenticator is not None or operator_mode
@@ -591,6 +655,22 @@ class RuntimeAssembler:
             else:
                 state_store = self._state
 
+            service_account_repository = self._control_plane_service_account_repository
+
+            if self._control_plane_service_accounts_enabled and service_account_repository is None:
+                from phoenix_os.control_plane.service_account_memory import (
+                    InMemoryControlPlaneServiceAccountRepository,
+                )
+                from phoenix_os.control_plane.service_account_state import (
+                    StateControlPlaneServiceAccountRepository,
+                )
+
+                service_account_repository = (
+                    InMemoryControlPlaneServiceAccountRepository()
+                    if state_store is None
+                    else StateControlPlaneServiceAccountRepository(state_store)
+                )
+
             command_journal = self._control_plane_command_journal
             if command_journal is None:
                 command_journal = (
@@ -673,6 +753,11 @@ class RuntimeAssembler:
                     self._control_plane_durable_session_retention_poll_interval
                 ),
                 step_up_policy=self._control_plane_step_up_policy,
+                service_account_repository=(service_account_repository),
+                service_account_machine_routes=(self._control_plane_service_account_machine_routes),
+                service_account_audit_secret=(self._control_plane_service_account_audit_secret),
+                service_account_replay_secret=(self._control_plane_service_account_replay_secret),
+                policy_engine=self._policy,
                 jobs=self._jobs,
                 job_records=self._control_plane_job_records,
                 workflows=self._workflows,
@@ -751,6 +836,37 @@ class RuntimeAssembler:
                 custom_services["control_plane.operator-step-up"] = (
                     control_plane_stack.operator_step_up
                 )
+
+            if control_plane_stack.service_accounts is not None:
+                service_accounts = control_plane_stack.service_accounts
+
+                custom_services["control_plane.service-accounts"] = service_accounts.administration
+
+                custom_services["control_plane.service-account-repository"] = (
+                    service_accounts.repository
+                )
+
+                custom_services["control_plane.service-account-lifecycle"] = (
+                    service_accounts.lifecycle
+                )
+
+                custom_services["control_plane.service-account-audit"] = service_accounts.audit
+
+                custom_services["control_plane.service-account-http"] = service_accounts.http
+
+                custom_services["control_plane.service-account-authentication"] = (
+                    service_accounts.authentication
+                )
+
+                custom_services["control_plane.service-account-request-security"] = (
+                    service_accounts.request_security
+                )
+
+                if service_accounts.machine_http is not None:
+                    custom_services["control_plane.service-account-machine-http"] = (
+                        service_accounts.machine_http
+                    )
+
             if control_plane_stack.operator_registry_owner is not None:
                 components.append(
                     ComponentSpec(
@@ -786,6 +902,14 @@ class RuntimeAssembler:
                         control_plane_stack.durable_session_retention,
                     )
                 )
+            if control_plane_stack.service_accounts_owner is not None:
+                components.append(
+                    ComponentSpec(
+                        "control_plane.service-accounts",
+                        control_plane_stack.service_accounts_owner,
+                    )
+                )
+
             components.append(
                 ComponentSpec("control_plane.command-journal", control_plane_stack.journal_owner)
             )

@@ -499,3 +499,23 @@ Do not place a wildcard client allowlist in front of an unreviewed Internet list
 authenticates and encrypts the transport; it does not replace operator authorization, least
 privilege, host firewall policy, certificate operations, incident response, or deployment
 monitoring.
+
+## Phoenix OS 0.23 service-account and machine-client migration
+
+Do not reuse Nova bot tokens, operator credentials, browser cookies, or session material as
+Phoenix machine credentials. Create a dedicated service account for each integration and issue a
+new scoped API token through Maintainer administration.
+
+Machine access remains disabled unless the host registers an exact route below
+`/v1/control-plane/machine/`. Grant only the action scopes and resources required by that route,
+set a mandatory expiration, and add client-CIDR or mutual-TLS restrictions where deployment
+identity is stable.
+
+Store the one-time token disclosure in the integration's secret manager. Do not write it to Nova
+configuration committed to source control, logs, URLs, command history, telemetry, State Store
+records, or migration artifacts. Phoenix OS cannot recover the plaintext after issuance.
+
+Every request requires a fresh nonce and current aware timestamp. Retries must create new replay
+evidence. Rotate credentials with the smallest practical overlap, verify the successor, and revoke
+the predecessor. Existing Phoenix 0.22 operator and remote-control configuration remains valid
+when service accounts are not enabled.

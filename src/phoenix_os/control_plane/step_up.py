@@ -48,6 +48,11 @@ class ControlPlaneStepUpAction(StrEnum):
     ROTATE_CREDENTIAL = "rotate-credential"
     REVOKE_OPERATOR = "revoke-operator"
     REVOKE_OPERATOR_SESSIONS = "revoke-operator-sessions"
+    ISSUE_API_TOKEN = "issue-api-token"
+    ROTATE_API_TOKEN = "rotate-api-token"
+    REVOKE_API_TOKEN = "revoke-api-token"
+    ENABLE_SERVICE_ACCOUNT = "enable-service-account"
+    REVOKE_SERVICE_ACCOUNT = "revoke-service-account"
 
 
 @dataclass(frozen=True, slots=True)

@@ -102,6 +102,20 @@ from phoenix_os.control_plane.remote_security import (
 )
 from phoenix_os.control_plane.secure_http import ControlPlaneSecureHttpServer
 from phoenix_os.control_plane.service import ControlPlaneService
+from phoenix_os.control_plane.service_account_contracts import (
+    ControlPlaneServiceAccountRepository,
+)
+from phoenix_os.control_plane.service_account_machine_http import (
+    ControlPlaneServiceAccountMachineRoute,
+)
+from phoenix_os.control_plane.service_account_memory import (
+    InMemoryControlPlaneServiceAccountRepository,
+)
+from phoenix_os.control_plane.service_account_runtime import (
+    ControlPlaneServiceAccountRuntimeBundle,
+    ControlPlaneServiceAccountRuntimeOwner,
+    create_control_plane_service_account_runtime,
+)
 from phoenix_os.control_plane.step_up import (
     ControlPlaneOperatorStepUpService,
     ControlPlaneStepUpPolicy,
@@ -113,6 +127,7 @@ from phoenix_os.control_plane.workflow_commands import (
 )
 from phoenix_os.events import EventBus
 from phoenix_os.jobs import JobSchedulerSnapshot
+from phoenix_os.policy import PolicyEngine
 from phoenix_os.runtime import PhoenixRuntime, RuntimeSnapshot
 from phoenix_os.workflows import WorkflowRecord
 
@@ -234,6 +249,8 @@ class ControlPlaneRuntimeStack:
     durable_session_recovery: ControlPlaneDurableSessionRecoveryWorker | None
     durable_session_retention: ControlPlaneDurableSessionRetentionWorker | None
     operator_step_up: ControlPlaneOperatorStepUpService | None
+    service_accounts: ControlPlaneServiceAccountRuntimeBundle | None
+    service_accounts_owner: ControlPlaneServiceAccountRuntimeOwner | None
     _runtime: _RuntimeSnapshotProxy
 
     @classmethod
@@ -253,6 +270,14 @@ class ControlPlaneRuntimeStack:
         durable_session_retention_policy: ControlPlaneDurableSessionRetentionPolicy | None = None,
         durable_session_retention_poll_interval: float = 3600.0,
         step_up_policy: ControlPlaneStepUpPolicy | None = None,
+        service_account_repository: ControlPlaneServiceAccountRepository | None = None,
+        service_account_machine_routes: tuple[
+            ControlPlaneServiceAccountMachineRoute,
+            ...,
+        ] = (),
+        service_account_audit_secret: bytes | bytearray | memoryview | None = None,
+        service_account_replay_secret: bytes | bytearray | memoryview | None = None,
+        policy_engine: PolicyEngine | None = None,
         jobs: JobSnapshotSource | None = None,
         job_records: JobRecordSource | None = None,
         workflows: WorkflowSnapshotSource | None = None,
@@ -308,6 +333,19 @@ class ControlPlaneRuntimeStack:
         ):
             raise ValueError("remote login options require remote control-plane exposure")
 
+        service_accounts_enabled = service_account_repository is not None or bool(
+            service_account_machine_routes
+        )
+
+        if service_accounts_enabled and operator_registry is None:
+            raise ValueError("service accounts require durable operator mode")
+
+        if service_account_machine_routes and network_policy is None:
+            raise ValueError("machine routes require a secure network policy")
+
+        if service_account_machine_routes and policy_engine is None:
+            raise ValueError("machine routes require a PolicyEngine")
+
         runtime = _RuntimeSnapshotProxy()
         journal = command_journal or InMemoryControlPlaneCommandJournalRepository()
         service = ControlPlaneService(
@@ -338,6 +376,8 @@ class ControlPlaneRuntimeStack:
         operator_step_up: ControlPlaneOperatorStepUpService | None = None
         durable_boundary: ControlPlaneDurableSessionHttpBoundary | None = None
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None
+        service_accounts: ControlPlaneServiceAccountRuntimeBundle | None = None
+        service_accounts_owner: ControlPlaneServiceAccountRuntimeOwner | None = None
         default_principal: str
         if operator_registry is not None:
             operator_owner = _OperatorRegistryOwner(operator_registry, bootstrap_operator)
@@ -417,6 +457,27 @@ class ControlPlaneRuntimeStack:
         else:
             assert authenticator is not None
             default_principal = authenticator.principal.name
+
+        if service_accounts_enabled:
+            if durable_boundary is None or operator_step_up is None:
+                raise AssertionError("service-account composition lost durable operator security")
+
+            service_account_storage = (
+                service_account_repository or InMemoryControlPlaneServiceAccountRepository()
+            )
+
+            service_accounts = create_control_plane_service_account_runtime(
+                repository=service_account_storage,
+                events=event_bus,
+                boundary=durable_boundary,
+                step_up=operator_step_up,
+                policy_engine=policy_engine,
+                machine_routes=(service_account_machine_routes),
+                audit_secret=(service_account_audit_secret),
+                replay_secret=(service_account_replay_secret),
+            )
+
+            service_accounts_owner = ControlPlaneServiceAccountRuntimeOwner(service_accounts)
 
         remote_login: ControlPlaneRemoteLoginThrottle | None = None
         remote_audit: ControlPlaneRemoteAudit | None = None
@@ -506,6 +567,7 @@ class ControlPlaneRuntimeStack:
                 command_history=history,
                 durable_session_http=durable_boundary,
                 durable_operator_http=durable_operator_http,
+                service_account_http=None if service_accounts is None else service_accounts.http,
             )
         else:
             secure_http = ControlPlaneSecureHttpServer(
@@ -518,6 +580,10 @@ class ControlPlaneRuntimeStack:
                 command_history=history,
                 durable_session_http=durable_boundary,
                 durable_operator_http=durable_operator_http,
+                service_account_http=None if service_accounts is None else service_accounts.http,
+                service_account_machine_http=(
+                    None if service_accounts is None else service_accounts.machine_http
+                ),
                 client_rate_limit=client_rate_limit,
                 tls_config=tls_listener_config,
                 remote_authentication=remote_authentication,
@@ -546,6 +612,8 @@ class ControlPlaneRuntimeStack:
             durable_recovery,
             durable_retention,
             operator_step_up,
+            service_accounts,
+            service_accounts_owner,
             runtime,
         )
 

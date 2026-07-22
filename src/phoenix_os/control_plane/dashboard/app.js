@@ -10,6 +10,7 @@ const state = {
   operations: {},
   me: null,
   operatorMode: false,
+  selectedServiceAccount: null,
 };
 
 const byId = (id) => document.getElementById(id);
@@ -17,6 +18,13 @@ const text = (id, value) => { byId(id).textContent = String(value); };
 const formatTime = (value) => value ? new Date(value).toLocaleString() : "—";
 const statusClass = (value) => `status status-${String(value).replaceAll(" ", "_")}`;
 const newKey = () => `dashboard-${crypto.randomUUID()}`;
+
+function hasPermission(permission) {
+  return Boolean(
+    state.me
+    && state.me.permissions.includes(permission)
+  );
+}
 
 async function request(path, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -271,6 +279,904 @@ function renderOperators(page) {
   }
 }
 
+function renderServiceAccounts(page) {
+  const body = byId("service-accounts-table");
+
+  body.replaceChildren(...page.items.map((item) => {
+    const row = document.createElement("tr");
+
+    const identity = document.createElement("td");
+    const displayName = document.createElement("strong");
+    displayName.textContent = item.display_name;
+
+    const name = document.createElement("p");
+    name.className = "muted";
+    name.textContent = item.name;
+
+    identity.append(displayName, name);
+
+    const status = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = statusClass(item.status);
+    badge.textContent = item.status;
+    status.append(badge);
+
+    const revision = document.createElement("td");
+    revision.textContent = item.revision;
+
+    const updated = document.createElement("td");
+    updated.textContent = formatTime(item.updated_at);
+
+    const actions = document.createElement("td");
+    actions.className = "row-actions";
+
+    actions.append(
+      operationButton(
+        "Tokens",
+        () => openServiceAccountTokens(item),
+        true,
+      ),
+    );
+
+    if (
+      item.status !== "revoked"
+      && hasPermission(
+        "control-plane.service-accounts.update",
+      )
+    ) {
+      actions.append(
+        operationButton(
+          "Edit",
+          () => updateServiceAccount(item),
+          true,
+        ),
+      );
+    }
+
+    if (
+      item.status === "active"
+      && hasPermission(
+        "control-plane.service-accounts.disable",
+      )
+    ) {
+      actions.append(
+        operationButton(
+          "Disable",
+          () => serviceAccountLifecycle(
+            item,
+            "disable",
+          ),
+          true,
+        ),
+      );
+    }
+
+    if (
+      item.status === "disabled"
+      && hasPermission(
+        "control-plane.service-accounts.disable",
+      )
+    ) {
+      actions.append(
+        operationButton(
+          "Enable",
+          () => serviceAccountLifecycle(
+            item,
+            "enable",
+          ),
+          true,
+        ),
+      );
+    }
+
+    if (
+      item.status !== "revoked"
+      && hasPermission(
+        "control-plane.service-accounts.revoke",
+      )
+    ) {
+      actions.append(
+        operationButton(
+          "Revoke",
+          () => serviceAccountLifecycle(
+            item,
+            "revoke",
+          ),
+          true,
+        ),
+      );
+    }
+
+    row.append(
+      identity,
+      status,
+      revision,
+      updated,
+      actions,
+    );
+
+    return row;
+  }));
+
+  text(
+    "service-accounts-page",
+    `${page.page.returned} of ${page.page.total}`,
+  );
+}
+
+function renderApiTokens(page) {
+  const body = byId("api-tokens-table");
+
+  body.replaceChildren(...page.items.map((item) => {
+    const row = document.createElement("tr");
+
+    const identity = document.createElement("td");
+    const label = document.createElement("strong");
+    label.textContent = item.label;
+
+    const version = document.createElement("p");
+    version.className = "muted";
+    version.textContent = `Version ${item.token_version}`;
+
+    identity.append(label, version);
+
+    const scopes = document.createElement("td");
+    scopes.textContent = item.scopes.join(", ") || "—";
+
+    const resources = document.createElement("td");
+    resources.textContent = item.resources.join(", ") || "—";
+
+    const status = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = statusClass(item.status);
+    badge.textContent = item.status;
+    status.append(badge);
+
+    const expires = document.createElement("td");
+    expires.textContent = formatTime(item.expires_at);
+
+    const revision = document.createElement("td");
+    revision.textContent = item.revision;
+
+    const actions = document.createElement("td");
+    actions.className = "row-actions";
+
+    if (
+      item.status === "active"
+      && hasPermission(
+        "control-plane.api-tokens.rotate",
+      )
+    ) {
+      actions.append(
+        operationButton(
+          "Rotate",
+          () => rotateApiToken(item),
+          true,
+        ),
+      );
+    }
+
+    if (
+      item.status === "active"
+      && hasPermission(
+        "control-plane.api-tokens.revoke",
+      )
+    ) {
+      actions.append(
+        operationButton(
+          "Revoke",
+          () => revokeApiToken(item),
+          true,
+        ),
+      );
+    }
+
+    if (!actions.children.length) {
+      actions.textContent = "—";
+    }
+
+    row.append(
+      identity,
+      scopes,
+      resources,
+      status,
+      expires,
+      revision,
+      actions,
+    );
+
+    return row;
+  }));
+
+  text(
+    "api-tokens-page",
+    `${page.page.returned} of ${page.page.total}`,
+  );
+}
+
+function localDateTimeValue(value) {
+  const offsetMilliseconds = (
+    value.getTimezoneOffset() * 60 * 1000
+  );
+
+  return new Date(
+    value.getTime() - offsetMilliseconds,
+  ).toISOString().slice(0, 16);
+}
+
+function multilineFieldValues(elementId) {
+  return Array.from(
+    new Set(
+      byId(elementId).value
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function apiTokenRestrictionFromForm() {
+  const allowedClientNetworks = multilineFieldValues(
+    "api-token-networks",
+  );
+
+  const mutualTlsCertificateSha256 = byId(
+    "api-token-mtls-sha256",
+  ).value.trim().toLowerCase();
+
+  if (
+    mutualTlsCertificateSha256
+    && !/^[0-9a-f]{64}$/.test(
+      mutualTlsCertificateSha256,
+    )
+  ) {
+    throw new Error(
+      "mTLS certificate SHA-256 must contain 64 hexadecimal characters.",
+    );
+  }
+
+  if (
+    !allowedClientNetworks.length
+    && !mutualTlsCertificateSha256
+  ) {
+    return null;
+  }
+
+  return {
+    allowed_client_networks: allowedClientNetworks,
+    mutual_tls_certificate_sha256: (
+      mutualTlsCertificateSha256 || null
+    ),
+  };
+}
+
+function updateApiTokenIssueAvailability() {
+  const selected = state.selectedServiceAccount;
+
+  byId(
+    "issue-api-token-submit",
+  ).disabled = !(
+    selected
+    && selected.status === "active"
+    && hasPermission(
+      "control-plane.api-tokens.issue",
+    )
+  );
+}
+
+function clearServiceAccountSelection() {
+  state.selectedServiceAccount = null;
+
+  byId(
+    "service-account-tokens-panel",
+  ).classList.add("hidden");
+
+  byId(
+    "api-tokens-table",
+  ).replaceChildren();
+
+  text(
+    "service-account-tokens-title",
+    "API tokens",
+  );
+
+  text(
+    "api-tokens-page",
+    "",
+  );
+
+  text(
+    "api-token-output",
+    "A newly issued or rotated token appears here once. "
+      + "Phoenix OS never stores its plaintext.",
+  );
+}
+
+async function refreshSelectedServiceAccountTokens() {
+  const selected = state.selectedServiceAccount;
+
+  if (!selected) return;
+
+  const page = await api(
+    `/v1/control-plane/service-accounts/`
+      + `${selected.service_account_id}/tokens?limit=200`,
+  );
+
+  renderApiTokens(page);
+}
+
+async function openServiceAccountTokens(account) {
+  state.selectedServiceAccount = account;
+  updateApiTokenIssueAvailability();
+
+  text(
+    "service-account-tokens-title",
+    `API tokens · ${account.display_name}`,
+  );
+
+  text(
+    "api-token-output",
+    "A newly issued or rotated token appears here once. "
+      + "Phoenix OS never stores its plaintext.",
+  );
+
+  const defaultExpiry = new Date(
+    Date.now() + (24 * 60 * 60 * 1000),
+  );
+
+  byId("api-token-expires-at").value = (
+    localDateTimeValue(defaultExpiry)
+  );
+
+  byId(
+    "service-account-tokens-panel",
+  ).classList.remove("hidden");
+
+  try {
+    await refreshSelectedServiceAccountTokens();
+  } catch (error) {
+    text(
+      "api-token-output",
+      `Token list unavailable: ${error.message}`,
+    );
+
+    if (error.message === "unauthorized") {
+      await disconnect("Session rejected");
+    }
+  }
+}
+
+async function refreshServiceAccounts() {
+  const panel = byId("service-accounts-panel");
+
+  const canRead = (
+    state.operatorMode
+    && hasPermission(
+      "control-plane.service-accounts.read",
+    )
+  );
+
+  if (!canRead) {
+    panel.classList.add("hidden");
+    clearServiceAccountSelection();
+    return;
+  }
+
+  try {
+    const page = await api(
+      "/v1/control-plane/service-accounts?limit=200",
+    );
+
+    panel.classList.remove("hidden");
+    renderServiceAccounts(page);
+
+    const canCreate = hasPermission(
+      "control-plane.service-accounts.create",
+    );
+
+    byId(
+      "create-service-account-submit",
+    ).disabled = !canCreate;
+
+    updateApiTokenIssueAvailability();
+
+    text(
+      "service-account-status",
+      canCreate
+        ? "Service-account administration ready."
+        : "Service-account inventory loaded read-only.",
+    );
+
+    if (state.selectedServiceAccount) {
+      const selected = page.items.find(
+        (item) => (
+          item.service_account_id
+          === state.selectedServiceAccount.service_account_id
+        ),
+      );
+
+      if (!selected) {
+        clearServiceAccountSelection();
+      } else {
+        state.selectedServiceAccount = selected;
+        updateApiTokenIssueAvailability();
+        await refreshSelectedServiceAccountTokens();
+      }
+    }
+  } catch (error) {
+    if (error.message === "not_found") {
+      panel.classList.add("hidden");
+      clearServiceAccountSelection();
+      return;
+    }
+
+    throw error;
+  }
+}
+
+async function revokeApiToken(item) {
+  if (
+    item.status !== "active"
+    || !hasPermission(
+      "control-plane.api-tokens.revoke",
+    )
+  ) {
+    text(
+      "api-token-output",
+      "API-token revocation is not permitted.",
+    );
+
+    return;
+  }
+
+  if (
+    !window.confirm(
+      `Permanently revoke API token ${item.label}?`,
+    )
+  ) {
+    return;
+  }
+
+  try {
+    text(
+      "api-token-output",
+      `Revoking API token ${item.label}...`,
+    );
+
+    const revoked = await operatorCommand(
+      `/v1/control-plane/api-tokens/`
+        + `${item.token_id}/revoke`,
+      {
+        expected_revision: item.revision,
+      },
+      "revoke-api-token",
+    );
+
+    text(
+      "api-token-output",
+      `${revoked.label}: ${revoked.status}`,
+    );
+
+    await refreshSelectedServiceAccountTokens();
+  } catch (error) {
+    text(
+      "api-token-output",
+      `API-token revocation failed: ${error.message}`,
+    );
+  }
+}
+
+async function rotateApiToken(item) {
+  if (
+    item.status !== "active"
+    || !hasPermission(
+      "control-plane.api-tokens.rotate",
+    )
+  ) {
+    text(
+      "api-token-output",
+      "API-token rotation is not permitted.",
+    );
+
+    return;
+  }
+
+  const defaultExpiry = new Date(
+    Date.now() + (24 * 60 * 60 * 1000),
+  );
+
+  const expiresValue = window.prompt(
+    "New token expiration in local time",
+    localDateTimeValue(defaultExpiry),
+  );
+
+  if (expiresValue === null) return;
+
+  const expiresAt = new Date(
+    expiresValue.trim(),
+  );
+
+  if (
+    Number.isNaN(expiresAt.getTime())
+    || expiresAt.getTime() <= Date.now()
+  ) {
+    text(
+      "api-token-output",
+      "Expiration must be a valid future date.",
+    );
+
+    return;
+  }
+
+  const overlapValue = window.prompt(
+    "Old-token overlap in seconds. Use 0 for immediate revocation.",
+    "0",
+  );
+
+  if (overlapValue === null) return;
+
+  const normalizedOverlap = overlapValue.trim();
+
+  if (!/^\d+$/.test(normalizedOverlap)) {
+    text(
+      "api-token-output",
+      "Overlap must be a nonnegative integer.",
+    );
+
+    return;
+  }
+
+  const overlapSeconds = Number(
+    normalizedOverlap,
+  );
+
+  if (
+    !Number.isSafeInteger(overlapSeconds)
+    || overlapSeconds < 0
+  ) {
+    text(
+      "api-token-output",
+      "Overlap is outside the supported numeric range.",
+    );
+
+    return;
+  }
+
+  if (
+    !window.confirm(
+      `Rotate API token ${item.label}?`,
+    )
+  ) {
+    return;
+  }
+
+  try {
+    text(
+      "api-token-output",
+      `Rotating API token ${item.label}...`,
+    );
+
+    const grant = await operatorCommand(
+      `/v1/control-plane/api-tokens/`
+        + `${item.token_id}/rotate`,
+      {
+        expected_revision: item.revision,
+        expires_at: expiresAt.toISOString(),
+        overlap_seconds: overlapSeconds,
+      },
+      "rotate-api-token",
+    );
+
+    text(
+      "api-token-output",
+      `Rotated token for ${grant.metadata.label}: ${grant.token}`,
+    );
+
+    await refreshSelectedServiceAccountTokens();
+  } catch (error) {
+    text(
+      "api-token-output",
+      `API-token rotation failed: ${error.message}`,
+    );
+  }
+}
+
+async function issueApiToken(event) {
+  event.preventDefault();
+
+  const selected = state.selectedServiceAccount;
+
+  if (!selected) {
+    text(
+      "api-token-output",
+      "Select a service account before issuing a token.",
+    );
+
+    return;
+  }
+
+  if (
+    selected.status !== "active"
+    || !hasPermission(
+      "control-plane.api-tokens.issue",
+    )
+  ) {
+    text(
+      "api-token-output",
+      "API-token issuance is not permitted.",
+    );
+
+    return;
+  }
+
+  const label = byId(
+    "api-token-label",
+  ).value.trim();
+
+  const scopes = multilineFieldValues(
+    "api-token-scopes",
+  );
+
+  const resources = multilineFieldValues(
+    "api-token-resources",
+  );
+
+  const expiresValue = byId(
+    "api-token-expires-at",
+  ).value;
+
+  if (
+    !label
+    || !scopes.length
+    || !resources.length
+    || !expiresValue
+  ) {
+    text(
+      "api-token-output",
+      "Label, expiration, scopes, and resources are required.",
+    );
+
+    return;
+  }
+
+  const expiresAt = new Date(expiresValue);
+
+  if (
+    Number.isNaN(expiresAt.getTime())
+    || expiresAt.getTime() <= Date.now()
+  ) {
+    text(
+      "api-token-output",
+      "Expiration must be a valid future date.",
+    );
+
+    return;
+  }
+
+  try {
+    const restriction = apiTokenRestrictionFromForm();
+
+    const document = {
+      label,
+      scopes,
+      resources,
+      expires_at: expiresAt.toISOString(),
+    };
+
+    if (restriction) {
+      document.restriction = restriction;
+    }
+
+    text(
+      "api-token-output",
+      "Issuing API token...",
+    );
+
+    const grant = await operatorCommand(
+      `/v1/control-plane/service-accounts/`
+        + `${selected.service_account_id}/issue-token`,
+      document,
+      "issue-api-token",
+    );
+
+    text(
+      "api-token-output",
+      `Token for ${grant.metadata.label}: ${grant.token}`,
+    );
+
+    byId(
+      "issue-api-token-form",
+    ).reset();
+
+    const nextExpiry = new Date(
+      Date.now() + (24 * 60 * 60 * 1000),
+    );
+
+    byId(
+      "api-token-expires-at",
+    ).value = localDateTimeValue(nextExpiry);
+
+    await refreshSelectedServiceAccountTokens();
+  } catch (error) {
+    text(
+      "api-token-output",
+      `API-token issuance failed: ${error.message}`,
+    );
+  }
+}
+
+async function createServiceAccount(event) {
+  event.preventDefault();
+
+  const name = byId(
+    "service-account-name",
+  ).value.trim();
+
+  const displayName = byId(
+    "service-account-display-name",
+  ).value.trim();
+
+  if (!name || !displayName) {
+    text(
+      "service-account-status",
+      "Name and display name are required.",
+    );
+
+    return;
+  }
+
+  try {
+    text(
+      "service-account-status",
+      "Creating service account...",
+    );
+
+    const created = await operatorCommand(
+      "/v1/control-plane/service-accounts",
+      {
+        name,
+        display_name: displayName,
+      },
+    );
+
+    byId(
+      "create-service-account-form",
+    ).reset();
+
+    text(
+      "service-account-status",
+      `${created.display_name}: created`,
+    );
+
+    await refreshServiceAccounts();
+  } catch (error) {
+    text(
+      "service-account-status",
+      `Service-account creation failed: ${error.message}`,
+    );
+  }
+}
+
+async function updateServiceAccount(item) {
+  const name = window.prompt(
+    "Service-account name",
+    item.name,
+  );
+
+  if (name === null) return;
+
+  const displayName = window.prompt(
+    "Service-account display name",
+    item.display_name,
+  );
+
+  if (displayName === null) return;
+
+  const normalizedName = name.trim();
+  const normalizedDisplayName = displayName.trim();
+
+  if (!normalizedName || !normalizedDisplayName) {
+    text(
+      "service-account-status",
+      "Name and display name must not be blank.",
+    );
+
+    return;
+  }
+
+  try {
+    text(
+      "service-account-status",
+      `${item.display_name}: updating`,
+    );
+
+    const updated = await operatorCommand(
+      `/v1/control-plane/service-accounts/`
+        + `${item.service_account_id}/update`,
+      {
+        expected_revision: item.revision,
+        name: normalizedName,
+        display_name: normalizedDisplayName,
+      },
+    );
+
+    text(
+      "service-account-status",
+      `${updated.display_name}: updated`,
+    );
+
+    await refreshServiceAccounts();
+  } catch (error) {
+    text(
+      "service-account-status",
+      `Service-account update failed: ${error.message}`,
+    );
+  }
+}
+
+async function serviceAccountLifecycle(
+  item,
+  action,
+) {
+  if (
+    action === "revoke"
+    && !window.confirm(
+      `Permanently revoke ${item.display_name}?`,
+    )
+  ) {
+    return;
+  }
+
+  const stepUpAction = (
+    action === "enable"
+      ? "enable-service-account"
+      : (
+        action === "revoke"
+          ? "revoke-service-account"
+          : ""
+      )
+  );
+
+  try {
+    text(
+      "service-account-status",
+      `${item.display_name}: ${action} in progress`,
+    );
+
+    const updated = await operatorCommand(
+      `/v1/control-plane/service-accounts/`
+        + `${item.service_account_id}/${action}`,
+      {
+        expected_revision: item.revision,
+      },
+      stepUpAction,
+    );
+
+    text(
+      "service-account-status",
+      `${updated.display_name}: ${updated.status}`,
+    );
+
+    if (
+      updated.status === "revoked"
+      && state.selectedServiceAccount
+      && (
+        state.selectedServiceAccount.service_account_id
+        === updated.service_account_id
+      )
+    ) {
+      clearServiceAccountSelection();
+    }
+
+    await refreshServiceAccounts();
+  } catch (error) {
+    text(
+      "service-account-status",
+      `Service-account action failed: ${error.message}`,
+    );
+  }
+}
+
 function renderOperations(payload) {
   state.operations = payload.actions || {};
   const any = Object.values(state.operations).some(Boolean);
@@ -311,7 +1217,15 @@ async function refresh() {
       const sessionPath = `/v1/control-plane/operator-sessions?limit=50${operatorId ? `&operator_id=${encodeURIComponent(operatorId)}` : ""}${sessionStatus ? `&status=${encodeURIComponent(sessionStatus)}` : ""}`;
       renderSessions(await api(sessionPath));
     }
-    setConnected(true, state.me ? `Connected as ${state.me.username}` : "Connected");
+
+    await refreshServiceAccounts();
+
+    setConnected(
+      true,
+      state.me
+        ? `Connected as ${state.me.username}`
+        : "Connected",
+    );
   } catch (error) {
     if (error.message === "unauthorized") disconnect("Session rejected");
     else setConnected(state.connected, "API unavailable");
@@ -463,6 +1377,9 @@ async function disconnect(reason = "Disconnected") {
       });
     } catch (_) { /* cookie cleanup is also returned on rejected sessions */ }
   }
+  clearServiceAccountSelection();
+  byId("service-accounts-panel").classList.add("hidden");
+
   state.refreshTimer = null; state.cursor = 0; state.legacyToken = ""; state.csrf = ""; state.operations = {}; state.me = null; state.operatorMode = false;
   byId("token").value = ""; text("operator-identity", "Anonymous"); setConnected(false, reason);
 }
@@ -470,6 +1387,22 @@ async function disconnect(reason = "Disconnected") {
 byId("login-form").addEventListener("submit", (event) => { event.preventDefault(); connect(byId("token").value); });
 byId("create-job-form").addEventListener("submit", createJob);
 byId("create-operator-form").addEventListener("submit", createOperator);
+
+byId("create-service-account-form").addEventListener(
+  "submit",
+  createServiceAccount,
+);
+
+byId("issue-api-token-form").addEventListener(
+  "submit",
+  issueApiToken,
+);
+
+byId("close-service-account-tokens").addEventListener(
+  "click",
+  clearServiceAccountSelection,
+);
+
 byId("history-operator").addEventListener("change", refresh);
 byId("sessions-operator").addEventListener("change", refresh);
 byId("sessions-status").addEventListener("change", refresh);
