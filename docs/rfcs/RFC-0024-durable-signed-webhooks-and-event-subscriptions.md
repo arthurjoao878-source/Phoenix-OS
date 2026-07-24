@@ -360,7 +360,7 @@ tests verify that retry schedules and safe attempt history remain durable.
 - [x] Maintainer-only management routes
 - [x] Dashboard subscription and delivery administration
 - [x] Optional scoped service-account administration
-- [ ] RuntimeAssembler integration and lifecycle ownership
+- [x] RuntimeAssembler integration and lifecycle ownership
 - [ ] Migration guidance
 - [ ] Architecture Decision Records
 - [ ] Regression, security, SSRF, replay, and packaging tests
@@ -380,6 +380,13 @@ Optional machine administration uses fixed machine-only routes, replay-protected
 tokens, the exact `webhook.*` action scope for each operation, the concrete
 `webhooks` resource grant, and central deny-by-default policy enforcement. Browser
 cookies, CSRF proofs, and human step-up proofs are rejected at the machine boundary.
+
+`RuntimeAssembler` now creates the optional repositories, registry, scheduler,
+signer, transport, dispatcher, recovery service, manager, browser administration,
+and explicitly enabled machine routes as one owned subsystem. Startup registers
+reviewed serializers and recovers interrupted attempts before subscribing to the
+Event Bus. Shutdown stops event selection before the dispatcher and closes shared
+services and repositories only after producers and HTTP administration have stopped.
 
 ## Compatibility
 

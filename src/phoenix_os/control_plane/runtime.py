@@ -121,6 +121,9 @@ from phoenix_os.control_plane.step_up import (
     ControlPlaneStepUpPolicy,
 )
 from phoenix_os.control_plane.tls_listener import ControlPlaneTlsListenerConfig
+from phoenix_os.control_plane.webhook_http import (
+    ControlPlaneWebhookHttpAdapter,
+)
 from phoenix_os.control_plane.workflow_commands import (
     ControlPlaneWorkflowCommandHandler,
     ControlPlaneWorkflowOrchestrator,
@@ -129,6 +132,7 @@ from phoenix_os.events import EventBus
 from phoenix_os.jobs import JobSchedulerSnapshot
 from phoenix_os.policy import PolicyEngine
 from phoenix_os.runtime import PhoenixRuntime, RuntimeSnapshot
+from phoenix_os.webhooks import WebhookManager
 from phoenix_os.workflows import WorkflowRecord
 
 
@@ -251,6 +255,8 @@ class ControlPlaneRuntimeStack:
     operator_step_up: ControlPlaneOperatorStepUpService | None
     service_accounts: ControlPlaneServiceAccountRuntimeBundle | None
     service_accounts_owner: ControlPlaneServiceAccountRuntimeOwner | None
+    webhooks: WebhookManager | None
+    webhook_http: ControlPlaneWebhookHttpAdapter | None
     _runtime: _RuntimeSnapshotProxy
 
     @classmethod
@@ -277,6 +283,7 @@ class ControlPlaneRuntimeStack:
         ] = (),
         service_account_audit_secret: bytes | bytearray | memoryview | None = None,
         service_account_replay_secret: bytes | bytearray | memoryview | None = None,
+        webhook_manager: WebhookManager | None = None,
         policy_engine: PolicyEngine | None = None,
         jobs: JobSnapshotSource | None = None,
         job_records: JobRecordSource | None = None,
@@ -345,6 +352,8 @@ class ControlPlaneRuntimeStack:
 
         if service_account_machine_routes and policy_engine is None:
             raise ValueError("machine routes require a PolicyEngine")
+        if webhook_manager is not None and operator_registry is None:
+            raise ValueError("webhook administration requires durable operator mode")
 
         runtime = _RuntimeSnapshotProxy()
         journal = command_journal or InMemoryControlPlaneCommandJournalRepository()
@@ -378,6 +387,7 @@ class ControlPlaneRuntimeStack:
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None
         service_accounts: ControlPlaneServiceAccountRuntimeBundle | None = None
         service_accounts_owner: ControlPlaneServiceAccountRuntimeOwner | None = None
+        webhook_http: ControlPlaneWebhookHttpAdapter | None = None
         default_principal: str
         if operator_registry is not None:
             operator_owner = _OperatorRegistryOwner(operator_registry, bootstrap_operator)
@@ -479,6 +489,15 @@ class ControlPlaneRuntimeStack:
 
             service_accounts_owner = ControlPlaneServiceAccountRuntimeOwner(service_accounts)
 
+        if webhook_manager is not None:
+            if durable_boundary is None or operator_step_up is None:
+                raise AssertionError("webhook administration lost durable operator security")
+            webhook_http = ControlPlaneWebhookHttpAdapter(
+                manager=webhook_manager,
+                boundary=durable_boundary,
+                step_up=operator_step_up,
+            )
+
         remote_login: ControlPlaneRemoteLoginThrottle | None = None
         remote_audit: ControlPlaneRemoteAudit | None = None
         remote_authentication: ControlPlaneRemoteAuthenticationService | None = None
@@ -568,6 +587,7 @@ class ControlPlaneRuntimeStack:
                 durable_session_http=durable_boundary,
                 durable_operator_http=durable_operator_http,
                 service_account_http=None if service_accounts is None else service_accounts.http,
+                webhook_http=webhook_http,
             )
         else:
             secure_http = ControlPlaneSecureHttpServer(
@@ -584,6 +604,7 @@ class ControlPlaneRuntimeStack:
                 service_account_machine_http=(
                     None if service_accounts is None else service_accounts.machine_http
                 ),
+                webhook_http=webhook_http,
                 client_rate_limit=client_rate_limit,
                 tls_config=tls_listener_config,
                 remote_authentication=remote_authentication,
@@ -614,6 +635,8 @@ class ControlPlaneRuntimeStack:
             operator_step_up,
             service_accounts,
             service_accounts_owner,
+            webhook_manager,
+            webhook_http,
             runtime,
         )
 
