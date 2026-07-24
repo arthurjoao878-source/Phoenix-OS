@@ -58,7 +58,7 @@ def test_dashboard_reads_service_accounts_without_browser_secrets() -> None:
 
     assert asset is not None
 
-    javascript = asset.body.decode("utf-8")
+    javascript = asset.body.decode("utf-8").replace("\r\n", "\n")
 
     expected = (
         "selectedServiceAccount: null",
@@ -87,7 +87,7 @@ def test_dashboard_service_account_labels_preserve_utf8_symbols() -> None:
 
     assert asset is not None
 
-    javascript = asset.body.decode("utf-8")
+    javascript = asset.body.decode("utf-8").replace("\r\n", "\n")
     dash = chr(0x2014)
     middle_dot = chr(0x00B7)
 
@@ -128,7 +128,7 @@ def test_dashboard_manages_service_account_lifecycle_with_exact_permissions() ->
 
     assert asset is not None
 
-    javascript = asset.body.decode("utf-8")
+    javascript = asset.body.decode("utf-8").replace("\r\n", "\n")
 
     expected = (
         "async function createServiceAccount(event)",
@@ -166,7 +166,7 @@ def test_dashboard_issues_api_tokens_without_persisting_plaintext() -> None:
 
     assert asset is not None
 
-    javascript = asset.body.decode("utf-8")
+    javascript = asset.body.decode("utf-8").replace("\r\n", "\n")
 
     expected = (
         "function multilineFieldValues(elementId)",
@@ -207,7 +207,7 @@ def test_dashboard_rotates_api_tokens_with_exact_step_up() -> None:
 
     assert asset is not None
 
-    javascript = asset.body.decode("utf-8")
+    javascript = asset.body.decode("utf-8").replace("\r\n", "\n")
 
     expected = (
         "async function rotateApiToken(item)",
@@ -261,7 +261,7 @@ def test_dashboard_revokes_active_api_tokens_with_exact_step_up() -> None:
 
     assert asset is not None
 
-    javascript = asset.body.decode("utf-8")
+    javascript = asset.body.decode("utf-8").replace("\r\n", "\n")
 
     expected = (
         "async function revokeApiToken(item)",
