@@ -63,6 +63,12 @@ Version `0.24.0` implements twenty-four accepted specifications:
   canonical durable envelopes, versioned HMAC signing, fail-closed egress and SSRF controls,
   bounded retry and redrive, safe human and machine administration, and Runtime-owned lifecycle.
 
+## Draft specifications
+
+- **[RFC-0025 — Secure Inbound Event Gateway and External Event Sources](docs/rfcs/RFC-0025-secure-inbound-event-gateway-and-external-event-sources.md):**
+  proposed authenticated, replay-resistant, schema-allowlisted, durably accepted
+  external events with bounded publication into the Event Bus.
+
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
 queue broker, audit signature provider, remote audit archive, telemetry vendor, hosted control-plane service, implicit remote exposure, or
