@@ -90,6 +90,15 @@ On Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
+## Upgrade guidance
+
+The opt-in v0.24.0 durable signed webhook subsystem has a staged migration,
+security, persistence, receiver-verification, and rollback guide:
+
+- [Migrate v0.23.0 deployments to v0.24.0 webhooks](docs/migrations/v0.23.0-to-v0.24.0-webhooks.md)
+
+Existing v0.23.0 behavior remains unchanged when webhook configuration is
+omitted.
 
 ## Local dashboard example
 

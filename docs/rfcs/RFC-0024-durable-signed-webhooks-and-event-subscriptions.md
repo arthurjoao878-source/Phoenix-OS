@@ -361,7 +361,7 @@ tests verify that retry schedules and safe attempt history remain durable.
 - [x] Dashboard subscription and delivery administration
 - [x] Optional scoped service-account administration
 - [x] RuntimeAssembler integration and lifecycle ownership
-- [ ] Migration guidance
+- [x] Migration guidance
 - [ ] Architecture Decision Records
 - [ ] Regression, security, SSRF, replay, and packaging tests
 - [ ] Release notes and version 0.24.0
@@ -387,6 +387,13 @@ and explicitly enabled machine routes as one owned subsystem. Startup registers
 reviewed serializers and recovers interrupted attempts before subscribing to the
 Event Bus. Shutdown stops event selection before the dispatcher and closes shared
 services and repositories only after producers and HTTP administration have stopped.
+
+Migration from v0.23.0 is documented in
+[`docs/migrations/v0.23.0-to-v0.24.0-webhooks.md`](../migrations/v0.23.0-to-v0.24.0-webhooks.md).
+The guide covers the disabled compatibility boundary, reviewed serializers,
+versioned signing keys, repository selection, egress policy, staged rollout,
+receiver verification, administration modes, troubleshooting, and state-preserving
+rollback.
 
 ## Compatibility
 
