@@ -589,6 +589,15 @@ class WebhookDelivery:
     def completed_attempts(self) -> int:
         return len(self.attempts)
 
+    @property
+    def redrive_eligible(self) -> bool:
+        """Return whether an explicit retry may preserve this delivery identity."""
+
+        return (
+            self.status is WebhookDeliveryStatus.DEAD_LETTER
+            and self.completed_attempts < MAX_WEBHOOK_RETRY_ATTEMPTS
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class WebhookPageRequest:
@@ -859,10 +868,14 @@ def _validate_delivery_lifecycle(
     if status is WebhookDeliveryStatus.RETRYING:
         if not attempts or attempts[-1].outcome is not WebhookAttemptOutcome.RETRYABLE_FAILURE:
             raise ValueError("retrying webhook delivery requires a retryable attempt")
-        if not attempts[-1].retry_scheduled or next_attempt_at != attempts[-1].next_attempt_at:
+        if next_attempt_at is None or terminal_at is not None:
             raise ValueError("retrying webhook delivery retry metadata is inconsistent")
-        if terminal_at is not None:
-            raise ValueError("retrying webhook delivery cannot be terminal")
+        last_attempt = attempts[-1]
+        if last_attempt.retry_scheduled:
+            if next_attempt_at != last_attempt.next_attempt_at:
+                raise ValueError("retrying webhook delivery retry metadata is inconsistent")
+        elif next_attempt_at <= last_attempt.finished_at:
+            raise ValueError("webhook manual redrive must follow the final attempt")
         return
 
     if status is WebhookDeliveryStatus.CANCELLED:

@@ -797,6 +797,11 @@ _ALLOWED_DELIVERY_TRANSITIONS = {
             WebhookDeliveryStatus.CANCELLED,
         }
     ),
+    WebhookDeliveryStatus.DEAD_LETTER: frozenset(
+        {
+            WebhookDeliveryStatus.RETRYING,
+        }
+    ),
 }
 
 
@@ -993,7 +998,11 @@ def _validate_delivery_replacement(
             "replacement webhook delivery updated_at cannot move backwards"
         )
 
-    if current.status.terminal:
+    redrive = (
+        current.status is WebhookDeliveryStatus.DEAD_LETTER
+        and replacement.status is WebhookDeliveryStatus.RETRYING
+    )
+    if current.status.terminal and not redrive:
         raise WebhookDeliveryConflictError("terminal webhook delivery is immutable")
 
     allowed = _ALLOWED_DELIVERY_TRANSITIONS.get(
