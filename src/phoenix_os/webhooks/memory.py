@@ -226,6 +226,11 @@ class InMemoryWebhookDeliveryRepository:
                 WebhookDeliveryStatus.CANCELLED,
             }
         ),
+        WebhookDeliveryStatus.DEAD_LETTER: frozenset(
+            {
+                WebhookDeliveryStatus.RETRYING,
+            }
+        ),
     }
 
     def __init__(self, *, capacity: int = 4_096) -> None:
@@ -375,7 +380,11 @@ class InMemoryWebhookDeliveryRepository:
             raise WebhookDeliveryConflictError(
                 "replacement webhook delivery updated_at cannot move backwards"
             )
-        if current.status.terminal:
+        redrive = (
+            current.status is WebhookDeliveryStatus.DEAD_LETTER
+            and replacement.status is WebhookDeliveryStatus.RETRYING
+        )
+        if current.status.terminal and not redrive:
             raise WebhookDeliveryConflictError("terminal webhook delivery is immutable")
 
         allowed = cls._ALLOWED_TRANSITIONS.get(current.status, frozenset())

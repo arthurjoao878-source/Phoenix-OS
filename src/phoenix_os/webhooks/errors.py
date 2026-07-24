@@ -105,6 +105,22 @@ class WebhookDispatcherClosedError(PhoenixWebhookError):
     """Raised when a closed dispatcher receives work."""
 
 
+class WebhookRecoveryClosedError(PhoenixWebhookError):
+    """Raised when closed webhook recovery services receive work."""
+
+
+class WebhookRedriveAccessDeniedError(PhoenixWebhookError):
+    """Raised when explicit dead-letter retry lacks authorization."""
+
+
+class WebhookRedriveNotEligibleError(PhoenixWebhookError):
+    """Raised when a delivery cannot be explicitly retried."""
+
+    def __init__(self, category: str) -> None:
+        self.category = _normalize_failure_category(category)
+        super().__init__(f"webhook redrive rejected: {self.category}")
+
+
 class WebhookManagerClosedError(PhoenixWebhookError):
     """Raised when a closed webhook manager receives work."""
 

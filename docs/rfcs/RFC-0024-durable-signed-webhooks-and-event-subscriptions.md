@@ -343,16 +343,17 @@ bodies, or internal exception text.
 
 - [x] Deterministic bounded retry policy
 - [x] Per-endpoint and global concurrency limits
-- [ ] Dead-letter transition and explicit retry
+- [x] Dead-letter transition and explicit retry
 - [x] Subscription disablement and revocation enforcement
 - [x] Signing-key rotation behavior
 - [x] Protected audit facts
 - [x] Safe metrics and health snapshots
-- [ ] Retention and recovery tests
+- [x] Retention and recovery tests
 
-The dispatcher foundation includes automatic dead-letter transition after retry
-budget exhaustion. The combined dead-letter item remains incomplete until
-maintainer-authorized explicit redrive is implemented and tested.
+Explicit redrive preserves the stable delivery identity, canonical body, payload
+digest, and immutable attempt history. Interrupted in-flight attempts recover
+through bounded retry or dead-letter classification, and State Store recreation
+tests verify that retry schedules and safe attempt history remain durable.
 
 ### Slice 5 — Administration and v0.24.0
 
