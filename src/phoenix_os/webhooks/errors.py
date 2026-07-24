@@ -121,6 +121,17 @@ class WebhookRedriveNotEligibleError(PhoenixWebhookError):
         super().__init__(f"webhook redrive rejected: {self.category}")
 
 
+class WebhookManagerAccessDeniedError(PhoenixWebhookError):
+    """Raised when webhook administration lacks one exact permission."""
+
+    def __init__(self, permission: str) -> None:
+        normalized = permission.strip().lower()
+        if not normalized or len(normalized) > 128:
+            raise ValueError("webhook management permission is invalid")
+        self.permission = normalized
+        super().__init__("webhook management access denied")
+
+
 class WebhookManagerClosedError(PhoenixWebhookError):
     """Raised when a closed webhook manager receives work."""
 

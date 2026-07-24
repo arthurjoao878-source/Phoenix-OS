@@ -357,7 +357,7 @@ tests verify that retry schedules and safe attempt history remain durable.
 
 ### Slice 5 — Administration and v0.24.0
 
-- [ ] Maintainer-only management routes
+- [x] Maintainer-only management routes
 - [ ] Dashboard subscription and delivery administration
 - [ ] Optional scoped service-account administration
 - [ ] RuntimeAssembler integration and lifecycle ownership
@@ -365,6 +365,11 @@ tests verify that retry schedules and safe attempt history remain durable.
 - [ ] Architecture Decision Records
 - [ ] Regression, security, SSRF, replay, and packaging tests
 - [ ] Release notes and version 0.24.0
+
+Maintainer routes use durable operator sessions, exact webhook permissions, CSRF
+verification, and step-up proofs for egress-enabling or credential-sensitive
+mutations. Responses expose bounded views without canonical bodies, signing-secret
+references, signature headers, or endpoint paths.
 
 ## Compatibility
 

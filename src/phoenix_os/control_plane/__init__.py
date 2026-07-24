@@ -668,6 +668,10 @@ from phoenix_os.control_plane.tls_listener import (
     ControlPlaneTlsListenerSnapshot,
     ControlPlaneTlsListenerState,
 )
+from phoenix_os.control_plane.webhook_http import (
+    ControlPlaneWebhookCsrfVerifier,
+    ControlPlaneWebhookHttpAdapter,
+)
 from phoenix_os.control_plane.workflow_commands import (
     ControlPlaneCancelWorkflowCommand,
     ControlPlaneWorkflowCommandHandler,
@@ -1154,6 +1158,8 @@ __all__ = [
     "ControlPlaneTlsPolicy",
     "ControlPlaneTlsPolicySnapshot",
     "ControlPlaneTlsReloadError",
+    "ControlPlaneWebhookCsrfVerifier",
+    "ControlPlaneWebhookHttpAdapter",
     "ControlPlaneWorkflowCommandHandler",
     "ControlPlaneWorkflowCommandResult",
     "ControlPlaneWorkflowOrchestrator",
