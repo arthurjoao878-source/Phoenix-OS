@@ -359,7 +359,7 @@ tests verify that retry schedules and safe attempt history remain durable.
 
 - [x] Maintainer-only management routes
 - [x] Dashboard subscription and delivery administration
-- [ ] Optional scoped service-account administration
+- [x] Optional scoped service-account administration
 - [ ] RuntimeAssembler integration and lifecycle ownership
 - [ ] Migration guidance
 - [ ] Architecture Decision Records
@@ -375,6 +375,11 @@ The dependency-free Dashboard now exposes permission-gated subscription lifecycl
 signing-key rotation, safe delivery history, health counters, and eligible
 dead-letter redrive. The browser retains no signing reference or delivery body,
 uses no-store requests, and degrades independently when webhooks are not configured.
+
+Optional machine administration uses fixed machine-only routes, replay-protected API
+tokens, the exact `webhook.*` action scope for each operation, the concrete
+`webhooks` resource grant, and central deny-by-default policy enforcement. Browser
+cookies, CSRF proofs, and human step-up proofs are rejected at the machine boundary.
 
 ## Compatibility
 

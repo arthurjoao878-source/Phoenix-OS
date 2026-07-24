@@ -672,6 +672,12 @@ from phoenix_os.control_plane.webhook_http import (
     ControlPlaneWebhookCsrfVerifier,
     ControlPlaneWebhookHttpAdapter,
 )
+from phoenix_os.control_plane.webhook_machine_http import (
+    CONTROL_PLANE_WEBHOOK_MACHINE_BASE_PATH,
+    CONTROL_PLANE_WEBHOOK_MACHINE_RESOURCE,
+    ControlPlaneWebhookMachineAdministration,
+    control_plane_webhook_machine_routes,
+)
 from phoenix_os.control_plane.workflow_commands import (
     ControlPlaneCancelWorkflowCommand,
     ControlPlaneWorkflowCommandHandler,
@@ -697,6 +703,8 @@ __all__ = [
     "CONTROL_PLANE_SERVICE_ACCOUNTS_READ_PERMISSION",
     "CONTROL_PLANE_SERVICE_ACCOUNTS_REVOKE_PERMISSION",
     "CONTROL_PLANE_SERVICE_ACCOUNTS_UPDATE_PERMISSION",
+    "CONTROL_PLANE_WEBHOOK_MACHINE_BASE_PATH",
+    "CONTROL_PLANE_WEBHOOK_MACHINE_RESOURCE",
     "DEFAULT_COMMAND_JOURNAL_PAGE_REQUEST",
     "DEFAULT_COMMAND_JOURNAL_PAGE_SIZE",
     "DEFAULT_CONTROL_PLANE_CLIENT_RATE_CAPACITY",
@@ -1160,6 +1168,7 @@ __all__ = [
     "ControlPlaneTlsReloadError",
     "ControlPlaneWebhookCsrfVerifier",
     "ControlPlaneWebhookHttpAdapter",
+    "ControlPlaneWebhookMachineAdministration",
     "ControlPlaneWorkflowCommandHandler",
     "ControlPlaneWorkflowCommandResult",
     "ControlPlaneWorkflowOrchestrator",
@@ -1225,6 +1234,7 @@ __all__ = [
     "control_plane_service_account_authentication_context",
     "control_plane_service_account_observability_to_dict",
     "control_plane_service_account_record_digest",
+    "control_plane_webhook_machine_routes",
     "csrf_token_to_dict",
     "current_control_plane_service_account_api_context",
     "durable_session_history_page_to_dict",
