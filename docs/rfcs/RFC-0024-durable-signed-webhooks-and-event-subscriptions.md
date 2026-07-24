@@ -364,7 +364,7 @@ tests verify that retry schedules and safe attempt history remain durable.
 - [x] Migration guidance
 - [x] Architecture Decision Records
 - [x] Regression, security, SSRF, replay, and packaging tests
-- [ ] Release notes and version 0.24.0
+- [x] Release notes and version 0.24.0
 
 Maintainer routes use durable operator sessions, exact webhook permissions, CSRF
 verification, and step-up proofs for egress-enabling or credential-sensitive
@@ -417,6 +417,10 @@ secret-bearing file types, missing webhook modules, metadata drift, source-tree
 imports, and any artifact installation that requires ambient dependencies or
 network access.
 
+Phoenix OS 0.24.0 release notes are published at
+[`docs/releases/v0.24.0.md`](../releases/v0.24.0.md), and the package and
+changelog metadata identify the same accepted version and release date.
+
 ## Compatibility
 
 Webhook subscriptions are optional and begin empty.
@@ -431,8 +435,8 @@ subscription, endpoint, or outbound-network permission is created automatically.
 
 ## Acceptance
 
-RFC-0024 will be accepted for Phoenix OS 0.24.0 only when all slices are complete,
-the full repository quality gate passes, wheel and sdist contents are validated,
-isolated installation succeeds, SSRF and replay protections fail closed, no
-plaintext signing secret is persisted, and compatibility without configured
-webhooks is demonstrated.
+RFC-0024 is accepted for Phoenix OS 0.24.0. All slices are complete, the full
+repository quality gate passes, wheel and sdist contents are validated, isolated
+installation succeeds, SSRF and replay protections fail closed, no plaintext
+signing secret is persisted, and compatibility without configured webhooks is
+demonstrated.

@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.23.0` implements twenty-three accepted specifications:
+Version `0.24.0` implements twenty-four accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -59,6 +59,9 @@ Version `0.23.0` implements twenty-three accepted specifications:
   one-time opaque credentials, exact scopes and resources, expiration, rotation, revocation,
   replay protection, transport restrictions, protected audit, Dashboard administration, and
   Runtime-owned lifecycle management.
+- **RFC-0024 — Durable Signed Webhooks and Event Subscriptions:** reviewed event disclosure,
+  canonical durable envelopes, versioned HMAC signing, fail-closed egress and SSRF controls,
+  bounded retry and redrive, safe human and machine administration, and Runtime-owned lifecycle.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -102,6 +105,13 @@ The gate reruns the selected compatibility, signing, SSRF, recovery, management,
 and replay suites; builds and inspects wheel and sdist artifacts; rebuilds a
 wheel from the sdist; and installs both wheels in offline isolated environments
 before importing and exercising the packaged webhook surface.
+
+## Release notes
+
+- [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
+
+The release notes summarize webhook behavior, security boundaries, compatibility,
+migration, architecture decisions, validation, and package artifacts.
 
 ## Upgrade guidance
 

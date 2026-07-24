@@ -24,12 +24,15 @@ _SECURITY_TESTS = (
     "tests/test_webhook_manager.py",
     "tests/test_webhook_service_account_http.py",
     "tests/test_control_plane_service_account_replay.py",
+    "tests/test_v024_release.py",
 )
 
 _REQUIRED_SDIST_DOCUMENTS = (
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "pyproject.toml",
+    "docs/releases/v0.24.0.md",
     "docs/rfcs/RFC-0024-durable-signed-webhooks-and-event-subscriptions.md",
     "docs/migrations/v0.23.0-to-v0.24.0-webhooks.md",
     "docs/adrs/README.md",

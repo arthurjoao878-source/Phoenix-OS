@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.24.0] - 2026-07-24
+
+### Added
+- Accepted RFC-0024 and the five durable-webhook architecture records.
+- Reviewed event serializers, canonical envelopes, and stable deduplication.
+- Versioned HMAC-SHA-256 signing through exact leased secret references.
+- Durable repositories with recovery-safe retry and dead-letter history.
+- Bounded dispatch, concurrency, interrupted recovery, and explicit redrive.
+- Maintainer Dashboard, scoped service-account routes, and Runtime ownership.
+- Migration guidance, release notes, and a wheel, sdist, isolated-install, SSRF, replay, and compatibility gate.
+
+### Security
+- Webhooks remain disabled by default with no implicit export or egress authority.
+- Every attempt revalidates DNS, rejects DNS rebinding and disallowed addresses, pins the admitted address, and never follows redirects.
+- Secrets, signatures, canonical bodies, endpoint paths, raw responses, and internal exceptions remain excluded from safe views.
+- Machine administration requires exact scopes, a resource grant, replay protection, and deny-by-default policy.
+
+### Compatibility
+- Phoenix OS 0.23.0 behavior is preserved when webhook configuration is omitted.
+- Existing subscribers, jobs, credentials, endpoints, and outbound permissions are not converted or created automatically.
+
+
 
 ## [0.23.0] - 2026-07-21
 
