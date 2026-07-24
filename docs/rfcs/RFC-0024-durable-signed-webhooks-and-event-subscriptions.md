@@ -341,14 +341,18 @@ bodies, or internal exception text.
 
 ### Slice 4 — Retry, dead-letter, audit, and observability
 
-- [ ] Deterministic bounded retry policy
-- [ ] Per-endpoint and global concurrency limits
+- [x] Deterministic bounded retry policy
+- [x] Per-endpoint and global concurrency limits
 - [ ] Dead-letter transition and explicit retry
-- [ ] Subscription disablement and revocation enforcement
-- [ ] Signing-key rotation behavior
-- [ ] Protected audit facts
-- [ ] Safe metrics and health snapshots
+- [x] Subscription disablement and revocation enforcement
+- [x] Signing-key rotation behavior
+- [x] Protected audit facts
+- [x] Safe metrics and health snapshots
 - [ ] Retention and recovery tests
+
+The dispatcher foundation includes automatic dead-letter transition after retry
+budget exhaustion. The combined dead-letter item remains incomplete until
+maintainer-authorized explicit redrive is implemented and tested.
 
 ### Slice 5 — Administration and v0.24.0
 
