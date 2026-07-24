@@ -61,8 +61,25 @@ class WebhookSchemaError(WebhookCorruptionError):
     """Raised when persisted webhook state uses an unsupported schema."""
 
 
+def _normalize_failure_category(value: str) -> str:
+    normalized = value.strip().lower()
+    allowed = "abcdefghijklmnopqrstuvwxyz0123456789._-"
+    if (
+        not normalized
+        or len(normalized) > 64
+        or not normalized[0].isalpha()
+        or any(character not in allowed for character in normalized)
+    ):
+        raise ValueError("webhook failure category contains unsupported characters")
+    return normalized
+
+
 class WebhookEndpointRejectedError(PhoenixWebhookError):
     """Raised when an endpoint fails strict outbound validation."""
+
+    def __init__(self, category: str) -> None:
+        self.category = _normalize_failure_category(category)
+        super().__init__(f"webhook endpoint rejected: {self.category}")
 
 
 class WebhookEventAdapterStateError(PhoenixWebhookError):
@@ -75,6 +92,13 @@ class WebhookSigningError(PhoenixWebhookError):
 
 class WebhookTransportError(PhoenixWebhookError):
     """Raised for a safe classified outbound transport failure."""
+
+    def __init__(self, category: str, *, retryable: bool = False) -> None:
+        if type(retryable) is not bool:
+            raise TypeError("webhook transport retryable flag must be bool")
+        self.category = _normalize_failure_category(category)
+        self.retryable = retryable
+        super().__init__(f"webhook transport failed: {self.category}")
 
 
 class WebhookDispatcherClosedError(PhoenixWebhookError):

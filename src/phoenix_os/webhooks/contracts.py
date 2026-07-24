@@ -996,6 +996,8 @@ def _normalize_endpoint_url(
 
     host, address = _normalize_host(hostname)
     path = parsed.path or "/"
+    if any(character.isspace() for character in path):
+        raise ValueError("webhook endpoint path must not contain whitespace")
     if not path.startswith("/"):
         raise ValueError("webhook endpoint path must be absolute")
 

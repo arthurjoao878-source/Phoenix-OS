@@ -333,11 +333,11 @@ bodies, or internal exception text.
 - [x] Versioned HMAC-SHA-256 signing
 - [x] Versioned secret-reference resolution
 - [x] Exact request headers and canonical signature input
-- [ ] Strict HTTPS endpoint validation
-- [ ] DNS and destination-address egress enforcement
-- [ ] Redirect rejection
-- [ ] Bounded timeouts, payloads, headers, and responses
-- [ ] Safe transport error classification
+- [x] Strict HTTPS endpoint validation
+- [x] DNS and destination-address egress enforcement
+- [x] Redirect rejection
+- [x] Bounded timeouts, payloads, headers, and responses
+- [x] Safe transport error classification
 
 ### Slice 4 — Retry, dead-letter, audit, and observability
 
