@@ -358,7 +358,7 @@ tests verify that retry schedules and safe attempt history remain durable.
 ### Slice 5 — Administration and v0.24.0
 
 - [x] Maintainer-only management routes
-- [ ] Dashboard subscription and delivery administration
+- [x] Dashboard subscription and delivery administration
 - [ ] Optional scoped service-account administration
 - [ ] RuntimeAssembler integration and lifecycle ownership
 - [ ] Migration guidance
@@ -370,6 +370,11 @@ Maintainer routes use durable operator sessions, exact webhook permissions, CSRF
 verification, and step-up proofs for egress-enabling or credential-sensitive
 mutations. Responses expose bounded views without canonical bodies, signing-secret
 references, signature headers, or endpoint paths.
+
+The dependency-free Dashboard now exposes permission-gated subscription lifecycle,
+signing-key rotation, safe delivery history, health counters, and eligible
+dead-letter redrive. The browser retains no signing reference or delivery body,
+uses no-store requests, and degrades independently when webhooks are not configured.
 
 ## Compatibility
 
