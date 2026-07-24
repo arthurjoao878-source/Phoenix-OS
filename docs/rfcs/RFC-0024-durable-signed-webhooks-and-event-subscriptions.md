@@ -310,13 +310,13 @@ bodies, or internal exception text.
 
 ### Slice 1 — Contracts and persistence
 
-- [ ] Immutable subscription, endpoint, signing, retry, delivery, and attempt contracts
-- [ ] Explicit lifecycle and terminal states
-- [ ] Safe schema-versioned codecs
-- [ ] In-memory repositories
-- [ ] State Store-backed repositories
-- [ ] Corruption detection and repository equivalence tests
-- [ ] Safe bounded snapshots and retention metadata
+- [x] Immutable subscription, endpoint, signing, retry, delivery, and attempt contracts
+- [x] Explicit lifecycle and terminal states
+- [x] Safe schema-versioned codecs
+- [x] In-memory repositories
+- [x] State Store-backed repositories
+- [x] Corruption detection and repository equivalence tests
+- [x] Safe bounded snapshots and retention metadata
 
 ### Slice 2 — Event selection and durable scheduling
 
@@ -325,8 +325,8 @@ bodies, or internal exception text.
 - [x] Resource-filter validation
 - [x] Canonical immutable delivery envelopes
 - [x] Stable source-event deduplication
-- [ ] Event Bus adapter
-- [ ] Durable scheduling and Runtime recovery
+- [x] Event Bus adapter
+- [x] Durable scheduling and Runtime recovery
 
 ### Slice 3 — Signing and outbound transport
 
