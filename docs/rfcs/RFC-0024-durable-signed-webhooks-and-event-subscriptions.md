@@ -363,7 +363,7 @@ tests verify that retry schedules and safe attempt history remain durable.
 - [x] RuntimeAssembler integration and lifecycle ownership
 - [x] Migration guidance
 - [x] Architecture Decision Records
-- [ ] Regression, security, SSRF, replay, and packaging tests
+- [x] Regression, security, SSRF, replay, and packaging tests
 - [ ] Release notes and version 0.24.0
 
 Maintainer routes use durable operator sessions, exact webhook permissions, CSRF
@@ -407,6 +407,15 @@ The accepted webhook architecture decisions are:
   — one bounded retry history across recovery and redrive;
 - [`ADR-0005`](../adrs/ADR-0005-opt-in-webhook-runtime-and-administration.md)
   — opt-in Runtime ownership and separate human and machine administration.
+
+The mandatory release gate is implemented by
+`scripts/check_webhook_release.py`. It reruns the load-bearing compatibility,
+signing, SSRF, recovery, management, and replay suites; builds and validates
+wheel and sdist contents; rebuilds a wheel from the sdist; and installs both
+wheels in isolated offline environments. The gate rejects unsafe archive paths,
+secret-bearing file types, missing webhook modules, metadata drift, source-tree
+imports, and any artifact installation that requires ambient dependencies or
+network access.
 
 ## Compatibility
 

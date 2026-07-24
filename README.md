@@ -90,6 +90,19 @@ On Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
+## Webhook release gate
+
+RFC-0024 adds a named release gate for the security-sensitive webhook boundary:
+
+```bash
+python scripts/check_webhook_release.py
+```
+
+The gate reruns the selected compatibility, signing, SSRF, recovery, management,
+and replay suites; builds and inspects wheel and sdist artifacts; rebuilds a
+wheel from the sdist; and installs both wheels in offline isolated environments
+before importing and exercising the packaged webhook surface.
+
 ## Upgrade guidance
 
 The opt-in v0.24.0 durable signed webhook subsystem has a staged migration,
