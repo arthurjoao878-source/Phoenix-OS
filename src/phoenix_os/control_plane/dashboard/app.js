@@ -11,6 +11,7 @@ const state = {
   me: null,
   operatorMode: false,
   selectedServiceAccount: null,
+  webhookSubscriptions: new Map(),
 };
 
 const byId = (id) => document.getElementById(id);
@@ -1177,6 +1178,729 @@ async function serviceAccountLifecycle(
   }
 }
 
+
+function shortIdentity(value) {
+  const normalized = String(value || "");
+  return normalized.length > 12 ? `${normalized.slice(0, 12)}…` : normalized;
+}
+
+function webhookSubscriptionLabel(subscriptionId) {
+  const subscription = state.webhookSubscriptions.get(subscriptionId);
+  return subscription
+    ? subscription.display_name
+    : shortIdentity(subscriptionId);
+}
+
+function renderWebhookHealth(snapshot) {
+  const subscriptions = snapshot.subscriptions;
+  const deliveries = snapshot.deliveries;
+
+  text(
+    "webhooks-subscriptions-total",
+    subscriptions.subscriptions,
+  );
+  text(
+    "webhooks-summary",
+    `${subscriptions.active} active · `
+      + `${deliveries.pending + deliveries.in_flight + deliveries.retrying} queued · `
+      + `${deliveries.dead_letter} dead-letter`,
+  );
+}
+
+function renderWebhookSubscriptions(page) {
+  state.webhookSubscriptions = new Map(
+    page.items.map((item) => [item.id, item]),
+  );
+
+  const body = byId("webhook-subscriptions-table");
+
+  body.replaceChildren(...page.items.map((item) => {
+    const row = document.createElement("tr");
+
+    const identity = document.createElement("td");
+    const displayName = document.createElement("strong");
+    displayName.textContent = item.display_name;
+    const name = document.createElement("p");
+    name.className = "muted";
+    name.textContent = item.name;
+    identity.append(displayName, name);
+
+    const events = document.createElement("td");
+    events.textContent = item.event_types.join(", ") || "—";
+
+    const endpoint = document.createElement("td");
+    const endpointHost = document.createElement("strong");
+    endpointHost.textContent = (
+      `${item.endpoint.scheme}://${item.endpoint.host}:${item.endpoint.port}`
+    );
+    const pathDigest = document.createElement("p");
+    pathDigest.className = "muted";
+    pathDigest.textContent = (
+      `Path digest ${item.endpoint.path_sha256.slice(0, 12)}…`
+    );
+    endpoint.append(endpointHost, pathDigest);
+
+    const status = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = statusClass(item.status);
+    badge.textContent = item.status;
+    status.append(badge);
+
+    const signing = document.createElement("td");
+    signing.textContent = (
+      `${item.signing.scheme} · key v${item.signing.key_version}`
+    );
+
+    const revision = document.createElement("td");
+    revision.textContent = item.revision;
+
+    const actions = document.createElement("td");
+    actions.className = "row-actions";
+
+    if (
+      item.status !== "revoked"
+      && hasPermission("webhook.subscription.update")
+    ) {
+      actions.append(
+        operationButton(
+          "Edit",
+          () => updateWebhookSubscription(item),
+          true,
+        ),
+      );
+    }
+
+    if (
+      item.status === "active"
+      && hasPermission("webhook.subscription.disable")
+    ) {
+      actions.append(
+        operationButton(
+          "Disable",
+          () => webhookSubscriptionLifecycle(item, "disable"),
+          true,
+        ),
+      );
+    }
+
+    if (
+      item.status === "disabled"
+      && hasPermission("webhook.subscription.enable")
+    ) {
+      actions.append(
+        operationButton(
+          "Enable",
+          () => webhookSubscriptionLifecycle(item, "enable"),
+          true,
+        ),
+      );
+    }
+
+    if (
+      item.status !== "revoked"
+      && hasPermission("webhook.subscription.rotate")
+    ) {
+      actions.append(
+        operationButton(
+          "Rotate key",
+          () => rotateWebhookSigningKey(item),
+          true,
+        ),
+      );
+    }
+
+    if (
+      item.status !== "revoked"
+      && hasPermission("webhook.subscription.revoke")
+    ) {
+      actions.append(
+        operationButton(
+          "Revoke",
+          () => webhookSubscriptionLifecycle(item, "revoke"),
+          true,
+        ),
+      );
+    }
+
+    if (!actions.children.length) actions.textContent = "—";
+
+    row.append(
+      identity,
+      events,
+      endpoint,
+      status,
+      signing,
+      revision,
+      actions,
+    );
+    return row;
+  }));
+
+  text(
+    "webhook-subscriptions-page",
+    `${page.page.returned} of ${page.page.total}`,
+  );
+}
+
+function renderWebhookDeliveries(page) {
+  const body = byId("webhook-deliveries-table");
+
+  body.replaceChildren(...page.items.map((item) => {
+    const row = document.createElement("tr");
+
+    const occurred = document.createElement("td");
+    occurred.textContent = formatTime(item.occurred_at);
+
+    const event = document.createElement("td");
+    const eventName = document.createElement("strong");
+    eventName.textContent = item.event_type;
+    const deliveryId = document.createElement("p");
+    deliveryId.className = "muted";
+    deliveryId.textContent = shortIdentity(item.id);
+    event.append(eventName, deliveryId);
+
+    const subscription = document.createElement("td");
+    subscription.textContent = webhookSubscriptionLabel(
+      item.subscription_id,
+    );
+
+    const status = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = statusClass(item.status);
+    badge.textContent = item.status;
+    status.append(badge);
+
+    const attempts = document.createElement("td");
+    attempts.textContent = item.attempts.length;
+
+    const nextAttempt = document.createElement("td");
+    nextAttempt.textContent = formatTime(item.next_attempt_at);
+
+    const actions = document.createElement("td");
+    actions.className = "row-actions";
+
+    if (
+      item.redrive_eligible
+      && hasPermission("webhook.delivery.redrive")
+    ) {
+      actions.append(
+        operationButton(
+          "Redrive",
+          () => redriveWebhookDelivery(item),
+          true,
+        ),
+      );
+    } else {
+      actions.textContent = "—";
+    }
+
+    row.append(
+      occurred,
+      event,
+      subscription,
+      status,
+      attempts,
+      nextAttempt,
+      actions,
+    );
+    return row;
+  }));
+
+  text(
+    "webhook-deliveries-page",
+    `${page.page.returned} of ${page.page.total}`,
+  );
+}
+
+function webhookNumericValue(elementId, label, options = {}) {
+  const value = Number(byId(elementId).value);
+  const minimum = options.minimum ?? 0;
+
+  if (
+    !Number.isFinite(value)
+    || value < minimum
+    || (
+      options.integer
+      && !Number.isSafeInteger(value)
+    )
+  ) {
+    throw new Error(`${label} is outside the supported range.`);
+  }
+
+  return value;
+}
+
+async function createWebhookSubscription(event) {
+  event.preventDefault();
+
+  const eventTypes = multilineFieldValues(
+    "webhook-event-types",
+  );
+  const name = byId("webhook-name").value.trim();
+  const displayName = byId(
+    "webhook-display-name",
+  ).value.trim();
+  const endpointUrl = byId(
+    "webhook-endpoint-url",
+  ).value.trim();
+  const egressPolicy = byId(
+    "webhook-egress-policy",
+  ).value.trim();
+  const secretName = byId(
+    "webhook-secret-name",
+  ).value.trim();
+  const secretNamespace = byId(
+    "webhook-secret-namespace",
+  ).value.trim();
+
+  if (
+    !name
+    || !displayName
+    || !eventTypes.length
+    || !endpointUrl
+    || !egressPolicy
+    || !secretName
+    || !secretNamespace
+  ) {
+    text(
+      "webhook-subscription-status",
+      "Every subscription identity, event, endpoint, policy, and signing field is required.",
+    );
+    return;
+  }
+
+  try {
+    const document = {
+      name,
+      display_name: displayName,
+      event_types: eventTypes,
+      endpoint: {
+        url: endpointUrl,
+        allow_insecure_loopback: byId(
+          "webhook-loopback-development",
+        ).checked,
+      },
+      signing: {
+        secret_name: secretName,
+        secret_namespace: secretNamespace,
+        secret_version: webhookNumericValue(
+          "webhook-secret-version",
+          "Secret version",
+          { minimum: 1, integer: true },
+        ),
+        lease_ttl_seconds: webhookNumericValue(
+          "webhook-lease-ttl",
+          "Signing lease",
+          { minimum: 0.001 },
+        ),
+      },
+      egress_policy: egressPolicy,
+      retry: {
+        max_attempts: webhookNumericValue(
+          "webhook-max-attempts",
+          "Maximum attempts",
+          { minimum: 1, integer: true },
+        ),
+        initial_delay_seconds: webhookNumericValue(
+          "webhook-initial-delay",
+          "Initial retry delay",
+        ),
+        max_delay_seconds: webhookNumericValue(
+          "webhook-max-delay",
+          "Maximum retry delay",
+        ),
+      },
+    };
+
+    text(
+      "webhook-subscription-status",
+      "Creating webhook subscription...",
+    );
+
+    const created = await operatorCommand(
+      "/v1/control-plane/webhooks/subscriptions",
+      document,
+      "create-webhook-subscription",
+    );
+
+    text(
+      "webhook-subscription-status",
+      `${created.display_name}: created`,
+    );
+
+    byId(
+      "create-webhook-subscription-form",
+    ).reset();
+
+    await refreshWebhooks();
+  } catch (error) {
+    text(
+      "webhook-subscription-status",
+      `Webhook subscription creation failed: ${error.message}`,
+    );
+  }
+}
+
+async function updateWebhookSubscription(item) {
+  const name = window.prompt(
+    "Subscription name",
+    item.name,
+  );
+  if (name === null) return;
+
+  const displayName = window.prompt(
+    "Subscription display name",
+    item.display_name,
+  );
+  if (displayName === null) return;
+
+  const events = window.prompt(
+    "Event types separated by commas",
+    item.event_types.join(", "),
+  );
+  if (events === null) return;
+
+  const egressPolicy = window.prompt(
+    "Egress policy",
+    item.egress_policy,
+  );
+  if (egressPolicy === null) return;
+
+  const endpointUrl = window.prompt(
+    "New endpoint URL. Leave blank to retain the protected current path.",
+    "",
+  );
+  if (endpointUrl === null) return;
+
+  const eventTypes = Array.from(
+    new Set(
+      events
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  );
+
+  if (
+    !name.trim()
+    || !displayName.trim()
+    || !eventTypes.length
+    || !egressPolicy.trim()
+  ) {
+    text(
+      "webhook-subscription-status",
+      "Name, display name, event types, and egress policy must not be blank.",
+    );
+    return;
+  }
+
+  const document = {
+    expected_revision: item.revision,
+    name: name.trim(),
+    display_name: displayName.trim(),
+    event_types: eventTypes,
+    egress_policy: egressPolicy.trim(),
+    retry: item.retry,
+    resource_filters: item.resource_filters,
+  };
+
+  if (endpointUrl.trim()) {
+    document.endpoint = {
+      url: endpointUrl.trim(),
+      allow_insecure_loopback: (
+        item.endpoint.loopback_development
+      ),
+    };
+  }
+
+  try {
+    const updated = await operatorCommand(
+      `/v1/control-plane/webhooks/subscriptions/${item.id}/update`,
+      document,
+      "update-webhook-subscription",
+    );
+
+    text(
+      "webhook-subscription-status",
+      `${updated.display_name}: updated`,
+    );
+
+    await refreshWebhooks();
+  } catch (error) {
+    text(
+      "webhook-subscription-status",
+      `Webhook subscription update failed: ${error.message}`,
+    );
+  }
+}
+
+async function webhookSubscriptionLifecycle(item, action) {
+  if (
+    action === "revoke"
+    && !window.confirm(
+      `Permanently revoke ${item.display_name}?`,
+    )
+  ) {
+    return;
+  }
+
+  const stepUpAction = {
+    enable: "enable-webhook-subscription",
+    revoke: "revoke-webhook-subscription",
+  }[action] || "";
+
+  try {
+    const updated = await operatorCommand(
+      `/v1/control-plane/webhooks/subscriptions/${item.id}/${action}`,
+      {
+        expected_revision: item.revision,
+      },
+      stepUpAction,
+    );
+
+    text(
+      "webhook-subscription-status",
+      `${updated.display_name}: ${updated.status}`,
+    );
+
+    await refreshWebhooks();
+  } catch (error) {
+    text(
+      "webhook-subscription-status",
+      `Webhook subscription action failed: ${error.message}`,
+    );
+  }
+}
+
+async function rotateWebhookSigningKey(item) {
+  const secretName = window.prompt(
+    "New signing secret name. The current reference is intentionally hidden.",
+    "",
+  );
+  if (secretName === null) return;
+
+  const secretNamespace = window.prompt(
+    "New signing secret namespace",
+    "webhooks",
+  );
+  if (secretNamespace === null) return;
+
+  const secretVersionValue = window.prompt(
+    "New signing secret version",
+    String(item.signing.key_version + 1),
+  );
+  if (secretVersionValue === null) return;
+
+  const leaseTtlValue = window.prompt(
+    "Signing lease TTL in seconds",
+    String(item.signing.lease_ttl_seconds),
+  );
+  if (leaseTtlValue === null) return;
+
+  const secretVersion = Number(secretVersionValue.trim());
+  const leaseTtlSeconds = Number(leaseTtlValue.trim());
+
+  if (
+    !secretName.trim()
+    || !secretNamespace.trim()
+    || !Number.isSafeInteger(secretVersion)
+    || secretVersion <= 0
+    || !Number.isFinite(leaseTtlSeconds)
+    || leaseTtlSeconds <= 0
+  ) {
+    text(
+      "webhook-subscription-status",
+      "Signing-key rotation fields are invalid.",
+    );
+    return;
+  }
+
+  if (
+    !window.confirm(
+      `Rotate the signing key for ${item.display_name}?`,
+    )
+  ) {
+    return;
+  }
+
+  try {
+    const updated = await operatorCommand(
+      `/v1/control-plane/webhooks/subscriptions/`
+        + `${item.id}/rotate-signing-key`,
+      {
+        expected_revision: item.revision,
+        secret_name: secretName.trim(),
+        secret_namespace: secretNamespace.trim(),
+        secret_version: secretVersion,
+        lease_ttl_seconds: leaseTtlSeconds,
+      },
+      "rotate-webhook-signing-key",
+    );
+
+    text(
+      "webhook-subscription-status",
+      `${updated.display_name}: signing key v${updated.signing.key_version}`,
+    );
+
+    await refreshWebhooks();
+  } catch (error) {
+    text(
+      "webhook-subscription-status",
+      `Webhook signing-key rotation failed: ${error.message}`,
+    );
+  }
+}
+
+async function redriveWebhookDelivery(item) {
+  if (
+    !item.redrive_eligible
+    || !hasPermission("webhook.delivery.redrive")
+  ) {
+    text(
+      "webhook-delivery-status",
+      "This delivery is not eligible for redrive.",
+    );
+    return;
+  }
+
+  if (
+    !window.confirm(
+      `Redrive delivery ${shortIdentity(item.id)}?`,
+    )
+  ) {
+    return;
+  }
+
+  try {
+    const result = await operatorCommand(
+      `/v1/control-plane/webhooks/deliveries/${item.id}/redrive`,
+      {},
+      "redrive-webhook-delivery",
+    );
+
+    text(
+      "webhook-delivery-status",
+      `Delivery ${shortIdentity(result.delivery_id)}: ${result.status}`,
+    );
+
+    await refreshWebhooks();
+  } catch (error) {
+    text(
+      "webhook-delivery-status",
+      `Webhook delivery redrive failed: ${error.message}`,
+    );
+  }
+}
+
+async function refreshWebhooks() {
+  const healthCard = byId("webhooks-card");
+  const subscriptionsPanel = byId(
+    "webhook-subscriptions-panel",
+  );
+  const deliveriesPanel = byId(
+    "webhook-deliveries-panel",
+  );
+
+  const canReadHealth = (
+    state.operatorMode
+    && hasPermission("webhook.health.read")
+  );
+  const canReadSubscriptions = (
+    state.operatorMode
+    && hasPermission("webhook.subscription.read")
+  );
+  const canReadDeliveries = (
+    state.operatorMode
+    && hasPermission("webhook.delivery.read")
+  );
+
+  healthCard.classList.toggle("hidden", !canReadHealth);
+  subscriptionsPanel.classList.toggle(
+    "hidden",
+    !canReadSubscriptions,
+  );
+  deliveriesPanel.classList.toggle(
+    "hidden",
+    !canReadDeliveries,
+  );
+
+  byId(
+    "create-webhook-subscription-form",
+  ).classList.toggle(
+    "hidden",
+    !hasPermission("webhook.subscription.create"),
+  );
+
+  if (!canReadSubscriptions) {
+    state.webhookSubscriptions = new Map();
+    byId(
+      "webhook-subscriptions-table",
+    ).replaceChildren();
+  }
+
+  if (!canReadDeliveries) {
+    byId(
+      "webhook-deliveries-table",
+    ).replaceChildren();
+  }
+
+  if (canReadHealth) {
+    try {
+      renderWebhookHealth(
+        await api("/v1/control-plane/webhooks/health"),
+      );
+    } catch (error) {
+      if (error.message === "unauthorized") throw error;
+      text(
+        "webhooks-summary",
+        `Webhook health unavailable: ${error.message}`,
+      );
+    }
+  }
+
+  if (canReadSubscriptions) {
+    try {
+      renderWebhookSubscriptions(
+        await api(
+          "/v1/control-plane/webhooks/subscriptions?limit=200",
+        ),
+      );
+      text(
+        "webhook-subscription-status",
+        hasPermission("webhook.subscription.create")
+          ? "Webhook subscription administration ready."
+          : "Webhook subscription inventory loaded read-only.",
+      );
+    } catch (error) {
+      if (error.message === "unauthorized") throw error;
+      text(
+        "webhook-subscription-status",
+        `Webhook subscriptions unavailable: ${error.message}`,
+      );
+    }
+  }
+
+  if (canReadDeliveries) {
+    try {
+      renderWebhookDeliveries(
+        await api(
+          "/v1/control-plane/webhooks/deliveries?limit=200",
+        ),
+      );
+      text(
+        "webhook-delivery-status",
+        "Bounded body-free delivery history loaded.",
+      );
+    } catch (error) {
+      if (error.message === "unauthorized") throw error;
+      text(
+        "webhook-delivery-status",
+        `Webhook deliveries unavailable: ${error.message}`,
+      );
+    }
+  }
+}
+
 function renderOperations(payload) {
   state.operations = payload.actions || {};
   const any = Object.values(state.operations).some(Boolean);
@@ -1219,6 +1943,7 @@ async function refresh() {
     }
 
     await refreshServiceAccounts();
+    await refreshWebhooks();
 
     setConnected(
       true,
@@ -1379,6 +2104,12 @@ async function disconnect(reason = "Disconnected") {
   }
   clearServiceAccountSelection();
   byId("service-accounts-panel").classList.add("hidden");
+  byId("webhooks-card").classList.add("hidden");
+  byId("webhook-subscriptions-panel").classList.add("hidden");
+  byId("webhook-deliveries-panel").classList.add("hidden");
+  byId("webhook-subscriptions-table").replaceChildren();
+  byId("webhook-deliveries-table").replaceChildren();
+  state.webhookSubscriptions = new Map();
 
   state.refreshTimer = null; state.cursor = 0; state.legacyToken = ""; state.csrf = ""; state.operations = {}; state.me = null; state.operatorMode = false;
   byId("token").value = ""; text("operator-identity", "Anonymous"); setConnected(false, reason);
@@ -1387,6 +2118,11 @@ async function disconnect(reason = "Disconnected") {
 byId("login-form").addEventListener("submit", (event) => { event.preventDefault(); connect(byId("token").value); });
 byId("create-job-form").addEventListener("submit", createJob);
 byId("create-operator-form").addEventListener("submit", createOperator);
+
+byId("create-webhook-subscription-form").addEventListener(
+  "submit",
+  createWebhookSubscription,
+);
 
 byId("create-service-account-form").addEventListener(
   "submit",

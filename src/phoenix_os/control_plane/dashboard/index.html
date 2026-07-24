@@ -72,6 +72,11 @@
           <strong id="commands-total" class="metric">0</strong>
           <p id="commands-summary" class="muted">Unavailable</p>
         </article>
+        <article id="webhooks-card" class="card hidden">
+          <p class="label">Webhooks</p>
+          <strong id="webhooks-subscriptions-total" class="metric">0</strong>
+          <p id="webhooks-summary" class="muted">Subsystem unavailable</p>
+        </article>
       </section>
 
       <section class="panel-grid">
@@ -268,6 +273,124 @@
                 </tr>
               </thead>
               <tbody id="api-tokens-table"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article id="webhook-subscriptions-panel" class="panel wide hidden">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Signed outbound events</p>
+              <h2>Webhook subscriptions</h2>
+            </div>
+            <span id="webhook-subscriptions-page" class="muted"></span>
+          </div>
+
+          <form id="create-webhook-subscription-form" class="webhook-form" autocomplete="off">
+            <label>
+              Name
+              <input id="webhook-name" required maxlength="128" spellcheck="false" placeholder="build.completed">
+            </label>
+            <label>
+              Display name
+              <input id="webhook-display-name" required maxlength="256" placeholder="Build notifications">
+            </label>
+            <label>
+              Event types, one per line
+              <textarea id="webhook-event-types" rows="3" required spellcheck="false" placeholder="job.succeeded"></textarea>
+            </label>
+            <label>
+              HTTPS endpoint
+              <input id="webhook-endpoint-url" type="url" required maxlength="2048" spellcheck="false" placeholder="hooks.example.test/phoenix">
+            </label>
+            <label>
+              Egress policy
+              <input id="webhook-egress-policy" required maxlength="128" spellcheck="false" value="webhooks.default">
+            </label>
+            <label>
+              Secret name
+              <input id="webhook-secret-name" required maxlength="128" spellcheck="false" placeholder="delivery-signing">
+            </label>
+            <label>
+              Secret namespace
+              <input id="webhook-secret-namespace" required maxlength="128" spellcheck="false" value="webhooks">
+            </label>
+            <label>
+              Secret version
+              <input id="webhook-secret-version" type="number" min="1" step="1" required value="1">
+            </label>
+            <label>
+              Signing lease seconds
+              <input id="webhook-lease-ttl" type="number" min="0.001" step="0.001" required value="30">
+            </label>
+            <label>
+              Maximum attempts
+              <input id="webhook-max-attempts" type="number" min="1" max="20" step="1" required value="5">
+            </label>
+            <label>
+              Initial retry delay seconds
+              <input id="webhook-initial-delay" type="number" min="0" step="0.001" required value="1">
+            </label>
+            <label>
+              Maximum retry delay seconds
+              <input id="webhook-max-delay" type="number" min="0" step="0.001" required value="60">
+            </label>
+            <label class="checkbox-field">
+              <input id="webhook-loopback-development" type="checkbox">
+              Permit insecure loopback development endpoint
+            </label>
+            <button id="create-webhook-subscription-submit" type="submit">Create subscription</button>
+          </form>
+
+          <p id="webhook-subscription-status" class="muted">
+            Maintainer-only administration. Endpoint paths and signing references are never displayed.
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Subscription</th>
+                  <th>Events</th>
+                  <th>Endpoint</th>
+                  <th>Status</th>
+                  <th>Signing</th>
+                  <th>Revision</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="webhook-subscriptions-table"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article id="webhook-deliveries-panel" class="panel wide hidden">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Bounded delivery history</p>
+              <h2>Webhook deliveries</h2>
+            </div>
+            <span id="webhook-deliveries-page" class="muted"></span>
+          </div>
+
+          <p id="webhook-delivery-status" class="muted">
+            Canonical bodies, signatures, raw responses, and internal exceptions are never displayed.
+          </p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Occurred</th>
+                  <th>Event</th>
+                  <th>Subscription</th>
+                  <th>Status</th>
+                  <th>Attempts</th>
+                  <th>Next attempt</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="webhook-deliveries-table"></tbody>
             </table>
           </div>
         </article>
