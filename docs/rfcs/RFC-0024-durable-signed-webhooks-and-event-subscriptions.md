@@ -330,9 +330,9 @@ bodies, or internal exception text.
 
 ### Slice 3 — Signing and outbound transport
 
-- [ ] Versioned HMAC-SHA-256 signing
-- [ ] Versioned secret-reference resolution
-- [ ] Exact request headers and canonical signature input
+- [x] Versioned HMAC-SHA-256 signing
+- [x] Versioned secret-reference resolution
+- [x] Exact request headers and canonical signature input
 - [ ] Strict HTTPS endpoint validation
 - [ ] DNS and destination-address egress enforcement
 - [ ] Redirect rejection
