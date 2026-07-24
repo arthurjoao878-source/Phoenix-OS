@@ -45,6 +45,10 @@ class WebhookDeliveryRepositoryClosedError(PhoenixWebhookError):
     """Raised when a closed delivery repository receives work."""
 
 
+class WebhookDeliverySchedulerClosedError(PhoenixWebhookError):
+    """Raised when a closed delivery scheduler receives work."""
+
+
 class WebhookPersistenceError(PhoenixWebhookError):
     """Raised when durable webhook persistence cannot complete."""
 
@@ -59,6 +63,10 @@ class WebhookSchemaError(WebhookCorruptionError):
 
 class WebhookEndpointRejectedError(PhoenixWebhookError):
     """Raised when an endpoint fails strict outbound validation."""
+
+
+class WebhookEventAdapterStateError(PhoenixWebhookError):
+    """Raised for invalid Event Bus adapter lifecycle transitions."""
 
 
 class WebhookSigningError(PhoenixWebhookError):
