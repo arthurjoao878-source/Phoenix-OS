@@ -80,6 +80,9 @@ from phoenix_os.control_plane.tls_listener import (
     ControlPlaneTlsListenerConfig,
     ControlPlaneTlsListenerSnapshot,
 )
+from phoenix_os.control_plane.webhook_http import (
+    ControlPlaneWebhookHttpAdapter,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +121,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None,
         service_account_http: ControlPlaneServiceAccountHttpAdapter | None = None,
         service_account_machine_http: ControlPlaneServiceAccountMachineHttpAdapter | None = None,
+        webhook_http: ControlPlaneWebhookHttpAdapter | None = None,
         client_rate_limit: ControlPlaneClientRateLimitPolicy | None = None,
         tls_config: ControlPlaneTlsListenerConfig | None = None,
         remote_authentication: ControlPlaneRemoteAuthenticationService | None = None,
@@ -145,6 +149,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
             durable_session_http=durable_session_http,
             durable_operator_http=durable_operator_http,
             service_account_http=service_account_http,
+            webhook_http=webhook_http,
         )
         self._service_account_machine_http = service_account_machine_http
         self._network_policy = network_policy

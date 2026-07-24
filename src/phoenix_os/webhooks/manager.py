@@ -58,6 +58,7 @@ from phoenix_os.webhooks.recovery import (
     WebhookDeliveryRecovery,
     WebhookRedriveResult,
 )
+from phoenix_os.webhooks.registry import WebhookEventRegistry
 
 WEBHOOK_SUBSCRIPTIONS_READ_PERMISSION = "webhook.subscription.read"
 WEBHOOK_SUBSCRIPTIONS_CREATE_PERMISSION = "webhook.subscription.create"
@@ -342,6 +343,7 @@ class WebhookManager:
         subscriptions: WebhookSubscriptionRepository,
         deliveries: WebhookDeliveryRepository,
         recovery: WebhookDeliveryRecovery,
+        registry: WebhookEventRegistry | None = None,
         audit: AuditLedger | None = None,
         observability: ObservabilityHub | None = None,
         clock: WebhookManagerClock | None = None,
@@ -349,6 +351,8 @@ class WebhookManager:
     ) -> None:
         if not isinstance(recovery, WebhookDeliveryRecovery):
             raise TypeError("webhook manager recovery must be WebhookDeliveryRecovery")
+        if registry is not None and not isinstance(registry, WebhookEventRegistry):
+            raise TypeError("webhook manager registry must be WebhookEventRegistry")
         if audit is not None and not isinstance(audit, AuditLedger):
             raise TypeError("webhook manager audit must be AuditLedger")
         if observability is not None and not isinstance(observability, ObservabilityHub):
@@ -362,6 +366,7 @@ class WebhookManager:
         self._subscriptions = subscriptions
         self._deliveries = deliveries
         self._recovery = recovery
+        self._registry = registry
         self._audit = audit
         self._observability = observability
         self._clock = resolved_clock
@@ -431,6 +436,8 @@ class WebhookManager:
             retry=WebhookRetryPolicy() if retry is None else retry,
             resource_filters={} if resource_filters is None else resource_filters,
         )
+        if self._registry is not None:
+            await self._registry.validate_subscription(subscription)
         await self._subscriptions.add(subscription)
         await self._increment(mutations=1)
         await self._signal_subscription("create", subscription, context)
@@ -483,6 +490,8 @@ class WebhookManager:
             updated_at=max(self._now(), current.updated_at),
             revision=current.revision + 1,
         )
+        if self._registry is not None:
+            await self._registry.validate_subscription(updated)
         updated = await self._replace_subscription(
             current,
             updated,

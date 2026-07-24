@@ -23,7 +23,7 @@ from phoenix_os.events import EventBus
 from phoenix_os.kernel import Kernel
 from phoenix_os.observability import EventObserver, ObservabilityHub
 from phoenix_os.plugins import PluginManager
-from phoenix_os.policy import PolicyEngine
+from phoenix_os.policy import PolicyEngine, SecurityContext
 from phoenix_os.runtime import ComponentSpec, LifecycleComponent, PhoenixRuntime
 from phoenix_os.state import StateStore, StateStoreRegistry
 
@@ -57,6 +57,14 @@ if TYPE_CHECKING:
     from phoenix_os.identity import AuthenticationManager
     from phoenix_os.jobs import JobScheduler
     from phoenix_os.secrets import SecretsManager
+    from phoenix_os.webhooks import (
+        WebhookDeliveryRepository,
+        WebhookDispatcherConfig,
+        WebhookEgressPolicy,
+        WebhookPayloadSerializer,
+        WebhookSubscriptionRepository,
+        WebhookTransportConfig,
+    )
     from phoenix_os.workflows import WorkflowOrchestrator
 
 _RESERVED_DEFINITION_NAMES = frozenset(
@@ -89,12 +97,27 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "control_plane.secure-http",
         "control_plane.remote-login",
         "control_plane.remote-audit",
+        "control_plane.webhook-http",
+        "control_plane.webhooks",
         "observability",
         "plugins",
         "policy",
         "state",
         "runtime",
         "secrets",
+        "webhooks",
+        "webhooks.deliveries",
+        "webhooks.dispatcher",
+        "webhooks.dispatcher-worker",
+        "webhooks.events",
+        "webhooks.manager",
+        "webhooks.owner",
+        "webhooks.recovery",
+        "webhooks.registry",
+        "webhooks.scheduler",
+        "webhooks.signer",
+        "webhooks.subscriptions",
+        "webhooks.transport",
         "workflows",
     }
 )
@@ -274,6 +297,19 @@ class RuntimeAssembler:
         workflows: WorkflowOrchestrator | None = None,
         workflow_poll_interval: float = 1.0,
         workflow_worker: str = "phoenix.workflows",
+        webhooks_enabled: bool = False,
+        webhook_service_account_administration_enabled: bool = False,
+        webhook_subscription_repository: WebhookSubscriptionRepository | None = None,
+        webhook_delivery_repository: WebhookDeliveryRepository | None = None,
+        webhook_event_serializers: tuple[WebhookPayloadSerializer, ...] = (),
+        webhook_egress_policies: Mapping[str, WebhookEgressPolicy] | None = None,
+        webhook_dispatcher_config: WebhookDispatcherConfig | None = None,
+        webhook_transport_config: WebhookTransportConfig | None = None,
+        webhook_dispatch_poll_interval: float = 1.0,
+        webhook_recovery_batch_size: int = 50,
+        webhook_subscription_capacity: int = 256,
+        webhook_delivery_capacity: int = 4096,
+        webhook_signing_context: SecurityContext | None = None,
         control_plane_authenticator: AdminTokenAuthenticator | None = None,
         control_plane_operator_registry: ControlPlaneOperatorRegistry | None = None,
         control_plane_operator_token: ControlPlaneOperatorToken | None = None,
@@ -341,6 +377,23 @@ class RuntimeAssembler:
         self._workflows = workflows
         self._workflow_poll_interval = workflow_poll_interval
         self._workflow_worker = workflow_worker
+        self._webhooks_enabled = webhooks_enabled
+        self._webhook_service_account_administration_enabled = (
+            webhook_service_account_administration_enabled
+        )
+        self._webhook_subscription_repository = webhook_subscription_repository
+        self._webhook_delivery_repository = webhook_delivery_repository
+        self._webhook_event_serializers = tuple(webhook_event_serializers)
+        self._webhook_egress_policies = (
+            None if webhook_egress_policies is None else dict(webhook_egress_policies)
+        )
+        self._webhook_dispatcher_config = webhook_dispatcher_config
+        self._webhook_transport_config = webhook_transport_config
+        self._webhook_dispatch_poll_interval = webhook_dispatch_poll_interval
+        self._webhook_recovery_batch_size = webhook_recovery_batch_size
+        self._webhook_subscription_capacity = webhook_subscription_capacity
+        self._webhook_delivery_capacity = webhook_delivery_capacity
+        self._webhook_signing_context = webhook_signing_context
         self._control_plane_authenticator = control_plane_authenticator
         self._control_plane_operator_registry = control_plane_operator_registry
         self._control_plane_operator_token = control_plane_operator_token
@@ -397,6 +450,41 @@ class RuntimeAssembler:
         )
         if workflows is not None and jobs is None:
             raise ValueError("workflow orchestration requires a Runtime-owned job scheduler")
+        if not isinstance(webhooks_enabled, bool):
+            raise TypeError("webhooks enabled flag must be bool")
+        if not isinstance(webhook_service_account_administration_enabled, bool):
+            raise TypeError("webhook service-account administration enabled flag must be bool")
+        webhook_options_supplied = any(
+            (
+                webhook_subscription_repository is not None,
+                webhook_delivery_repository is not None,
+                bool(self._webhook_event_serializers),
+                self._webhook_egress_policies is not None,
+                webhook_dispatcher_config is not None,
+                webhook_transport_config is not None,
+                webhook_signing_context is not None,
+                webhook_service_account_administration_enabled,
+            )
+        )
+        if webhook_options_supplied and not webhooks_enabled:
+            raise ValueError("webhook options require webhooks_enabled")
+        if webhooks_enabled:
+            if secrets is None:
+                raise ValueError("enabled webhooks require a SecretsManager")
+            if not self._webhook_event_serializers:
+                raise ValueError("enabled webhooks require at least one event serializer")
+            if not self._webhook_egress_policies:
+                raise ValueError("enabled webhooks require at least one egress policy")
+            if webhook_dispatch_poll_interval <= 0:
+                raise ValueError("webhook dispatch poll interval must be positive")
+            if not 1 <= webhook_recovery_batch_size <= 200:
+                raise ValueError("webhook recovery batch size is outside supported bounds")
+            if not 1 <= webhook_subscription_capacity <= 10_000:
+                raise ValueError("webhook subscription capacity is outside supported bounds")
+            if not 1 <= webhook_delivery_capacity <= 1_000_000:
+                raise ValueError("webhook delivery capacity is outside supported bounds")
+            if webhook_signing_context is not None and not webhook_signing_context.authenticated:
+                raise ValueError("webhook signing context must be authenticated")
         operator_mode = (
             control_plane_operator_registry is not None or control_plane_operator_token is not None
         )
@@ -426,7 +514,12 @@ class RuntimeAssembler:
 
         if service_accounts_enabled and not operator_mode:
             raise ValueError("service accounts require durable operator mode")
-
+        if webhook_service_account_administration_enabled and not service_accounts_enabled:
+            raise ValueError("webhook machine administration requires service accounts")
+        if webhook_service_account_administration_enabled and control_plane_network_policy is None:
+            raise ValueError("webhook machine administration requires a secure network policy")
+        if webhook_service_account_administration_enabled and policy is None:
+            raise ValueError("webhook machine administration requires a PolicyEngine")
         if (
             self._control_plane_service_account_machine_routes
             and control_plane_network_policy is None
@@ -594,6 +687,77 @@ class RuntimeAssembler:
         if self._plugins is not None:
             components.append(ComponentSpec("plugins", self._plugins))
 
+        state_store: StateStore | None
+        if isinstance(self._state, StateStoreRegistry):
+            state_store = None if self._state.default_name is None else self._state.store()
+        else:
+            state_store = self._state
+
+        webhook_runtime = None
+        if self._webhooks_enabled:
+            from phoenix_os.webhooks import (
+                InMemoryWebhookDeliveryRepository,
+                InMemoryWebhookSubscriptionRepository,
+                StateWebhookDeliveryRepository,
+                StateWebhookSubscriptionRepository,
+                create_webhook_runtime,
+            )
+
+            webhook_subscriptions = self._webhook_subscription_repository
+            if webhook_subscriptions is None:
+                webhook_subscriptions = (
+                    InMemoryWebhookSubscriptionRepository(
+                        capacity=self._webhook_subscription_capacity
+                    )
+                    if state_store is None
+                    else StateWebhookSubscriptionRepository(
+                        state_store,
+                        capacity=self._webhook_subscription_capacity,
+                    )
+                )
+
+            webhook_deliveries = self._webhook_delivery_repository
+            if webhook_deliveries is None:
+                webhook_deliveries = (
+                    InMemoryWebhookDeliveryRepository(capacity=self._webhook_delivery_capacity)
+                    if state_store is None
+                    else StateWebhookDeliveryRepository(
+                        state_store,
+                        capacity=self._webhook_delivery_capacity,
+                    )
+                )
+
+            assert self._secrets is not None
+            assert self._webhook_egress_policies is not None
+            webhook_runtime = create_webhook_runtime(
+                events=self._events,
+                subscriptions=webhook_subscriptions,
+                deliveries=webhook_deliveries,
+                secrets=self._secrets,
+                serializers=self._webhook_event_serializers,
+                egress_policies=self._webhook_egress_policies,
+                signing_context=self._webhook_signing_context,
+                dispatcher_config=self._webhook_dispatcher_config,
+                transport_config=self._webhook_transport_config,
+                dispatch_poll_interval=self._webhook_dispatch_poll_interval,
+                recovery_batch_size=self._webhook_recovery_batch_size,
+                audit=self._audit,
+                observability=self._observability,
+            )
+            custom_services["webhooks"] = webhook_runtime
+            custom_services["webhooks.subscriptions"] = webhook_runtime.subscriptions
+            custom_services["webhooks.deliveries"] = webhook_runtime.deliveries
+            custom_services["webhooks.registry"] = webhook_runtime.registry
+            custom_services["webhooks.scheduler"] = webhook_runtime.scheduler
+            custom_services["webhooks.events"] = webhook_runtime.event_adapter
+            custom_services["webhooks.signer"] = webhook_runtime.signer
+            custom_services["webhooks.transport"] = webhook_runtime.transport
+            custom_services["webhooks.dispatcher"] = webhook_runtime.dispatcher
+            custom_services["webhooks.dispatcher-worker"] = webhook_runtime.dispatcher_worker
+            custom_services["webhooks.recovery"] = webhook_runtime.recovery
+            custom_services["webhooks.manager"] = webhook_runtime.manager
+            custom_services["webhooks.owner"] = webhook_runtime.owner
+
         job_worker_service = None
         if self._jobs is not None:
             from phoenix_os.jobs import JobWorker
@@ -648,12 +812,6 @@ class RuntimeAssembler:
                 StateControlPlaneOperatorRegistry,
             )
             from phoenix_os.control_plane.runtime import ControlPlaneRuntimeStack
-
-            state_store: StateStore | None
-            if isinstance(self._state, StateStoreRegistry):
-                state_store = None if self._state.default_name is None else self._state.store()
-            else:
-                state_store = self._state
 
             service_account_repository = self._control_plane_service_account_repository
 
@@ -731,6 +889,17 @@ class RuntimeAssembler:
                         updated_at=now,
                     )
 
+            machine_routes = self._control_plane_service_account_machine_routes
+            if webhook_runtime is not None and self._webhook_service_account_administration_enabled:
+                from phoenix_os.control_plane.webhook_machine_http import (
+                    control_plane_webhook_machine_routes,
+                )
+
+                machine_routes = (
+                    *machine_routes,
+                    *control_plane_webhook_machine_routes(webhook_runtime.manager),
+                )
+
             control_plane_stack = ControlPlaneRuntimeStack.create(
                 event_bus=self._events,
                 capabilities=self._capabilities,
@@ -754,9 +923,14 @@ class RuntimeAssembler:
                 ),
                 step_up_policy=self._control_plane_step_up_policy,
                 service_account_repository=(service_account_repository),
-                service_account_machine_routes=(self._control_plane_service_account_machine_routes),
+                service_account_machine_routes=machine_routes,
                 service_account_audit_secret=(self._control_plane_service_account_audit_secret),
                 service_account_replay_secret=(self._control_plane_service_account_replay_secret),
+                webhook_manager=(
+                    None
+                    if webhook_runtime is None or not operator_mode
+                    else webhook_runtime.manager
+                ),
                 policy_engine=self._policy,
                 jobs=self._jobs,
                 job_records=self._control_plane_job_records,
@@ -836,6 +1010,11 @@ class RuntimeAssembler:
                 custom_services["control_plane.operator-step-up"] = (
                     control_plane_stack.operator_step_up
                 )
+
+            if control_plane_stack.webhooks is not None:
+                custom_services["control_plane.webhooks"] = control_plane_stack.webhooks
+            if control_plane_stack.webhook_http is not None:
+                custom_services["control_plane.webhook-http"] = control_plane_stack.webhook_http
 
             if control_plane_stack.service_accounts is not None:
                 service_accounts = control_plane_stack.service_accounts
@@ -921,6 +1100,21 @@ class RuntimeAssembler:
             )
             components.append(ComponentSpec("control_plane.events", control_plane_stack.events))
             components.append(ComponentSpec("control_plane.commands", control_plane_stack.commands))
+
+        if webhook_runtime is not None:
+            components.append(ComponentSpec("webhooks", webhook_runtime.owner))
+            components.append(
+                ComponentSpec(
+                    "webhooks.dispatcher",
+                    webhook_runtime.dispatcher_worker,
+                )
+            )
+            components.append(
+                ComponentSpec(
+                    "webhooks.events",
+                    webhook_runtime.event_adapter,
+                )
+            )
 
         if job_worker_service is not None:
             components.append(ComponentSpec("jobs", job_worker_service))
