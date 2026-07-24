@@ -53,6 +53,12 @@ class ControlPlaneStepUpAction(StrEnum):
     REVOKE_API_TOKEN = "revoke-api-token"
     ENABLE_SERVICE_ACCOUNT = "enable-service-account"
     REVOKE_SERVICE_ACCOUNT = "revoke-service-account"
+    CREATE_WEBHOOK_SUBSCRIPTION = "create-webhook-subscription"
+    UPDATE_WEBHOOK_SUBSCRIPTION = "update-webhook-subscription"
+    ENABLE_WEBHOOK_SUBSCRIPTION = "enable-webhook-subscription"
+    REVOKE_WEBHOOK_SUBSCRIPTION = "revoke-webhook-subscription"
+    ROTATE_WEBHOOK_SIGNING_KEY = "rotate-webhook-signing-key"
+    REDRIVE_WEBHOOK_DELIVERY = "redrive-webhook-delivery"
 
 
 @dataclass(frozen=True, slots=True)
