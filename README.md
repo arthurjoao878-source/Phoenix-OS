@@ -100,6 +100,13 @@ security, persistence, receiver-verification, and rollback guide:
 Existing v0.23.0 behavior remains unchanged when webhook configuration is
 omitted.
 
+## Architecture decisions
+
+Accepted architectural decisions are indexed in
+[`docs/adrs/README.md`](docs/adrs/README.md). The RFC-0024 webhook records cover
+serializer allowlisting, canonical durable envelopes, versioned signing keys,
+fail-closed egress, bounded retry and redrive, and opt-in Runtime ownership.
+
 ## Local dashboard example
 
 ```powershell

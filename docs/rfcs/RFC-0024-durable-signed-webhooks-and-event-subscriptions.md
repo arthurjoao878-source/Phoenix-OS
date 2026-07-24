@@ -362,7 +362,7 @@ tests verify that retry schedules and safe attempt history remain durable.
 - [x] Optional scoped service-account administration
 - [x] RuntimeAssembler integration and lifecycle ownership
 - [x] Migration guidance
-- [ ] Architecture Decision Records
+- [x] Architecture Decision Records
 - [ ] Regression, security, SSRF, replay, and packaging tests
 - [ ] Release notes and version 0.24.0
 
@@ -394,6 +394,19 @@ The guide covers the disabled compatibility boundary, reviewed serializers,
 versioned signing keys, repository selection, egress policy, staged rollout,
 receiver verification, administration modes, troubleshooting, and state-preserving
 rollback.
+
+The accepted webhook architecture decisions are:
+
+- [`ADR-0001`](../adrs/ADR-0001-explicit-webhook-serializers-and-durable-envelopes.md)
+  — explicit serializers and canonical durable envelopes;
+- [`ADR-0002`](../adrs/ADR-0002-versioned-webhook-signing-keys.md)
+  — exact versioned HMAC signing keys;
+- [`ADR-0003`](../adrs/ADR-0003-fail-closed-webhook-egress.md)
+  — per-attempt fail-closed egress and SSRF controls;
+- [`ADR-0004`](../adrs/ADR-0004-bounded-webhook-retry-and-redrive.md)
+  — one bounded retry history across recovery and redrive;
+- [`ADR-0005`](../adrs/ADR-0005-opt-in-webhook-runtime-and-administration.md)
+  — opt-in Runtime ownership and separate human and machine administration.
 
 ## Compatibility
 
