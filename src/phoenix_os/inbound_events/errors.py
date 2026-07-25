@@ -66,6 +66,30 @@ class InboundNormalizerError(PhoenixInboundEventError):
         super().__init__("inbound event normalization failed")
 
 
+class InboundPublisherClosedError(PhoenixInboundEventError):
+    """Raised when a closed inbound publisher receives work."""
+
+
+class InboundPublisherStateError(PhoenixInboundEventError):
+    """Raised for invalid Runtime-owned publisher worker transitions."""
+
+
+class InboundRecoveryClosedError(PhoenixInboundEventError):
+    """Raised when a closed inbound recovery service receives work."""
+
+
+class InboundRecoveryStateError(PhoenixInboundEventError):
+    """Raised for invalid Runtime-owned recovery worker transitions."""
+
+
+class InboundRedriveAccessDeniedError(PhoenixInboundEventError):
+    """Raised when dead-letter redrive lacks exact authorization."""
+
+
+class InboundRedriveNotEligibleError(PhoenixInboundEventError):
+    """Raised when an inbound event cannot be explicitly redriven."""
+
+
 class InboundSourceAlreadyExistsError(PhoenixInboundEventError):
     """Raised when an inbound source id or name already exists."""
 

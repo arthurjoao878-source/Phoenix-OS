@@ -358,13 +358,13 @@ administration, and state-preserving rollback.
 
 ### Slice 4 — Publication, recovery, audit, and observability
 
-- [ ] Runtime-owned asynchronous Event Bus publisher
-- [ ] Deterministic bounded retry and dead-letter handling
-- [ ] Interrupted-publication recovery
-- [ ] Explicit eligible redrive
-- [ ] Safe audit facts, metrics, and health snapshots
-- [ ] Retention and recovery workers
-- [ ] At-least-once and stable-identity regression tests
+- [x] Runtime-owned asynchronous Event Bus publisher
+- [x] Deterministic bounded retry and dead-letter handling
+- [x] Interrupted-publication recovery
+- [x] Explicit eligible redrive
+- [x] Safe audit facts, metrics, and health snapshots
+- [x] Retention and recovery workers
+- [x] At-least-once and stable-identity regression tests
 
 ### Slice 5 — Administration and v0.25.0
 
