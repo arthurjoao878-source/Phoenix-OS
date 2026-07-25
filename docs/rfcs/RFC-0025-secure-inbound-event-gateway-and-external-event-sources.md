@@ -371,7 +371,7 @@ administration, and state-preserving rollback.
 - [x] Maintainer-only source and event administration
 - [x] Dashboard source, receipt, history, and dead-letter administration
 - [x] Optional scoped service-account administration
-- [ ] RuntimeAssembler integration and lifecycle ownership
+- [x] RuntimeAssembler integration and lifecycle ownership
 - [ ] Migration guidance
 - [ ] Architecture Decision Records
 - [ ] Regression, authentication, replay, admission, and packaging gate
@@ -394,6 +394,21 @@ the manager. Aggregate inventory, creation, and health routes are intentionally
 absent for service accounts; every request still passes token authentication,
 timestamp and nonce replay protection, the central policy boundary, protected
 audit, and credential-free request handling.
+
+RuntimeAssembler now owns the optional inbound subsystem as one coherent
+lifecycle boundary. It selects coordinated bounded in-memory repositories when
+no default State Store exists and State Store-backed source, event, and replay
+repositories otherwise. Reviewed normalizers register and durable interrupted
+publication recovery completes before publisher and recovery workers start;
+the existing Control Plane listener starts last and serves both exact ingress
+routes and durable-session administration without creating another socket.
+
+The Runtime exposes safe component services for diagnostics, binds RFC-0023
+authentication, replay, and central policy only when service accounts are
+explicitly enabled, and adds concrete machine-administration routes only behind
+the separate opt-in flag and secure network policy. Shutdown stops the listener
+first, then recovery and publication workers, removes ingress routes, and closes
+the manager, recovery service, repositories, and admission state last.
 
 ## Acceptance
 
