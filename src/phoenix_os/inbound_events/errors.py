@@ -66,6 +66,14 @@ class InboundNormalizerError(PhoenixInboundEventError):
         super().__init__("inbound event normalization failed")
 
 
+class InboundManagerAccessDeniedError(PhoenixInboundEventError):
+    """Raised when inbound administration lacks an exact permission."""
+
+
+class InboundManagerClosedError(PhoenixInboundEventError):
+    """Raised when a closed inbound manager receives work."""
+
+
 class InboundPublisherClosedError(PhoenixInboundEventError):
     """Raised when a closed inbound publisher receives work."""
 

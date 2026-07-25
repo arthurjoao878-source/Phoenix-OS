@@ -368,7 +368,7 @@ administration, and state-preserving rollback.
 
 ### Slice 5 — Administration and v0.25.0
 
-- [ ] Maintainer-only source and event administration
+- [x] Maintainer-only source and event administration
 - [ ] Dashboard source, receipt, history, and dead-letter administration
 - [ ] Optional scoped service-account administration
 - [ ] RuntimeAssembler integration and lifecycle ownership
