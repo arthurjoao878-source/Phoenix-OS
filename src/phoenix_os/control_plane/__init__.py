@@ -252,6 +252,7 @@ from phoenix_os.control_plane.http import (
     ControlPlaneHttpServer,
     ControlPlaneHttpSnapshot,
     ControlPlaneHttpState,
+    ControlPlaneInboundHttpAdapter,
 )
 from phoenix_os.control_plane.idempotency import (
     ControlPlaneCommandClock,
@@ -983,6 +984,7 @@ __all__ = [
     "ControlPlaneIdempotencySnapshot",
     "ControlPlaneIdempotencyStore",
     "ControlPlaneIdempotencyStoreClosedError",
+    "ControlPlaneInboundHttpAdapter",
     "ControlPlaneJobCommandHandler",
     "ControlPlaneJobCommandResult",
     "ControlPlaneJobScheduler",

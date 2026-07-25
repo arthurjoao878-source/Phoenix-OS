@@ -347,14 +347,14 @@ administration, and state-preserving rollback.
 
 ### Slice 3 — HTTP ingress, limits, and normalization
 
-- [ ] Fixed opt-in inbound route
-- [ ] Exact media-type and security-header validation
-- [ ] Bounded body and structural JSON parsing
-- [ ] Explicit schema registry and normalizers
-- [ ] Policy-protected durable acceptance
-- [ ] Per-source and global admission limits
-- [ ] Safe receipts and HTTP error mapping
-- [ ] TLS, proxy, CIDR, smuggling, and malformed-input tests
+- [x] Fixed opt-in inbound route
+- [x] Exact media-type and security-header validation
+- [x] Bounded body and structural JSON parsing
+- [x] Explicit schema registry and normalizers
+- [x] Policy-protected durable acceptance
+- [x] Per-source and global admission limits
+- [x] Safe receipts and HTTP error mapping
+- [x] TLS, proxy, CIDR, smuggling, and malformed-input tests
 
 ### Slice 4 — Publication, recovery, audit, and observability
 

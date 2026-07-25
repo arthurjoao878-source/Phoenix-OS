@@ -34,6 +34,7 @@ from phoenix_os.control_plane.http import (
     ControlPlaneHttpServer,
     ControlPlaneHttpSnapshot,
     ControlPlaneHttpState,
+    ControlPlaneInboundHttpAdapter,
     _HttpRequestError,
     _Request,
     _single_header,
@@ -122,6 +123,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
         service_account_http: ControlPlaneServiceAccountHttpAdapter | None = None,
         service_account_machine_http: ControlPlaneServiceAccountMachineHttpAdapter | None = None,
         webhook_http: ControlPlaneWebhookHttpAdapter | None = None,
+        inbound_http: ControlPlaneInboundHttpAdapter | None = None,
         client_rate_limit: ControlPlaneClientRateLimitPolicy | None = None,
         tls_config: ControlPlaneTlsListenerConfig | None = None,
         remote_authentication: ControlPlaneRemoteAuthenticationService | None = None,
@@ -150,6 +152,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
             durable_operator_http=durable_operator_http,
             service_account_http=service_account_http,
             webhook_http=webhook_http,
+            inbound_http=inbound_http,
         )
         self._service_account_machine_http = service_account_machine_http
         self._network_policy = network_policy
@@ -318,11 +321,17 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
             and self._service_account_machine_http.handles(path)
         )
 
+    def _inbound_http_handles(self, path: str) -> bool:
+        return self._inbound_http is not None and self._inbound_http.handles(path)
+
+    def _uses_machine_transport(self, path: str) -> bool:
+        return self._machine_http_handles(path) or self._inbound_http_handles(path)
+
     def _requires_browser_origin(
         self,
         request: _Request,
     ) -> bool:
-        return request.method == "POST" and not self._machine_http_handles(request.path)
+        return request.method == "POST" and not self._uses_machine_transport(request.path)
 
     async def _handle_connection(
         self,
@@ -368,7 +377,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
 
                         context_token = self._request_network_context.set(network_context)
 
-                        if self._machine_http_handles(request.path):
+                        if self._uses_machine_transport(request.path):
                             machine_context = control_plane_service_account_authentication_context(
                                 network_context,
                                 writer,
@@ -508,15 +517,34 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
         Mapping[str, object] | bytes,
         dict[str, str],
     ]:
+        if self._inbound_http_handles(request.path):
+            async with self._counter_lock:
+                self._requests += 1
+            inbound_adapter = self._inbound_http
+            if inbound_adapter is None:
+                return (
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"error": "inbound_api_unavailable"},
+                    {},
+                )
+            return await inbound_adapter.dispatch(
+                method=request.method,
+                path=request.path,
+                query=request.query,
+                headers=request.headers,
+                body=request.body,
+                transport_context=self._service_account_authentication_context.get(),
+            )
+
         if self._machine_http_handles(request.path):
             async with self._counter_lock:
                 self._requests += 1
 
             machine_context = self._service_account_authentication_context.get()
 
-            adapter = self._service_account_machine_http
+            machine_adapter = self._service_account_machine_http
 
-            if machine_context is None or adapter is None:
+            if machine_context is None or machine_adapter is None:
                 await self._record_rejection("ServiceAccountTransportUnavailable")
 
                 return (
@@ -527,7 +555,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
                     {},
                 )
 
-            return await adapter.dispatch(
+            return await machine_adapter.dispatch(
                 context=machine_context,
                 method=request.method,
                 path=request.path,

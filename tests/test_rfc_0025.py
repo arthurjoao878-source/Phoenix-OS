@@ -102,8 +102,8 @@ def test_rfc_0025_slice_1_is_implemented() -> None:
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
     slice_1 = plan.split("### Slice 2", maxsplit=1)[0]
 
-    assert plan.count("- [x]") == 13
-    assert plan.count("- [ ]") == 23
+    assert plan.count("- [x]") == 21
+    assert plan.count("- [ ]") == 15
     assert slice_1.count("- [x]") == 6
     assert slice_1.count("- [ ]") == 0
     assert (
@@ -131,3 +131,20 @@ def test_rfc_0025_slice_2_authentication_foundation_is_implemented() -> None:
     assert "- [x] Durable replay protection across restart" in slice_2
     assert "- [x] Stable source-event idempotency and conflict rejection" in slice_2
     assert "- [x] Generic authentication and enumeration-resistance tests" in slice_2
+
+
+def test_rfc_0025_slice_3_transport_and_schema_foundation_is_implemented() -> None:
+    rfc = _RFC.read_text(encoding="utf-8")
+    plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
+    slice_3 = plan.split("### Slice 3", maxsplit=1)[1].split("### Slice 4", maxsplit=1)[0]
+
+    assert slice_3.count("- [x]") == 8
+    assert slice_3.count("- [ ]") == 0
+    assert "- [x] Fixed opt-in inbound route" in slice_3
+    assert "- [x] Exact media-type and security-header validation" in slice_3
+    assert "- [x] Bounded body and structural JSON parsing" in slice_3
+    assert "- [x] Explicit schema registry and normalizers" in slice_3
+    assert "- [x] Policy-protected durable acceptance" in slice_3
+    assert "- [x] Per-source and global admission limits" in slice_3
+    assert "- [x] Safe receipts and HTTP error mapping" in slice_3
+    assert "- [x] TLS, proxy, CIDR, smuggling, and malformed-input tests" in slice_3
