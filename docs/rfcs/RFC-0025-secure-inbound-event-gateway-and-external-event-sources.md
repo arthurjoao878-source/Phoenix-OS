@@ -328,12 +328,12 @@ administration, and state-preserving rollback.
 
 ### Slice 1 — Contracts, schemas, and persistence
 
-- [ ] Immutable source, schema, accepted-event, attempt, receipt, and replay contracts
-- [ ] Strict schema-versioned codecs
-- [ ] In-memory source, event, and replay repositories
-- [ ] State Store-backed source, event, and replay repositories
-- [ ] Atomic replay reservation and accepted-event persistence
-- [ ] Repository equivalence and corruption tests
+- [x] Immutable source, schema, accepted-event, attempt, receipt, and replay contracts
+- [x] Strict schema-versioned codecs
+- [x] In-memory source, event, and replay repositories
+- [x] State Store-backed source, event, and replay repositories
+- [x] Atomic replay reservation and accepted-event persistence
+- [x] Repository equivalence and corruption tests
 
 ### Slice 2 — Authentication, replay, and idempotency
 

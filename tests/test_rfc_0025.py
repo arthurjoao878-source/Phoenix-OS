@@ -97,8 +97,21 @@ def test_rfc_0025_preserves_v0240_compatibility() -> None:
     assert "changes to\n`0.25.0` only in the final release slice" in rfc
 
 
-def test_rfc_0025_slice_plan_starts_unimplemented() -> None:
+def test_rfc_0025_slice_1_is_implemented() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
-    assert plan.count("- [ ]") == 36
-    assert "- [x]" not in plan
+    slice_1 = plan.split("### Slice 2", maxsplit=1)[0]
+
+    assert plan.count("- [x]") == 6
+    assert plan.count("- [ ]") == 30
+    assert slice_1.count("- [x]") == 6
+    assert slice_1.count("- [ ]") == 0
+    assert (
+        "- [x] Immutable source, schema, accepted-event, attempt, receipt, "
+        "and replay contracts" in slice_1
+    )
+    assert "- [x] Strict schema-versioned codecs" in slice_1
+    assert "- [x] In-memory source, event, and replay repositories" in slice_1
+    assert "- [x] State Store-backed source, event, and replay repositories" in slice_1
+    assert "- [x] Atomic replay reservation and accepted-event persistence" in slice_1
+    assert "- [x] Repository equivalence and corruption tests" in slice_1
