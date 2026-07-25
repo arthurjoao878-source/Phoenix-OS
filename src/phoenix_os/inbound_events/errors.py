@@ -26,6 +26,46 @@ class InboundIdempotencyConflictError(PhoenixInboundEventError):
         super().__init__("inbound source-event content conflicts")
 
 
+class InboundAdmissionRejectedError(PhoenixInboundEventError):
+    """Generic rejection when a finite admission limit is exhausted."""
+
+    def __init__(self) -> None:
+        super().__init__("inbound admission limit exceeded")
+
+
+class InboundAdmissionLimiterClosedError(PhoenixInboundEventError):
+    """Raised when a closed admission limiter receives work."""
+
+
+class InboundPolicyDeniedError(PhoenixInboundEventError):
+    """Generic authenticated policy denial before durable acceptance."""
+
+    def __init__(self) -> None:
+        super().__init__("inbound submission policy denied")
+
+
+class InboundGatewayUnavailableError(PhoenixInboundEventError):
+    """Raised when the gateway cannot safely complete a request."""
+
+
+class InboundSchemaRegistrationError(PhoenixInboundEventError):
+    """Raised when reviewed schema registration cannot complete."""
+
+
+class InboundPayloadValidationError(PhoenixInboundEventError):
+    """Generic invalid external envelope or payload rejection."""
+
+    def __init__(self) -> None:
+        super().__init__("inbound event payload is invalid")
+
+
+class InboundNormalizerError(PhoenixInboundEventError):
+    """Generic reviewed normalizer failure without private exception text."""
+
+    def __init__(self) -> None:
+        super().__init__("inbound event normalization failed")
+
+
 class InboundSourceAlreadyExistsError(PhoenixInboundEventError):
     """Raised when an inbound source id or name already exists."""
 

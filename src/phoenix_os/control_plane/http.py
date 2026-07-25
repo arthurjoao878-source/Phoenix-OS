@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from http import HTTPStatus
+from typing import Protocol
 from urllib.parse import parse_qs, urlsplit
 
 from phoenix_os.control_plane.assets import DashboardAssets
@@ -145,6 +146,25 @@ class ControlPlaneHttpSnapshot:
         object.__setattr__(self, "last_error", error)
 
 
+class ControlPlaneInboundHttpAdapter(Protocol):
+    """Optional exact inbound-event route adapter."""
+
+    def handles(self, path: str) -> bool: ...
+
+    def body_limit(self, path: str) -> int: ...
+
+    async def dispatch(
+        self,
+        *,
+        method: str,
+        path: str,
+        query: Mapping[str, tuple[str, ...]],
+        headers: Mapping[str, tuple[str, ...]],
+        body: bytes,
+        transport_context: object | None,
+    ) -> tuple[HTTPStatus, Mapping[str, object], dict[str, str]]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _Request:
     method: str
@@ -172,6 +192,7 @@ class ControlPlaneHttpServer:
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None,
         service_account_http: ControlPlaneServiceAccountHttpAdapter | None = None,
         webhook_http: ControlPlaneWebhookHttpAdapter | None = None,
+        inbound_http: ControlPlaneInboundHttpAdapter | None = None,
     ) -> None:
         if authenticator is None and durable_session_http is None:
             raise ValueError("control plane requires an authenticator or durable session boundary")
@@ -181,6 +202,11 @@ class ControlPlaneHttpServer:
             raise ValueError("service-account HTTP requires durable session authentication")
         if webhook_http is not None and durable_session_http is None:
             raise ValueError("webhook HTTP requires durable session authentication")
+        if inbound_http is not None and not all(
+            callable(getattr(inbound_http, name, None))
+            for name in ("handles", "body_limit", "dispatch")
+        ):
+            raise TypeError("inbound HTTP adapter is invalid")
         self._reader = reader
         self._authenticator = authenticator
         self._config = config or ControlPlaneHttpConfig()
@@ -192,6 +218,7 @@ class ControlPlaneHttpServer:
         self._durable_operator_http = durable_operator_http
         self._service_account_http = service_account_http
         self._webhook_http = webhook_http
+        self._inbound_http = inbound_http
         self._command_http = (
             None
             if command_api is None
@@ -382,7 +409,8 @@ class ControlPlaneHttpServer:
                     HTTPStatus.BAD_REQUEST,
                     "invalid_content_length",
                 ) from exception
-            if content_length < 0 or content_length > self._config.max_command_body_bytes:
+            body_limit = self._body_limit(method.upper(), parsed.path)
+            if content_length < 0 or content_length > body_limit:
                 raise _HttpRequestError(
                     HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_body_too_large"
                 )
@@ -410,6 +438,14 @@ class ControlPlaneHttpServer:
             body=body,
         )
 
+    def _body_limit(self, method: str, path: str) -> int:
+        if method == "POST" and self._inbound_http is not None and self._inbound_http.handles(path):
+            limit = self._inbound_http.body_limit(path)
+            if limit <= 0:
+                raise RuntimeError("inbound HTTP adapter returned an invalid body limit")
+            return limit
+        return self._config.max_command_body_bytes
+
     async def _dispatch(
         self,
         request: _Request,
@@ -421,6 +457,15 @@ class ControlPlaneHttpServer:
                 HTTPStatus.METHOD_NOT_ALLOWED,
                 {"error": "method_not_allowed"},
                 {"Allow": "GET, POST"},
+            )
+        if self._inbound_http is not None and self._inbound_http.handles(request.path):
+            return await self._inbound_http.dispatch(
+                method=request.method,
+                path=request.path,
+                query=request.query,
+                headers=request.headers,
+                body=request.body,
+                transport_context=None,
             )
         if request.path in {"/", "/dashboard"}:
             if request.method != "GET" or request.body:
