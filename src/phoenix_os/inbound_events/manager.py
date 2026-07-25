@@ -1126,6 +1126,233 @@ class InboundManager:
             raise InboundManagerClosedError("inbound manager is closed")
 
 
+def inbound_source_view_to_dict(
+    view: InboundSourceView,
+) -> dict[str, object]:
+    authentication: dict[str, object] = {
+        "schema_version": view.authentication.schema_version,
+        "mode": view.authentication.mode.value,
+    }
+    if view.authentication.mode is InboundAuthenticationMode.HMAC_SHA256:
+        authentication.update(
+            {
+                "scheme": view.authentication.scheme,
+                "key_version": view.authentication.key_version,
+                "predecessor_key_version": (view.authentication.predecessor_key_version),
+                "predecessor_valid_until": _optional_datetime(
+                    view.authentication.predecessor_valid_until
+                ),
+            }
+        )
+    else:
+        authentication.update(
+            {
+                "service_account_resource": (view.authentication.service_account_resource),
+                "required_action": view.authentication.required_action,
+            }
+        )
+    return {
+        "schema_version": view.schema_version,
+        "id": str(view.id),
+        "name": view.name,
+        "display_name": view.display_name,
+        "authentication": authentication,
+        "event_types": list(view.event_types),
+        "created_at": view.created_at.isoformat(),
+        "updated_at": view.updated_at.isoformat(),
+        "created_by": view.created_by,
+        "max_body_bytes": view.max_body_bytes,
+        "max_header_bytes": view.max_header_bytes,
+        "timestamp_skew_seconds": view.timestamp_skew_seconds,
+        "replay_retention_seconds": view.replay_retention_seconds,
+        "max_concurrency": view.max_concurrency,
+        "requests_per_minute": view.requests_per_minute,
+        "retry": {
+            "max_attempts": view.retry.max_attempts,
+            "initial_delay_seconds": view.retry.initial_delay_seconds,
+            "multiplier": view.retry.multiplier,
+            "max_delay_seconds": view.retry.max_delay_seconds,
+        },
+        "status": view.status.value,
+        "disabled_at": _optional_datetime(view.disabled_at),
+        "revoked_at": _optional_datetime(view.revoked_at),
+        "revision": view.revision,
+    }
+
+
+def inbound_source_view_page_to_dict(
+    page: InboundSourceViewPage,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "items": [inbound_source_view_to_dict(item) for item in page.items],
+        "page": _page_info_to_dict(page.page),
+    }
+
+
+def inbound_event_view_to_dict(
+    view: InboundEventView,
+) -> dict[str, object]:
+    return {
+        "schema_version": view.schema_version,
+        "id": str(view.id),
+        "receipt_id": str(view.receipt_id),
+        "source_id": str(view.source_id),
+        "external_event_type": view.external_event_type,
+        "external_schema_version": view.external_schema_version,
+        "internal_event_type": view.internal_event_type,
+        "occurred_at": view.occurred_at.isoformat(),
+        "accepted_at": view.accepted_at.isoformat(),
+        "updated_at": view.updated_at.isoformat(),
+        "correlation_id": view.correlation_id,
+        "status": view.status.value,
+        "attempts": [_attempt_view_to_dict(item) for item in view.attempts],
+        "current_attempt": view.current_attempt,
+        "publishing_at": _optional_datetime(view.publishing_at),
+        "next_attempt_at": _optional_datetime(view.next_attempt_at),
+        "terminal_at": _optional_datetime(view.terminal_at),
+        "redrive_eligible": view.redrive_eligible,
+        "revision": view.revision,
+    }
+
+
+def inbound_event_view_page_to_dict(
+    page: InboundEventViewPage,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "items": [inbound_event_view_to_dict(item) for item in page.items],
+        "page": _page_info_to_dict(page.page),
+    }
+
+
+def inbound_receipt_view_to_dict(
+    view: InboundReceiptView,
+) -> dict[str, object]:
+    return {
+        "schema_version": view.schema_version,
+        "receipt_id": str(view.receipt_id),
+        "accepted_event_id": str(view.accepted_event_id),
+        "source_id": str(view.source_id),
+        "source_event_id": view.source_event_id,
+        "external_event_type": view.external_event_type,
+        "external_schema_version": view.external_schema_version,
+        "accepted_at": view.accepted_at.isoformat(),
+        "correlation_id": view.correlation_id,
+    }
+
+
+def inbound_manager_snapshot_to_dict(
+    snapshot: InboundManagerSnapshot,
+) -> dict[str, object]:
+    return {
+        "schema_version": snapshot.schema_version,
+        "closed": snapshot.closed,
+        "reads": snapshot.reads,
+        "mutations": snapshot.mutations,
+        "denied": snapshot.denied,
+        "conflicts": snapshot.conflicts,
+        "audit_failures": snapshot.audit_failures,
+        "observation_failures": snapshot.observation_failures,
+        "machine_administration_enabled": (snapshot.machine_administration_enabled),
+        "sources": {
+            "closed": snapshot.sources.closed,
+            "sources": snapshot.sources.sources,
+            "active": snapshot.sources.active,
+            "disabled": snapshot.sources.disabled,
+            "revoked": snapshot.sources.revoked,
+            "capacity": snapshot.sources.capacity,
+        },
+        "events": {
+            "closed": snapshot.events.closed,
+            "events": snapshot.events.events,
+            "pending": snapshot.events.pending,
+            "publishing": snapshot.events.publishing,
+            "retrying": snapshot.events.retrying,
+            "published": snapshot.events.published,
+            "dead_letter": snapshot.events.dead_letter,
+            "discarded": snapshot.events.discarded,
+            "attempts": snapshot.events.attempts,
+            "capacity": snapshot.events.capacity,
+        },
+        "replay": {
+            "closed": snapshot.replay.closed,
+            "reservations": snapshot.replay.reservations,
+            "request_ids": snapshot.replay.request_ids,
+            "nonces": snapshot.replay.nonces,
+            "source_events": snapshot.replay.source_events,
+            "capacity": snapshot.replay.capacity,
+        },
+        "recovery": {
+            "closed": snapshot.recovery.closed,
+            "redrives": snapshot.recovery.redrives,
+            "redrive_denied": snapshot.recovery.redrive_denied,
+            "redrive_rejected": snapshot.recovery.redrive_rejected,
+            "recovery_batches": snapshot.recovery.recovery_batches,
+            "recovered": snapshot.recovery.recovered,
+            "retrying": snapshot.recovery.retrying,
+            "dead_letter": snapshot.recovery.dead_letter,
+            "discarded": snapshot.recovery.discarded,
+            "conflicts": snapshot.recovery.conflicts,
+            "replay_pruned": snapshot.recovery.replay_pruned,
+            "audit_failures": snapshot.recovery.audit_failures,
+            "observation_failures": (snapshot.recovery.observation_failures),
+        },
+        "schemas": {
+            "registrations": snapshot.schemas.registrations,
+            "capacity": snapshot.schemas.capacity,
+            "event_types": snapshot.schemas.event_types,
+            "schema_version": snapshot.schemas.schema_version,
+        },
+    }
+
+
+def inbound_redrive_result_to_dict(
+    result: InboundRedriveResult,
+) -> dict[str, object]:
+    return {
+        "schema_version": result.schema_version,
+        "accepted_event_id": str(result.accepted_event_id),
+        "status": result.status.value,
+        "completed_attempts": result.completed_attempts,
+        "next_attempt_at": result.next_attempt_at.isoformat(),
+        "revision": result.revision,
+    }
+
+
+def _attempt_view_to_dict(
+    view: InboundAttemptView,
+) -> dict[str, object]:
+    return {
+        "number": view.number,
+        "scheduled_at": view.scheduled_at.isoformat(),
+        "started_at": view.started_at.isoformat(),
+        "finished_at": view.finished_at.isoformat(),
+        "outcome": view.outcome.value,
+        "retry_scheduled": view.retry_scheduled,
+        "next_attempt_at": _optional_datetime(view.next_attempt_at),
+        "error_category": view.error_category,
+    }
+
+
+def _page_info_to_dict(
+    page: InboundPageInfo,
+) -> dict[str, object]:
+    return {
+        "offset": page.offset,
+        "limit": page.limit,
+        "returned": page.returned,
+        "total": page.total,
+        "next_offset": page.next_offset,
+    }
+
+
+def _optional_datetime(
+    value: datetime | None,
+) -> str | None:
+    return None if value is None else value.isoformat()
+
+
 def _source_page(page: InboundSourcePage) -> InboundSourceViewPage:
     return InboundSourceViewPage(
         items=tuple(InboundSourceView.from_source(item) for item in page.items),

@@ -59,6 +59,13 @@ class ControlPlaneStepUpAction(StrEnum):
     REVOKE_WEBHOOK_SUBSCRIPTION = "revoke-webhook-subscription"
     ROTATE_WEBHOOK_SIGNING_KEY = "rotate-webhook-signing-key"
     REDRIVE_WEBHOOK_DELIVERY = "redrive-webhook-delivery"
+    CREATE_INBOUND_SOURCE = "create-inbound-source"
+    UPDATE_INBOUND_SOURCE = "update-inbound-source"
+    UPDATE_INBOUND_AUTHENTICATION = "update-inbound-authentication"
+    ENABLE_INBOUND_SOURCE = "enable-inbound-source"
+    REVOKE_INBOUND_SOURCE = "revoke-inbound-source"
+    ROTATE_INBOUND_HMAC_KEY = "rotate-inbound-hmac-key"
+    REDRIVE_INBOUND_EVENT = "redrive-inbound-event"
 
 
 @dataclass(frozen=True, slots=True)

@@ -258,6 +258,11 @@ from phoenix_os.control_plane.idempotency import (
     ControlPlaneCommandClock,
     InMemoryControlPlaneIdempotencyStore,
 )
+from phoenix_os.control_plane.inbound_management_http import (
+    INBOUND_MANAGEMENT_BASE_PATH,
+    ControlPlaneInboundManagementCsrfVerifier,
+    ControlPlaneInboundManagementHttpAdapter,
+)
 from phoenix_os.control_plane.job_commands import (
     MAX_JOB_COMMAND_ARGUMENT_BYTES,
     MAX_JOB_COMMAND_ARGUMENT_DEPTH,
@@ -748,6 +753,7 @@ __all__ = [
     "DEFAULT_REMOTE_LOGIN_OPERATOR_ATTEMPTS",
     "DEFAULT_REMOTE_LOGIN_OPERATOR_CAPACITY",
     "DEFAULT_REMOTE_LOGIN_WINDOW",
+    "INBOUND_MANAGEMENT_BASE_PATH",
     "MAX_COMMAND_JOURNAL_CAPACITY",
     "MAX_COMMAND_JOURNAL_PAGE_SIZE",
     "MAX_CONTROL_PLANE_API_TOKENS_PER_ACCOUNT",
@@ -985,6 +991,8 @@ __all__ = [
     "ControlPlaneIdempotencyStore",
     "ControlPlaneIdempotencyStoreClosedError",
     "ControlPlaneInboundHttpAdapter",
+    "ControlPlaneInboundManagementCsrfVerifier",
+    "ControlPlaneInboundManagementHttpAdapter",
     "ControlPlaneJobCommandHandler",
     "ControlPlaneJobCommandResult",
     "ControlPlaneJobScheduler",
