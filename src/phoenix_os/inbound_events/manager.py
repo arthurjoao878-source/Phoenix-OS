@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from phoenix_os.audit import (
@@ -75,6 +76,16 @@ INBOUND_HEALTH_READ_PERMISSION = "inbound_event.health.read"
 
 type InboundManagerClock = Callable[[], datetime]
 type InboundSourceIdFactory = Callable[[], UUID]
+
+
+class InboundManagerRouteRegistry(Protocol):
+    """Synchronize exact active-source ingress routes."""
+
+    async def source_changed(
+        self,
+        previous: InboundEventSource | None,
+        current: InboundEventSource,
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,6 +442,7 @@ class InboundManager:
         recovery: InboundPublicationRecovery,
         schemas: InboundSchemaRegistry,
         config: InboundManagerConfig | None = None,
+        route_registry: InboundManagerRouteRegistry | None = None,
         audit: AuditLedger | None = None,
         observability: ObservabilityHub | None = None,
         clock: InboundManagerClock | None = None,
@@ -455,6 +467,10 @@ class InboundManager:
         resolved_config = InboundManagerConfig() if config is None else config
         if not isinstance(resolved_config, InboundManagerConfig):
             raise TypeError("inbound manager config is invalid")
+        if route_registry is not None and not callable(
+            getattr(route_registry, "source_changed", None)
+        ):
+            raise TypeError("inbound manager route registry is invalid")
         if audit is not None and not isinstance(audit, AuditLedger):
             raise TypeError("inbound manager audit must be AuditLedger")
         if observability is not None and not isinstance(
@@ -474,6 +490,7 @@ class InboundManager:
         self._recovery = recovery
         self._schemas = schemas
         self._config = resolved_config
+        self._route_registry = route_registry
         self._audit = audit
         self._observability = observability
         self._clock = resolved_clock
@@ -568,6 +585,7 @@ class InboundManager:
         )
         self._schemas.validate_source(source)
         await self._sources.add(source)
+        await self._source_changed(None, source)
         await self._increment(mutations=1)
         await self._signal_source("create", source, context)
         return InboundSourceView.from_source(source)
@@ -644,6 +662,7 @@ class InboundManager:
             updated,
             expected_revision=expected_revision,
         )
+        await self._source_changed(current, updated)
         await self._increment(mutations=1)
         await self._signal_source("update", updated, context)
         return InboundSourceView.from_source(updated)
@@ -679,6 +698,7 @@ class InboundManager:
             updated,
             expected_revision=expected_revision,
         )
+        await self._source_changed(current, updated)
         await self._increment(mutations=1)
         await self._signal_source(
             "update_authentication",
@@ -747,6 +767,7 @@ class InboundManager:
             updated,
             expected_revision=expected_revision,
         )
+        await self._source_changed(current, updated)
         await self._increment(mutations=1)
         await self._signal_source("rotate_hmac_key", updated, context)
         return InboundSourceView.from_source(updated)
@@ -780,6 +801,7 @@ class InboundManager:
             updated,
             expected_revision=expected_revision,
         )
+        await self._source_changed(current, updated)
         await self._increment(mutations=1)
         await self._signal_source("disable", updated, context)
         return InboundSourceView.from_source(updated)
@@ -813,6 +835,7 @@ class InboundManager:
             updated,
             expected_revision=expected_revision,
         )
+        await self._source_changed(current, updated)
         await self._increment(mutations=1)
         await self._signal_source("enable", updated, context)
         return InboundSourceView.from_source(updated)
@@ -845,6 +868,7 @@ class InboundManager:
             updated,
             expected_revision=expected_revision,
         )
+        await self._source_changed(current, updated)
         await self._increment(mutations=1)
         await self._signal_source("revoke", updated, context)
         return InboundSourceView.from_source(updated)
@@ -989,6 +1013,15 @@ class InboundManager:
         except InboundSourceConflictError:
             await self._increment(conflicts=1)
             raise
+
+    async def _source_changed(
+        self,
+        previous: InboundEventSource | None,
+        current: InboundEventSource,
+    ) -> None:
+        registry = self._route_registry
+        if registry is not None:
+            await registry.source_changed(previous, current)
 
     async def _require(
         self,
