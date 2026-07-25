@@ -370,7 +370,7 @@ administration, and state-preserving rollback.
 
 - [x] Maintainer-only source and event administration
 - [x] Dashboard source, receipt, history, and dead-letter administration
-- [ ] Optional scoped service-account administration
+- [x] Optional scoped service-account administration
 - [ ] RuntimeAssembler integration and lifecycle ownership
 - [ ] Migration guidance
 - [ ] Architecture Decision Records
@@ -383,6 +383,17 @@ summaries, and eligible dead-letter redrive. Every panel and action is gated by
 its exact permission, mutations reuse durable-session CSRF protection, reviewed
 sensitive actions require step-up authentication, and optional subsystem
 failures degrade independently from the rest of the Dashboard.
+
+Machine administration remains disabled by default and is exposed only
+when the Runtime explicitly composes the fixed machine route set with an
+`InboundManager` configured for machine administration. The route gateway
+requires the exact RFC-0023 action scope and `inbound-machine` resource, then
+the handler independently requires the concrete `inbound-source:<uuid>`,
+`inbound-event:<uuid>`, or `inbound-receipt:<uuid>` resource before invoking
+the manager. Aggregate inventory, creation, and health routes are intentionally
+absent for service accounts; every request still passes token authentication,
+timestamp and nonce replay protection, the central policy boundary, protected
+audit, and credential-free request handling.
 
 ## Acceptance
 

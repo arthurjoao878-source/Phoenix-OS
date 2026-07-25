@@ -258,6 +258,12 @@ from phoenix_os.control_plane.idempotency import (
     ControlPlaneCommandClock,
     InMemoryControlPlaneIdempotencyStore,
 )
+from phoenix_os.control_plane.inbound_machine_http import (
+    CONTROL_PLANE_INBOUND_MACHINE_BASE_PATH,
+    CONTROL_PLANE_INBOUND_MACHINE_RESOURCE,
+    ControlPlaneInboundMachineAdministration,
+    control_plane_inbound_machine_routes,
+)
 from phoenix_os.control_plane.inbound_management_http import (
     INBOUND_MANAGEMENT_BASE_PATH,
     ControlPlaneInboundManagementCsrfVerifier,
@@ -695,6 +701,8 @@ __all__ = [
     "CONTROL_PLANE_API_TOKENS_ISSUE_PERMISSION",
     "CONTROL_PLANE_API_TOKENS_REVOKE_PERMISSION",
     "CONTROL_PLANE_API_TOKENS_ROTATE_PERMISSION",
+    "CONTROL_PLANE_INBOUND_MACHINE_BASE_PATH",
+    "CONTROL_PLANE_INBOUND_MACHINE_RESOURCE",
     "CONTROL_PLANE_OPERATORS_CREATE_PERMISSION",
     "CONTROL_PLANE_OPERATORS_DISABLE_PERMISSION",
     "CONTROL_PLANE_OPERATORS_READ_PERMISSION",
@@ -991,6 +999,7 @@ __all__ = [
     "ControlPlaneIdempotencyStore",
     "ControlPlaneIdempotencyStoreClosedError",
     "ControlPlaneInboundHttpAdapter",
+    "ControlPlaneInboundMachineAdministration",
     "ControlPlaneInboundManagementCsrfVerifier",
     "ControlPlaneInboundManagementHttpAdapter",
     "ControlPlaneJobCommandHandler",
@@ -1238,6 +1247,7 @@ __all__ = [
     "confirmation_challenge_to_dict",
     "control_plane_api_token_record_digest",
     "control_plane_durable_session_record_digest",
+    "control_plane_inbound_machine_routes",
     "control_plane_operator_record_digest",
     "control_plane_service_account_api_context",
     "control_plane_service_account_api_scope",

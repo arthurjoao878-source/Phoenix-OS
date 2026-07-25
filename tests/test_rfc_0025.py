@@ -102,8 +102,8 @@ def test_rfc_0025_slice_1_is_implemented() -> None:
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
     slice_1 = plan.split("### Slice 2", maxsplit=1)[0]
 
-    assert plan.count("- [x]") == 30
-    assert plan.count("- [ ]") == 6
+    assert plan.count("- [x]") == 31
+    assert plan.count("- [ ]") == 5
     assert slice_1.count("- [x]") == 6
     assert slice_1.count("- [ ]") == 0
     assert (
@@ -171,8 +171,8 @@ def test_rfc_0025_slice_5_administration_foundation_is_implemented() -> None:
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
     slice_5 = plan.split("### Slice 5", maxsplit=1)[1]
 
-    assert slice_5.count("- [x]") == 2
-    assert slice_5.count("- [ ]") == 6
+    assert slice_5.count("- [x]") == 3
+    assert slice_5.count("- [ ]") == 5
     assert "- [x] Maintainer-only source and event administration" in slice_5
     assert "- [x] Dashboard source, receipt, history, and dead-letter administration" in slice_5
-    assert "- [ ] Optional scoped service-account administration" in slice_5
+    assert "- [x] Optional scoped service-account administration" in slice_5
