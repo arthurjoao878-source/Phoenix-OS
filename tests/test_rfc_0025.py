@@ -102,8 +102,8 @@ def test_rfc_0025_slice_1_is_implemented() -> None:
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
     slice_1 = plan.split("### Slice 2", maxsplit=1)[0]
 
-    assert plan.count("- [x]") == 21
-    assert plan.count("- [ ]") == 15
+    assert plan.count("- [x]") == 28
+    assert plan.count("- [ ]") == 8
     assert slice_1.count("- [x]") == 6
     assert slice_1.count("- [ ]") == 0
     assert (
@@ -148,3 +148,19 @@ def test_rfc_0025_slice_3_transport_and_schema_foundation_is_implemented() -> No
     assert "- [x] Per-source and global admission limits" in slice_3
     assert "- [x] Safe receipts and HTTP error mapping" in slice_3
     assert "- [x] TLS, proxy, CIDR, smuggling, and malformed-input tests" in slice_3
+
+
+def test_rfc_0025_slice_4_publisher_foundation_is_implemented() -> None:
+    rfc = _RFC.read_text(encoding="utf-8")
+    plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
+    slice_4 = plan.split("### Slice 4", maxsplit=1)[1].split("### Slice 5", maxsplit=1)[0]
+
+    assert slice_4.count("- [x]") == 7
+    assert slice_4.count("- [ ]") == 0
+    assert "- [x] Runtime-owned asynchronous Event Bus publisher" in slice_4
+    assert "- [x] Deterministic bounded retry and dead-letter handling" in slice_4
+    assert "- [x] Interrupted-publication recovery" in slice_4
+    assert "- [x] Explicit eligible redrive" in slice_4
+    assert "- [x] Safe audit facts, metrics, and health snapshots" in slice_4
+    assert "- [x] Retention and recovery workers" in slice_4
+    assert "- [x] At-least-once and stable-identity regression tests" in slice_4
