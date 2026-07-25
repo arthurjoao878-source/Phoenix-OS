@@ -102,8 +102,8 @@ def test_rfc_0025_slice_1_is_implemented() -> None:
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
     slice_1 = plan.split("### Slice 2", maxsplit=1)[0]
 
-    assert plan.count("- [x]") == 6
-    assert plan.count("- [ ]") == 30
+    assert plan.count("- [x]") == 13
+    assert plan.count("- [ ]") == 23
     assert slice_1.count("- [x]") == 6
     assert slice_1.count("- [ ]") == 0
     assert (
@@ -115,3 +115,19 @@ def test_rfc_0025_slice_1_is_implemented() -> None:
     assert "- [x] State Store-backed source, event, and replay repositories" in slice_1
     assert "- [x] Atomic replay reservation and accepted-event persistence" in slice_1
     assert "- [x] Repository equivalence and corruption tests" in slice_1
+
+
+def test_rfc_0025_slice_2_authentication_foundation_is_implemented() -> None:
+    rfc = _RFC.read_text(encoding="utf-8")
+    plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
+    slice_2 = plan.split("### Slice 2", maxsplit=1)[1].split("### Slice 3", maxsplit=1)[0]
+
+    assert slice_2.count("- [x]") == 7
+    assert slice_2.count("- [ ]") == 0
+    assert "- [x] Versioned HMAC-SHA-256 verification" in slice_2
+    assert "- [x] Exact Secrets Vault key-version resolution" in slice_2
+    assert "- [x] RFC-0023 service-account authentication mode" in slice_2
+    assert "- [x] Timestamp, nonce, and request-identifier validation" in slice_2
+    assert "- [x] Durable replay protection across restart" in slice_2
+    assert "- [x] Stable source-event idempotency and conflict rejection" in slice_2
+    assert "- [x] Generic authentication and enumeration-resistance tests" in slice_2

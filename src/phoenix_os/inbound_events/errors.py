@@ -5,6 +5,27 @@ class PhoenixInboundEventError(Exception):
     """Base class for inbound-event subsystem failures."""
 
 
+class InboundAuthenticationRejectedError(PhoenixInboundEventError):
+    """Generic authentication failure without source or credential details."""
+
+    def __init__(self) -> None:
+        super().__init__("inbound request authentication failed")
+
+
+class InboundReplayRejectedError(PhoenixInboundEventError):
+    """Generic public rejection for reused request or nonce evidence."""
+
+    def __init__(self) -> None:
+        super().__init__("inbound request replay rejected")
+
+
+class InboundIdempotencyConflictError(PhoenixInboundEventError):
+    """Generic conflict for source-event identity reused with new content."""
+
+    def __init__(self) -> None:
+        super().__init__("inbound source-event content conflicts")
+
+
 class InboundSourceAlreadyExistsError(PhoenixInboundEventError):
     """Raised when an inbound source id or name already exists."""
 

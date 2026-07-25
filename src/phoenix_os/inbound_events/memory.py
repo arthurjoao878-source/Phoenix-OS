@@ -32,6 +32,7 @@ from phoenix_os.inbound_events.contracts import (
     InboundSourceRepositorySnapshot,
     _normalize_name,
     _normalize_sha256,
+    _validate_idempotent_replay_reservations,
 )
 from phoenix_os.inbound_events.errors import (
     InboundEventAlreadyExistsError,
@@ -272,6 +273,36 @@ class InMemoryInboundEventRepository:
             self._backend.receipts[receipt.id] = receipt
             self._backend.source_event_index[source_key] = event.id
             for reservation in acceptance.replay_reservations:
+                self._backend.replays[reservation.key] = reservation
+
+    async def reserve_idempotent_replay(
+        self,
+        accepted_event_id: UUID,
+        reservations: tuple[InboundReplayReservation, InboundReplayReservation],
+    ) -> None:
+        async with self._backend.lock:
+            self._require_open()
+            event = self._backend.events.get(accepted_event_id)
+            if event is None:
+                raise InboundEventNotFoundError("inbound accepted event was not found")
+            validated = _validate_idempotent_replay_reservations(event, reservations)
+            duplicate = next(
+                (
+                    reservation
+                    for reservation in validated
+                    if reservation.key in self._backend.replays
+                ),
+                None,
+            )
+            if duplicate is not None:
+                raise InboundReplayAlreadyExistsError(
+                    f"inbound {duplicate.kind.value} evidence is already reserved"
+                )
+            if len(self._backend.replays) + len(validated) > self._backend.replay_capacity:
+                raise InboundReplayCapacityError(
+                    "inbound replay repository capacity has been exhausted"
+                )
+            for reservation in validated:
                 self._backend.replays[reservation.key] = reservation
 
     async def get(self, accepted_event_id: UUID) -> InboundAcceptedEvent | None:
