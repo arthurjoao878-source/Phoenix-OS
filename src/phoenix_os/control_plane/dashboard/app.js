@@ -12,6 +12,7 @@ const state = {
   operatorMode: false,
   selectedServiceAccount: null,
   webhookSubscriptions: new Map(),
+  inboundSources: new Map(),
 };
 
 const byId = (id) => document.getElementById(id);
@@ -1901,6 +1902,304 @@ async function refreshWebhooks() {
   }
 }
 
+
+function inboundSourceLabel(sourceId) {
+  const source = state.inboundSources.get(sourceId);
+  return source ? source.display_name : shortIdentity(sourceId);
+}
+
+function renderInboundHealth(snapshot) {
+  text("inbound-sources-total", snapshot.sources.sources);
+  text(
+    "inbound-summary",
+    `${snapshot.sources.active} active · `
+      + `${snapshot.events.pending + snapshot.events.publishing + snapshot.events.retrying} queued · `
+      + `${snapshot.events.dead_letter} dead-letter`,
+  );
+}
+
+function inboundAuthenticationLabel(authentication) {
+  if (authentication.mode === "hmac_sha256") {
+    const predecessor = authentication.predecessor_key_version
+      ? ` · predecessor v${authentication.predecessor_key_version}`
+      : "";
+    return `${authentication.scheme} · key v${authentication.key_version}${predecessor}`;
+  }
+  return `${authentication.mode} · ${authentication.required_action}`;
+}
+
+function renderInboundSources(page) {
+  state.inboundSources = new Map(page.items.map((item) => [item.id, item]));
+  const body = byId("inbound-sources-table");
+  body.replaceChildren(...page.items.map((item) => {
+    const row = document.createElement("tr");
+    const identity = document.createElement("td");
+    const strong = document.createElement("strong"); strong.textContent = item.display_name;
+    const name = document.createElement("p"); name.className = "muted"; name.textContent = item.name;
+    identity.append(strong, name);
+    const events = document.createElement("td"); events.textContent = item.event_types.join(", ") || "—";
+    const authentication = document.createElement("td"); authentication.textContent = inboundAuthenticationLabel(item.authentication);
+    const limits = document.createElement("td");
+    limits.textContent = `${item.max_body_bytes} bytes · ${item.max_concurrency} concurrent · ${item.requests_per_minute}/min`;
+    const status = document.createElement("td");
+    const badge = document.createElement("span"); badge.className = statusClass(item.status); badge.textContent = item.status; status.append(badge);
+    const revision = document.createElement("td"); revision.textContent = item.revision;
+    const actions = document.createElement("td"); actions.className = "row-actions";
+
+    if (item.status !== "revoked" && hasPermission("inbound_event.source.update")) {
+      actions.append(operationButton("Edit", () => updateInboundSource(item), true));
+    }
+    if (item.status === "active" && hasPermission("inbound_event.source.disable")) {
+      actions.append(operationButton("Disable", () => inboundSourceLifecycle(item, "disable"), true));
+    }
+    if (item.status === "disabled" && hasPermission("inbound_event.source.enable")) {
+      actions.append(operationButton("Enable", () => inboundSourceLifecycle(item, "enable"), true));
+    }
+    if (
+      item.status !== "revoked"
+      && item.authentication.mode === "hmac_sha256"
+      && hasPermission("inbound_event.source.rotate")
+    ) {
+      actions.append(operationButton("Rotate key", () => rotateInboundHmacKey(item), true));
+    }
+    if (item.status !== "revoked" && hasPermission("inbound_event.source.revoke")) {
+      actions.append(operationButton("Revoke", () => inboundSourceLifecycle(item, "revoke"), true));
+    }
+    if (!actions.children.length) actions.textContent = "—";
+    row.append(identity, events, authentication, limits, status, revision, actions);
+    return row;
+  }));
+  text("inbound-sources-page", `${page.page.returned} of ${page.page.total}`);
+}
+
+function renderInboundEvents(page) {
+  const body = byId("inbound-events-table");
+  body.replaceChildren(...page.items.map((item) => {
+    const row = document.createElement("tr");
+    const accepted = document.createElement("td"); accepted.textContent = formatTime(item.accepted_at);
+    const event = document.createElement("td");
+    const external = document.createElement("strong"); external.textContent = `${item.external_event_type} v${item.external_schema_version}`;
+    const internal = document.createElement("p"); internal.className = "muted"; internal.textContent = item.internal_event_type;
+    event.append(external, internal);
+    const source = document.createElement("td"); source.textContent = inboundSourceLabel(item.source_id);
+    const status = document.createElement("td");
+    const badge = document.createElement("span"); badge.className = statusClass(item.status); badge.textContent = item.status; status.append(badge);
+    const attempts = document.createElement("td"); attempts.textContent = item.attempts.length;
+    const receipt = document.createElement("td"); receipt.textContent = shortIdentity(item.receipt_id);
+    const actions = document.createElement("td"); actions.className = "row-actions";
+    if (hasPermission("inbound_event.receipt.read")) {
+      actions.append(operationButton("Receipt", () => loadInboundReceipt(item), true));
+    }
+    if (item.redrive_eligible && hasPermission("inbound_event.dead_letter.redrive")) {
+      actions.append(operationButton("Redrive", () => redriveInboundEvent(item), true));
+    }
+    if (!actions.children.length) actions.textContent = "—";
+    row.append(accepted, event, source, status, attempts, receipt, actions);
+    return row;
+  }));
+  text("inbound-events-page", `${page.page.returned} of ${page.page.total}`);
+}
+
+function inboundNumericValue(elementId, label, options = {}) {
+  const value = Number(byId(elementId).value);
+  const minimum = options.minimum ?? 0;
+  if (!Number.isFinite(value) || value < minimum || (options.integer && !Number.isSafeInteger(value))) {
+    throw new Error(`${label} is outside the supported range.`);
+  }
+  return value;
+}
+
+async function createInboundSource(event) {
+  event.preventDefault();
+  const name = byId("inbound-name").value.trim();
+  const displayName = byId("inbound-display-name").value.trim();
+  const eventTypes = multilineFieldValues("inbound-event-types");
+  const secretName = byId("inbound-secret-name").value.trim();
+  const secretNamespace = byId("inbound-secret-namespace").value.trim();
+  if (!name || !displayName || !eventTypes.length || !secretName || !secretNamespace) {
+    text("inbound-source-status", "Name, display name, event types, and HMAC secret identity are required.");
+    return;
+  }
+  try {
+    const initialDelay = inboundNumericValue("inbound-initial-delay", "Initial retry delay", { minimum: 0.001 });
+    const maxDelay = inboundNumericValue("inbound-max-delay", "Maximum retry delay", { minimum: initialDelay });
+    const created = await operatorCommand(
+      "/v1/control-plane/inbound/sources",
+      {
+        name,
+        display_name: displayName,
+        authentication: {
+          mode: "hmac_sha256",
+          secret_name: secretName,
+          secret_namespace: secretNamespace,
+          secret_version: inboundNumericValue("inbound-secret-version", "Secret version", { minimum: 1, integer: true }),
+        },
+        event_types: eventTypes,
+        max_body_bytes: inboundNumericValue("inbound-max-body-bytes", "Maximum body bytes", { minimum: 1, integer: true }),
+        max_concurrency: inboundNumericValue("inbound-max-concurrency", "Maximum concurrency", { minimum: 1, integer: true }),
+        requests_per_minute: inboundNumericValue("inbound-requests-per-minute", "Requests per minute", { minimum: 1, integer: true }),
+        retry: {
+          max_attempts: inboundNumericValue("inbound-max-attempts", "Maximum attempts", { minimum: 1, integer: true }),
+          initial_delay_seconds: initialDelay,
+          max_delay_seconds: maxDelay,
+        },
+      },
+      "create-inbound-source",
+    );
+    text("inbound-source-status", `${created.display_name}: created ${created.status}`);
+    byId("create-inbound-source-form").reset();
+    await refreshInbound();
+  } catch (error) {
+    text("inbound-source-status", `Inbound source creation failed: ${error.message}`);
+  }
+}
+
+async function updateInboundSource(item) {
+  const name = window.prompt("Inbound source name", item.name); if (name === null) return;
+  const displayName = window.prompt("Inbound source display name", item.display_name); if (displayName === null) return;
+  const events = window.prompt("Event types separated by commas", item.event_types.join(", ")); if (events === null) return;
+  const eventTypes = Array.from(new Set(events.split(",").map((value) => value.trim()).filter(Boolean)));
+  if (!name.trim() || !displayName.trim() || !eventTypes.length) {
+    text("inbound-source-status", "Name, display name, and event types must not be blank.");
+    return;
+  }
+  try {
+    const updated = await operatorCommand(
+      `/v1/control-plane/inbound/sources/${item.id}/update`,
+      { expected_revision: item.revision, name: name.trim(), display_name: displayName.trim(), event_types: eventTypes },
+      "update-inbound-source",
+    );
+    text("inbound-source-status", `${updated.display_name}: updated`);
+    await refreshInbound();
+  } catch (error) {
+    text("inbound-source-status", `Inbound source update failed: ${error.message}`);
+  }
+}
+
+async function inboundSourceLifecycle(item, action) {
+  if (action === "revoke" && !window.confirm(`Permanently revoke ${item.display_name}?`)) return;
+  const stepUpAction = { enable: "enable-inbound-source", revoke: "revoke-inbound-source" }[action] || "";
+  try {
+    const updated = await operatorCommand(
+      `/v1/control-plane/inbound/sources/${item.id}/${action}`,
+      { expected_revision: item.revision },
+      stepUpAction,
+    );
+    text("inbound-source-status", `${updated.display_name}: ${updated.status}`);
+    await refreshInbound();
+  } catch (error) {
+    text("inbound-source-status", `Inbound source action failed: ${error.message}`);
+  }
+}
+
+async function rotateInboundHmacKey(item) {
+  const secretName = window.prompt("New HMAC secret name. The current reference is intentionally hidden.", ""); if (secretName === null) return;
+  const secretNamespace = window.prompt("New HMAC secret namespace", "inbound"); if (secretNamespace === null) return;
+  const versionValue = window.prompt("New HMAC secret version", String((item.authentication.key_version || 0) + 1)); if (versionValue === null) return;
+  const secretVersion = Number(versionValue.trim());
+  if (!secretName.trim() || !secretNamespace.trim() || !Number.isSafeInteger(secretVersion) || secretVersion <= 0) {
+    text("inbound-source-status", "HMAC-key rotation fields are invalid.");
+    return;
+  }
+  if (!window.confirm(`Rotate the HMAC key for ${item.display_name}?`)) return;
+  try {
+    const updated = await operatorCommand(
+      `/v1/control-plane/inbound/sources/${item.id}/rotate-hmac-key`,
+      {
+        expected_revision: item.revision,
+        secret_name: secretName.trim(),
+        secret_namespace: secretNamespace.trim(),
+        secret_version: secretVersion,
+        predecessor_valid_until: new Date(Date.now() + (10 * 60 * 1000)).toISOString(),
+      },
+      "rotate-inbound-hmac-key",
+    );
+    text("inbound-source-status", `${updated.display_name}: HMAC key v${updated.authentication.key_version}`);
+    await refreshInbound();
+  } catch (error) {
+    text("inbound-source-status", `Inbound HMAC-key rotation failed: ${error.message}`);
+  }
+}
+
+async function loadInboundReceipt(item) {
+  try {
+    const receipt = await api(`/v1/control-plane/inbound/receipts/${item.receipt_id}`);
+    text(
+      "inbound-receipt-status",
+      `Receipt ${shortIdentity(receipt.receipt_id)} · source event ${receipt.source_event_id} · `
+        + `${receipt.external_event_type} v${receipt.external_schema_version} · accepted ${formatTime(receipt.accepted_at)}`,
+    );
+  } catch (error) {
+    text("inbound-receipt-status", `Inbound receipt unavailable: ${error.message}`);
+  }
+}
+
+async function redriveInboundEvent(item) {
+  if (!item.redrive_eligible || !hasPermission("inbound_event.dead_letter.redrive")) {
+    text("inbound-event-status", "This inbound event is not eligible for redrive.");
+    return;
+  }
+  if (!window.confirm(`Redrive inbound event ${shortIdentity(item.id)}?`)) return;
+  try {
+    const result = await operatorCommand(
+      `/v1/control-plane/inbound/events/${item.id}/redrive`,
+      {},
+      "redrive-inbound-event",
+    );
+    text("inbound-event-status", `Inbound event ${shortIdentity(result.accepted_event_id)}: ${result.status}`);
+    await refreshInbound();
+  } catch (error) {
+    text("inbound-event-status", `Inbound event redrive failed: ${error.message}`);
+  }
+}
+
+async function refreshInbound() {
+  const canReadHealth = state.operatorMode && hasPermission("inbound_event.health.read");
+  const canReadSources = state.operatorMode && hasPermission("inbound_event.source.read");
+  const canReadEvents = state.operatorMode && hasPermission("inbound_event.event.read");
+  byId("inbound-card").classList.toggle("hidden", !canReadHealth);
+  byId("inbound-sources-panel").classList.toggle("hidden", !canReadSources);
+  byId("inbound-events-panel").classList.toggle("hidden", !canReadEvents);
+  byId("create-inbound-source-form").classList.toggle("hidden", !hasPermission("inbound_event.source.create"));
+
+  if (!canReadSources) {
+    state.inboundSources = new Map();
+    byId("inbound-sources-table").replaceChildren();
+  }
+  if (!canReadEvents) byId("inbound-events-table").replaceChildren();
+
+  if (canReadHealth) {
+    try { renderInboundHealth(await api("/v1/control-plane/inbound/health")); }
+    catch (error) {
+      if (error.message === "unauthorized") throw error;
+      text("inbound-summary", `Inbound health unavailable: ${error.message}`);
+    }
+  }
+  if (canReadSources) {
+    try {
+      renderInboundSources(await api("/v1/control-plane/inbound/sources?limit=200"));
+      text(
+        "inbound-source-status",
+        hasPermission("inbound_event.source.create")
+          ? "Inbound source administration ready."
+          : "Inbound source inventory loaded read-only.",
+      );
+    } catch (error) {
+      if (error.message === "unauthorized") throw error;
+      text("inbound-source-status", `Inbound sources unavailable: ${error.message}`);
+    }
+  }
+  if (canReadEvents) {
+    try {
+      renderInboundEvents(await api("/v1/control-plane/inbound/events?limit=200"));
+      text("inbound-event-status", "Bounded payload-free inbound event history loaded.");
+    } catch (error) {
+      if (error.message === "unauthorized") throw error;
+      text("inbound-event-status", `Inbound events unavailable: ${error.message}`);
+    }
+  }
+}
+
 function renderOperations(payload) {
   state.operations = payload.actions || {};
   const any = Object.values(state.operations).some(Boolean);
@@ -1944,6 +2243,7 @@ async function refresh() {
 
     await refreshServiceAccounts();
     await refreshWebhooks();
+    await refreshInbound();
 
     setConnected(
       true,
@@ -2110,6 +2410,12 @@ async function disconnect(reason = "Disconnected") {
   byId("webhook-subscriptions-table").replaceChildren();
   byId("webhook-deliveries-table").replaceChildren();
   state.webhookSubscriptions = new Map();
+  byId("inbound-card").classList.add("hidden");
+  byId("inbound-sources-panel").classList.add("hidden");
+  byId("inbound-events-panel").classList.add("hidden");
+  byId("inbound-sources-table").replaceChildren();
+  byId("inbound-events-table").replaceChildren();
+  state.inboundSources = new Map();
 
   state.refreshTimer = null; state.cursor = 0; state.legacyToken = ""; state.csrf = ""; state.operations = {}; state.me = null; state.operatorMode = false;
   byId("token").value = ""; text("operator-identity", "Anonymous"); setConnected(false, reason);
@@ -2122,6 +2428,11 @@ byId("create-operator-form").addEventListener("submit", createOperator);
 byId("create-webhook-subscription-form").addEventListener(
   "submit",
   createWebhookSubscription,
+);
+
+byId("create-inbound-source-form").addEventListener(
+  "submit",
+  createInboundSource,
 );
 
 byId("create-service-account-form").addEventListener(

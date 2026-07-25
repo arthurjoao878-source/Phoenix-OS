@@ -369,13 +369,20 @@ administration, and state-preserving rollback.
 ### Slice 5 — Administration and v0.25.0
 
 - [x] Maintainer-only source and event administration
-- [ ] Dashboard source, receipt, history, and dead-letter administration
+- [x] Dashboard source, receipt, history, and dead-letter administration
 - [ ] Optional scoped service-account administration
 - [ ] RuntimeAssembler integration and lifecycle ownership
 - [ ] Migration guidance
 - [ ] Architecture Decision Records
 - [ ] Regression, authentication, replay, admission, and packaging gate
 - [ ] Release notes and version 0.25.0
+
+The dependency-free Dashboard now exposes inbound source lifecycle controls,
+safe receipt inspection, bounded payload-free accepted-event history, health
+summaries, and eligible dead-letter redrive. Every panel and action is gated by
+its exact permission, mutations reuse durable-session CSRF protection, reviewed
+sensitive actions require step-up authentication, and optional subsystem
+failures degrade independently from the rest of the Dashboard.
 
 ## Acceptance
 
