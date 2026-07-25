@@ -337,13 +337,13 @@ administration, and state-preserving rollback.
 
 ### Slice 2 — Authentication, replay, and idempotency
 
-- [ ] Versioned HMAC-SHA-256 verification
-- [ ] Exact Secrets Vault key-version resolution
-- [ ] RFC-0023 service-account authentication mode
-- [ ] Timestamp, nonce, and request-identifier validation
-- [ ] Durable replay protection across restart
-- [ ] Stable source-event idempotency and conflict rejection
-- [ ] Generic authentication and enumeration-resistance tests
+- [x] Versioned HMAC-SHA-256 verification
+- [x] Exact Secrets Vault key-version resolution
+- [x] RFC-0023 service-account authentication mode
+- [x] Timestamp, nonce, and request-identifier validation
+- [x] Durable replay protection across restart
+- [x] Stable source-event idempotency and conflict rejection
+- [x] Generic authentication and enumeration-resistance tests
 
 ### Slice 3 — HTTP ingress, limits, and normalization
 

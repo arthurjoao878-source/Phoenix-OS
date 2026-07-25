@@ -47,6 +47,7 @@ from phoenix_os.inbound_events.contracts import (
     InboundSourceRepositorySnapshot,
     _normalize_name,
     _normalize_sha256,
+    _validate_idempotent_replay_reservations,
 )
 from phoenix_os.inbound_events.errors import (
     InboundCorruptionError,
@@ -813,6 +814,72 @@ class StateInboundEventRepository:
             ) from exception
         except PhoenixStateError as exception:
             raise InboundPersistenceError("inbound atomic acceptance failed") from exception
+
+    async def reserve_idempotent_replay(
+        self,
+        accepted_event_id: UUID,
+        reservations: tuple[InboundReplayReservation, InboundReplayReservation],
+    ) -> None:
+        self._require_open()
+        try:
+            async with self._store.transaction(context=self._context) as transaction:
+                stored_event = await transaction.get(self._event_key(accepted_event_id))
+                if stored_event is None:
+                    raise InboundEventNotFoundError("inbound accepted event was not found")
+                event = _decode_event_record(cast(StateRecord[object], stored_event))
+                if event.id != accepted_event_id:
+                    raise InboundCorruptionError(
+                        "persisted inbound event identity does not match its state key"
+                    )
+                validated = _validate_idempotent_replay_reservations(
+                    event,
+                    reservations,
+                )
+                replay_records = await transaction.list(
+                    namespace=self._namespace,
+                    prefix=_REPLAY_PREFIX,
+                )
+                for stored_replay in replay_records:
+                    persisted = _decode_replay_record(stored_replay)
+                    if stored_replay.key.name != (
+                        _state_replay_key(self._namespace, persisted).name
+                    ):
+                        raise InboundCorruptionError(
+                            "persisted inbound replay identity does not match its state key"
+                        )
+                for reservation in validated:
+                    if await transaction.get(self._replay_key(reservation)) is not None:
+                        raise InboundReplayAlreadyExistsError(
+                            f"inbound {reservation.kind.value} evidence is already reserved"
+                        )
+                if len(replay_records) + len(validated) > self._replay_capacity:
+                    raise InboundReplayCapacityError(
+                        "inbound replay repository capacity has been exhausted"
+                    )
+                for reservation in validated:
+                    await transaction.put(
+                        self._replay_key(reservation),
+                        _envelope(
+                            encode_inbound_replay(reservation),
+                            label="replay",
+                        ),
+                        expected_version=ABSENT_VERSION,
+                    )
+        except (
+            InboundEventNotFoundError,
+            InboundReplayAlreadyExistsError,
+            InboundReplayCapacityError,
+            InboundCorruptionError,
+        ):
+            raise
+        except StateConflictError as exception:
+            raise InboundReplayAlreadyExistsError(
+                "inbound request or nonce evidence is already reserved"
+            ) from exception
+        except PhoenixStateError as exception:
+            raise InboundPersistenceError(
+                "inbound idempotent replay persistence failed"
+            ) from exception
 
     async def get(self, accepted_event_id: UUID) -> InboundAcceptedEvent | None:
         self._require_open()

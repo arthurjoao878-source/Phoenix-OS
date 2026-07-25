@@ -726,6 +726,35 @@ class InboundAcceptance:
         object.__setattr__(self, "replay_reservations", reservations)
 
 
+def _validate_idempotent_replay_reservations(
+    event: InboundAcceptedEvent,
+    reservations: tuple[InboundReplayReservation, InboundReplayReservation],
+) -> tuple[InboundReplayReservation, InboundReplayReservation]:
+    if not isinstance(event, InboundAcceptedEvent):
+        raise TypeError("idempotent replay requires an accepted event")
+    if not isinstance(reservations, tuple) or len(reservations) != 2:
+        raise TypeError("idempotent replay requires request and nonce reservations")
+    kinds: set[InboundReplayKind] = set()
+    for reservation in reservations:
+        if not isinstance(reservation, InboundReplayReservation):
+            raise TypeError("idempotent replay contains an invalid reservation")
+        if reservation.source_id != event.source_id:
+            raise ValueError("idempotent replay reservation references another source")
+        if reservation.accepted_event_id != event.id:
+            raise ValueError("idempotent replay reservation references another event")
+        if reservation.kind not in {
+            InboundReplayKind.REQUEST_ID,
+            InboundReplayKind.NONCE,
+        }:
+            raise ValueError("idempotent replay accepts only request and nonce evidence")
+        if reservation.kind in kinds:
+            raise ValueError("idempotent replay reservation kinds must be unique")
+        kinds.add(reservation.kind)
+    if kinds != {InboundReplayKind.REQUEST_ID, InboundReplayKind.NONCE}:
+        raise ValueError("idempotent replay requires request and nonce evidence")
+    return reservations
+
+
 @dataclass(frozen=True, slots=True)
 class InboundPageRequest:
     """Validated offset pagination for inbound repositories."""
@@ -931,6 +960,12 @@ class InboundEventRepository(Protocol):
     def closed(self) -> bool: ...
 
     def accept(self, acceptance: InboundAcceptance) -> Awaitable[None]: ...
+
+    def reserve_idempotent_replay(
+        self,
+        accepted_event_id: UUID,
+        reservations: tuple[InboundReplayReservation, InboundReplayReservation],
+    ) -> Awaitable[None]: ...
 
     def get(self, accepted_event_id: UUID) -> Awaitable[InboundAcceptedEvent | None]: ...
 
