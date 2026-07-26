@@ -66,6 +66,13 @@ Version `0.25.0` implements twenty-five accepted specifications:
   replay-resistant, schema-allowlisted, durably accepted external events, bounded publication,
   exact ingress routes, safe administration, and Runtime-owned lifecycle.
 
+## Draft specifications
+
+- **[RFC-0026 — Secure Model Providers and Inference Runtime](docs/rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md):**
+  proposed provider-neutral, policy-controlled, secret-safe, bounded model
+  inference with complete and streamed responses, cancellation, endpoint
+  security, redacted observability, and Runtime-owned lifecycle.
+
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
 queue broker, audit signature provider, remote audit archive, telemetry vendor, hosted control-plane service, implicit remote exposure, or

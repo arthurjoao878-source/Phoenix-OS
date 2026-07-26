@@ -24,7 +24,11 @@ def test_readme_announces_twenty_five_accepted_specifications() -> None:
     readme = _README.read_text(encoding="utf-8")
     assert "Version `0.25.0` implements twenty-five accepted specifications:" in readme
     assert "**RFC-0025 — Secure Inbound Event Gateway and External Event Sources:**" in readme
-    assert "## Draft specifications" not in readme
+    assert "## Draft specifications" in readme
+    assert (
+        "[RFC-0026 — Secure Model Providers and Inference Runtime]"
+        "(docs/rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md)" in readme
+    )
     assert "[Phoenix OS 0.25.0](docs/releases/v0.25.0.md)" in readme
     assert "[Phoenix OS 0.24.0](docs/releases/v0.24.0.md)" in readme
 
