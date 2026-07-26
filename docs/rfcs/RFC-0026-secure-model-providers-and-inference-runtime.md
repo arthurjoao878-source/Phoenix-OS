@@ -342,13 +342,13 @@ Phoenix state.
 
 ### Slice 4 — Configuration, Runtime, audit, and observability
 
-- [ ] Typed provider, model, endpoint, credential, and limit configuration
-- [ ] RuntimeAssembler optional composition and deterministic rollback
-- [ ] Safe Runtime service exposure and health snapshots
-- [ ] Content-free audit facts and redacted observability
-- [ ] Phoenix-owned content-free Event Bus lifecycle events
-- [ ] Bounded shutdown, cancellation, and adapter cleanup
-- [ ] Compatibility tests with inference omitted
+- [x] Typed provider, model, endpoint, credential, and limit configuration
+- [x] RuntimeAssembler optional composition and deterministic rollback
+- [x] Safe Runtime service exposure and health snapshots
+- [x] Content-free audit facts and redacted observability
+- [x] Phoenix-owned content-free Event Bus lifecycle events
+- [x] Bounded shutdown, cancellation, and adapter cleanup
+- [x] Compatibility tests with inference omitted
 
 ### Slice 5 — Administration and v0.26.0
 
@@ -402,6 +402,24 @@ No execution path performs a transparent retry after provider work begins. No
 hosted-provider transport, provider SDK, network request, RuntimeAssembler
 composition, persistence, agent loop, tool calling, or operating-system
 automation is introduced by this slice.
+
+The Slice 4 implementation adds immutable provider and subsystem
+configuration for registered models, endpoint policy, exact credential policy,
+execution limits, admission limits, and bounded shutdown. Optional
+`RuntimeAssembler` composition validates installed providers exactly, exposes
+`inference`, `inference.runtime`, `inference.registry`, and `inference.health`
+services, and preserves existing Runtime behavior when inference is omitted.
+
+The Runtime-owned inference service publishes only Phoenix-defined lifecycle and
+invocation event types with empty payloads and approved content-free metadata.
+Audit facts, logs, metrics, and health snapshots exclude prompt text, response
+text, credentials, endpoint details, raw provider failures, and streaming frames.
+Shutdown first drains active invocations, then cooperatively cancels remaining
+work within finite bounds before closing the provider registry.
+
+No hosted-provider SDK, HTTP client, DNS resolver, TLS connector, credential
+header, prompt persistence, response persistence, agent loop, tool calling, or
+operating-system automation is introduced by this slice.
 
 ## Acceptance
 

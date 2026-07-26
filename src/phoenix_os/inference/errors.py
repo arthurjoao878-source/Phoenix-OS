@@ -18,6 +18,7 @@ class InferenceErrorCode(StrEnum):
     AUTHORIZATION_REJECTED = "authorization_rejected"
     CREDENTIAL_UNAVAILABLE = "credential_unavailable"
     ENDPOINT_REJECTED = "endpoint_rejected"
+    SERVICE_UNAVAILABLE = "service_unavailable"
     SATURATED = "saturated"
     TIMEOUT = "timeout"
     LIMIT_EXCEEDED = "limit_exceeded"
@@ -103,6 +104,15 @@ class InferenceEndpointRejectedError(InferenceError):
             raise TypeError("category must be InferenceEndpointRejectionCode")
         self.category = category
         super().__init__("inference endpoint rejected")
+
+
+class InferenceServiceUnavailableError(InferenceError):
+    """Generic lifecycle rejection without composition details."""
+
+    code = InferenceErrorCode.SERVICE_UNAVAILABLE
+
+    def __init__(self) -> None:
+        super().__init__("inference service is unavailable")
 
 
 class InferenceSaturatedError(InferenceError):

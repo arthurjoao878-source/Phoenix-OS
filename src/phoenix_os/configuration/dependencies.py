@@ -63,6 +63,8 @@ if TYPE_CHECKING:
         InboundReplayRepository,
         InboundSourceRepository,
     )
+    from phoenix_os.inference.configuration import InferenceServiceConfiguration
+    from phoenix_os.inference.contracts import ModelProvider
     from phoenix_os.jobs import JobScheduler
     from phoenix_os.secrets import SecretsManager
     from phoenix_os.webhooks import (
@@ -80,6 +82,10 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "kernel",
         "events",
         "identity",
+        "inference",
+        "inference.health",
+        "inference.registry",
+        "inference.runtime",
         "jobs",
         "audit",
         "capabilities",
@@ -325,6 +331,9 @@ class RuntimeAssembler:
         workflows: WorkflowOrchestrator | None = None,
         workflow_poll_interval: float = 1.0,
         workflow_worker: str = "phoenix.workflows",
+        inference_enabled: bool = False,
+        inference_configuration: InferenceServiceConfiguration | None = None,
+        inference_providers: tuple[ModelProvider, ...] = (),
         webhooks_enabled: bool = False,
         webhook_service_account_administration_enabled: bool = False,
         webhook_subscription_repository: WebhookSubscriptionRepository | None = None,
@@ -420,6 +429,9 @@ class RuntimeAssembler:
         self._workflows = workflows
         self._workflow_poll_interval = workflow_poll_interval
         self._workflow_worker = workflow_worker
+        self._inference_enabled = inference_enabled
+        self._inference_configuration = inference_configuration
+        self._inference_providers = tuple(inference_providers)
         self._webhooks_enabled = webhooks_enabled
         self._webhook_service_account_administration_enabled = (
             webhook_service_account_administration_enabled
@@ -510,6 +522,20 @@ class RuntimeAssembler:
         )
         if workflows is not None and jobs is None:
             raise ValueError("workflow orchestration requires a Runtime-owned job scheduler")
+        if not isinstance(inference_enabled, bool):
+            raise TypeError("inference enabled flag must be bool")
+        inference_options_supplied = inference_configuration is not None or bool(
+            self._inference_providers
+        )
+        if inference_options_supplied and not inference_enabled:
+            raise ValueError("inference options require inference_enabled")
+        if inference_enabled:
+            if policy is None:
+                raise ValueError("enabled inference requires a PolicyEngine")
+            if inference_configuration is None:
+                raise ValueError("enabled inference requires configuration")
+            if not self._inference_providers:
+                raise ValueError("enabled inference requires at least one provider")
         if not isinstance(webhooks_enabled, bool):
             raise TypeError("webhooks enabled flag must be bool")
         if not isinstance(webhook_service_account_administration_enabled, bool):
@@ -812,6 +838,27 @@ class RuntimeAssembler:
             state_store = None if self._state.default_name is None else self._state.store()
         else:
             state_store = self._state
+
+        inference_stack = None
+        if self._inference_enabled:
+            from phoenix_os.inference import create_inference_runtime_stack
+
+            assert self._inference_configuration is not None
+            assert self._policy is not None
+            inference_stack = create_inference_runtime_stack(
+                configuration=self._inference_configuration,
+                providers=self._inference_providers,
+                policy=self._policy,
+                events=self._events,
+                secrets=self._secrets,
+                audit=self._audit,
+                observability=self._observability,
+            )
+            custom_services["inference"] = inference_stack.service
+            custom_services["inference.health"] = inference_stack.service
+            custom_services["inference.runtime"] = inference_stack.runtime
+            custom_services["inference.registry"] = inference_stack.registry
+            components.append(ComponentSpec("inference", inference_stack.service))
 
         inbound_runtime = None
         if self._inbound_events_enabled:

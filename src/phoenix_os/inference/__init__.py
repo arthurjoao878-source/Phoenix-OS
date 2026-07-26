@@ -25,6 +25,19 @@ from phoenix_os.inference.codec import (
     encode_inference_request,
     encode_inference_response,
 )
+from phoenix_os.inference.composition import (
+    InferenceRuntimeStack,
+    create_inference_runtime_stack,
+)
+from phoenix_os.inference.configuration import (
+    MAX_INFERENCE_CONFIG_METADATA_ITEMS,
+    MAX_INFERENCE_CONFIG_METADATA_TEXT,
+    MAX_INFERENCE_CONFIG_MODELS,
+    MAX_INFERENCE_CONFIG_PROVIDERS,
+    MAX_INFERENCE_DRAIN_TIMEOUT,
+    InferenceProviderConfiguration,
+    InferenceServiceConfiguration,
+)
 from phoenix_os.inference.contracts import (
     MAX_INFERENCE_CHUNK_CHARS,
     MAX_INFERENCE_CHUNKS,
@@ -86,6 +99,7 @@ from phoenix_os.inference.errors import (
     InferenceMalformedOutputError,
     InferenceRegistryClosedError,
     InferenceSaturatedError,
+    InferenceServiceUnavailableError,
     InferenceTimeoutError,
     ModelAlreadyRegisteredError,
     ModelCapabilityMismatchError,
@@ -110,6 +124,12 @@ from phoenix_os.inference.registry import (
     ModelProviderRegistry,
     ModelRegistration,
 )
+from phoenix_os.inference.service import (
+    InferenceInvocationOutcome,
+    InferenceService,
+    InferenceServiceSnapshot,
+    InferenceServiceState,
+)
 
 __all__ = [
     "INFERENCE_MODEL_ACTION",
@@ -118,9 +138,14 @@ __all__ = [
     "MAX_INFERENCE_CHUNK_CHARS",
     "MAX_INFERENCE_CHUNK_DOCUMENT_BYTES",
     "MAX_INFERENCE_CONCURRENCY",
+    "MAX_INFERENCE_CONFIG_METADATA_ITEMS",
+    "MAX_INFERENCE_CONFIG_METADATA_TEXT",
+    "MAX_INFERENCE_CONFIG_MODELS",
+    "MAX_INFERENCE_CONFIG_PROVIDERS",
     "MAX_INFERENCE_CORRELATION_ID_LENGTH",
     "MAX_INFERENCE_CREDENTIAL_LEASE_TTL",
     "MAX_INFERENCE_DEADLINE",
+    "MAX_INFERENCE_DRAIN_TIMEOUT",
     "MAX_INFERENCE_EXECUTION_CHUNK_BYTES",
     "MAX_INFERENCE_EXECUTION_INPUT_BYTES",
     "MAX_INFERENCE_EXECUTION_RESPONSE_BYTES",
@@ -155,6 +180,7 @@ __all__ = [
     "InferenceErrorCode",
     "InferenceExecutionLimits",
     "InferenceFinishReason",
+    "InferenceInvocationOutcome",
     "InferenceLimitExceededError",
     "InferenceLimits",
     "InferenceMalformedOutputError",
@@ -162,12 +188,19 @@ __all__ = [
     "InferenceMetadata",
     "InferenceParameter",
     "InferenceParameters",
+    "InferenceProviderConfiguration",
     "InferenceRegistryClosedError",
     "InferenceRequest",
     "InferenceResponse",
     "InferenceRole",
     "InferenceRuntime",
+    "InferenceRuntimeStack",
     "InferenceSaturatedError",
+    "InferenceService",
+    "InferenceServiceConfiguration",
+    "InferenceServiceSnapshot",
+    "InferenceServiceState",
+    "InferenceServiceUnavailableError",
     "InferenceTimeoutError",
     "InferenceUsage",
     "ModelAlreadyRegisteredError",
@@ -193,6 +226,7 @@ __all__ = [
     "canonical_inference_chunk_bytes",
     "canonical_inference_request_bytes",
     "canonical_inference_response_bytes",
+    "create_inference_runtime_stack",
     "decode_inference_chunk",
     "decode_inference_request",
     "decode_inference_response",
