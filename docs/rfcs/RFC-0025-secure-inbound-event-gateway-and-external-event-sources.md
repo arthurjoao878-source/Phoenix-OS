@@ -373,7 +373,7 @@ administration, and state-preserving rollback.
 - [x] Optional scoped service-account administration
 - [x] RuntimeAssembler integration and lifecycle ownership
 - [x] Migration guidance
-- [ ] Architecture Decision Records
+- [x] Architecture Decision Records
 - [ ] Regression, authentication, replay, admission, and packaging gate
 - [ ] Release notes and version 0.25.0
 
@@ -418,6 +418,20 @@ administration separation, health verification, and state-preserving rollback.
 It explicitly prohibits automatic webhook conversion, automatic service-account
 grants, plaintext credential persistence, and deletion of durable replay or
 accepted-event records merely to make a rejected request succeed.
+
+The accepted architecture records make the principal inbound decisions
+durable beyond this release:
+
+- [ADR-0006 — Reviewed inbound schemas and normalization](../adrs/ADR-0006-reviewed-inbound-schemas-and-normalization.md)
+- [ADR-0007 — Per-source authentication, replay, and idempotency](../adrs/ADR-0007-per-source-authentication-replay-and-idempotency.md)
+- [ADR-0008 — Shared Control Plane listener and exact inbound routes](../adrs/ADR-0008-shared-control-plane-listener-and-exact-inbound-routes.md)
+- [ADR-0009 — Durable acceptance and at-least-once publication](../adrs/ADR-0009-durable-acceptance-and-at-least-once-publication.md)
+- [ADR-0010 — Opt-in inbound Runtime and separated administration](../adrs/ADR-0010-opt-in-inbound-runtime-and-separated-administration.md)
+
+Together they preserve the code-reviewed normalization boundary, exact
+per-source credentials, durable replay and idempotency, shared listener and
+exact-route model, stable asynchronous publication identity, and independent
+source-submission, human-administration, and machine-administration authority.
 
 ## Acceptance
 

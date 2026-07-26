@@ -143,6 +143,10 @@ Accepted architectural decisions are indexed in
 [`docs/adrs/README.md`](docs/adrs/README.md). The RFC-0024 webhook records cover
 serializer allowlisting, canonical durable envelopes, versioned signing keys,
 fail-closed egress, bounded retry and redrive, and opt-in Runtime ownership.
+The RFC-0025 inbound records cover reviewed schemas and normalization,
+per-source authentication and durable replay, shared exact ingress routing,
+durable acceptance with at-least-once publication, and separated Runtime
+ownership and administration.
 
 ## Local dashboard example
 
