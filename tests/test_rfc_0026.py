@@ -101,26 +101,27 @@ def test_rfc_0026_keeps_version_0250_during_planning() -> None:
     assert "changes to `0.26.0` only in the final release slice" in rfc
 
 
-def test_rfc_0026_slice_1_is_implemented() -> None:
+def test_rfc_0026_slices_1_and_2_are_implemented() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
     slice_1 = plan.split("### Slice 2", maxsplit=1)[0]
+    slice_2 = plan.split("### Slice 2", maxsplit=1)[1].split("### Slice 3", maxsplit=1)[0]
 
     assert plan.count("### Slice ") == 5
-    assert plan.count("- [x]") == 7
-    assert plan.count("- [ ]") == 28
+    assert plan.count("- [x]") == 14
+    assert plan.count("- [ ]") == 21
     assert slice_1.count("- [x]") == 7
-    assert slice_1.count("- [ ]") == 0
+    assert slice_2.count("- [x]") == 7
     for phrase in (
-        "Immutable inference request, response, chunk, usage, and error contracts",
-        "Strict provider, model, role, finish-reason, and limit validation",
-        "Provider and model registry with duplicate rejection",
-        "Deterministic fake provider with complete and streaming modes",
-        "Bounded request and response codecs",
-        "Provider capability compatibility checks",
-        "Contract, registry, and fake-provider tests",
+        "Exact `model.infer` action and concrete provider-model resources",
+        "Central policy integration and default-deny behavior",
+        "Exact versioned `SecretRef` credential leasing",
+        "Hosted HTTPS endpoint validation and redirect denial",
+        "Explicit loopback-local HTTP policy",
+        "SSRF, proxy, DNS, TLS, and credential-leakage tests",
+        "Generic authorization and provider-enumeration failures",
     ):
-        assert f"- [x] {phrase}" in slice_1
+        assert f"- [x] {phrase}" in slice_2
 
 
 def test_rfc_0026_records_slice_1_implementation_boundary() -> None:
@@ -130,5 +131,17 @@ def test_rfc_0026_records_slice_1_implementation_boundary() -> None:
         "deterministic network-free provider",
         "No hosted-provider SDK",
         "model output remains untrusted",
+    ):
+        assert phrase in rfc
+
+
+def test_rfc_0026_records_slice_2_security_boundary() -> None:
+    rfc = _normalized(_RFC.read_text(encoding="utf-8"))
+    for phrase in (
+        "`model.infer` authorization",
+        "exact versioned `SecretRef` leases",
+        "pinned literal destination addresses",
+        "No provider HTTP request",
+        "redirects and ambient proxies remain disabled",
     ):
         assert phrase in rfc

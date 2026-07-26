@@ -1,5 +1,11 @@
 """Provider-neutral secure model inference contracts and deterministic adapters."""
 
+from phoenix_os.inference.authorization import (
+    INFERENCE_MODEL_ACTION,
+    InferenceAuthorizer,
+    PolicyEngineInferenceAuthorizer,
+    inference_model_resource,
+)
 from phoenix_os.inference.codec import (
     MAX_INFERENCE_CHUNK_DOCUMENT_BYTES,
     MAX_INFERENCE_REQUEST_DOCUMENT_BYTES,
@@ -46,8 +52,28 @@ from phoenix_os.inference.contracts import (
     normalize_model_id,
     normalize_provider_id,
 )
+from phoenix_os.inference.credentials import (
+    MAX_INFERENCE_CREDENTIAL_LEASE_TTL,
+    InferenceCredentialBroker,
+    InferenceCredentialLease,
+    ModelCredentialPolicy,
+)
+from phoenix_os.inference.endpoints import (
+    MAX_MODEL_ENDPOINT_NETWORKS,
+    MAX_MODEL_ENDPOINT_PORTS,
+    MAX_MODEL_ENDPOINT_URL_LENGTH,
+    MAX_MODEL_RESOLVED_ADDRESSES,
+    ModelEndpointMode,
+    ModelEndpointPolicy,
+    ResolvedModelEndpoint,
+    admit_model_endpoint,
+)
 from phoenix_os.inference.errors import (
+    InferenceAuthorizationRejectedError,
     InferenceCodecError,
+    InferenceCredentialUnavailableError,
+    InferenceEndpointRejectedError,
+    InferenceEndpointRejectionCode,
     InferenceError,
     InferenceErrorCode,
     InferenceRegistryClosedError,
@@ -66,10 +92,12 @@ from phoenix_os.inference.registry import (
 )
 
 __all__ = [
+    "INFERENCE_MODEL_ACTION",
     "MAX_INFERENCE_CHUNKS",
     "MAX_INFERENCE_CHUNK_CHARS",
     "MAX_INFERENCE_CHUNK_DOCUMENT_BYTES",
     "MAX_INFERENCE_CORRELATION_ID_LENGTH",
+    "MAX_INFERENCE_CREDENTIAL_LEASE_TTL",
     "MAX_INFERENCE_DEADLINE",
     "MAX_INFERENCE_IDENTIFIER_LENGTH",
     "MAX_INFERENCE_MESSAGE_CHARS",
@@ -79,9 +107,20 @@ __all__ = [
     "MAX_INFERENCE_RESPONSE_CHARS",
     "MAX_INFERENCE_RESPONSE_DOCUMENT_BYTES",
     "MAX_INFERENCE_TOTAL_INPUT_CHARS",
+    "MAX_MODEL_ENDPOINT_NETWORKS",
+    "MAX_MODEL_ENDPOINT_PORTS",
+    "MAX_MODEL_ENDPOINT_URL_LENGTH",
+    "MAX_MODEL_RESOLVED_ADDRESSES",
     "DeterministicModelProvider",
+    "InferenceAuthorizationRejectedError",
+    "InferenceAuthorizer",
     "InferenceChunk",
     "InferenceCodecError",
+    "InferenceCredentialBroker",
+    "InferenceCredentialLease",
+    "InferenceCredentialUnavailableError",
+    "InferenceEndpointRejectedError",
+    "InferenceEndpointRejectionCode",
     "InferenceError",
     "InferenceErrorCode",
     "InferenceFinishReason",
@@ -98,7 +137,10 @@ __all__ = [
     "ModelAlreadyRegisteredError",
     "ModelCapabilities",
     "ModelCapabilityMismatchError",
+    "ModelCredentialPolicy",
     "ModelDescriptor",
+    "ModelEndpointMode",
+    "ModelEndpointPolicy",
     "ModelId",
     "ModelNotFoundError",
     "ModelProvider",
@@ -109,6 +151,9 @@ __all__ = [
     "ModelProviderRegistration",
     "ModelProviderRegistry",
     "ModelRegistration",
+    "PolicyEngineInferenceAuthorizer",
+    "ResolvedModelEndpoint",
+    "admit_model_endpoint",
     "canonical_inference_chunk_bytes",
     "canonical_inference_request_bytes",
     "canonical_inference_response_bytes",
@@ -119,6 +164,7 @@ __all__ = [
     "encode_inference_request",
     "encode_inference_response",
     "ensure_request_within_limits",
+    "inference_model_resource",
     "normalize_messages",
     "normalize_model_id",
     "normalize_provider_id",
