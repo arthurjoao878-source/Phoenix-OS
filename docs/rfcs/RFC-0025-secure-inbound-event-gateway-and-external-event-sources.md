@@ -372,7 +372,7 @@ administration, and state-preserving rollback.
 - [x] Dashboard source, receipt, history, and dead-letter administration
 - [x] Optional scoped service-account administration
 - [x] RuntimeAssembler integration and lifecycle ownership
-- [ ] Migration guidance
+- [x] Migration guidance
 - [ ] Architecture Decision Records
 - [ ] Regression, authentication, replay, admission, and packaging gate
 - [ ] Release notes and version 0.25.0
@@ -409,6 +409,15 @@ explicitly enabled, and adds concrete machine-administration routes only behind
 the separate opt-in flag and secure network policy. Shutdown stops the listener
 first, then recovery and publication workers, removes ingress routes, and closes
 the manager, recovery service, repositories, and admission state last.
+
+The v0.24.0-to-v0.25.0 migration guide now defines the additive
+disabled-by-default compatibility boundary, reviewed normalizer rollout,
+coordinated repository durability, exact HMAC and RFC-0023 producer contracts,
+disabled source staging, conservative canary enablement, human and machine
+administration separation, health verification, and state-preserving rollback.
+It explicitly prohibits automatic webhook conversion, automatic service-account
+grants, plaintext credential persistence, and deletion of durable replay or
+accepted-event records merely to make a rejected request succeed.
 
 ## Acceptance
 

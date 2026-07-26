@@ -129,6 +129,14 @@ security, persistence, receiver-verification, and rollback guide:
 Existing v0.23.0 behavior remains unchanged when webhook configuration is
 omitted.
 
+The opt-in v0.25.0 secure inbound event gateway has a staged compatibility,
+schema, authentication, persistence, rollout, and rollback guide:
+
+- [Migrate v0.24.0 deployments to v0.25.0 inbound events](docs/migrations/v0.24.0-to-v0.25.0-inbound-events.md)
+
+Existing v0.24.0 behavior remains unchanged when inbound configuration is
+omitted.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
