@@ -101,27 +101,29 @@ def test_rfc_0026_keeps_version_0250_during_planning() -> None:
     assert "changes to `0.26.0` only in the final release slice" in rfc
 
 
-def test_rfc_0026_slices_1_and_2_are_implemented() -> None:
+def test_rfc_0026_slices_1_through_3_are_implemented() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
     slice_1 = plan.split("### Slice 2", maxsplit=1)[0]
     slice_2 = plan.split("### Slice 2", maxsplit=1)[1].split("### Slice 3", maxsplit=1)[0]
+    slice_3 = plan.split("### Slice 3", maxsplit=1)[1].split("### Slice 4", maxsplit=1)[0]
 
     assert plan.count("### Slice ") == 5
-    assert plan.count("- [x]") == 14
-    assert plan.count("- [ ]") == 21
+    assert plan.count("- [x]") == 21
+    assert plan.count("- [ ]") == 14
     assert slice_1.count("- [x]") == 7
     assert slice_2.count("- [x]") == 7
+    assert slice_3.count("- [x]") == 7
     for phrase in (
-        "Exact `model.infer` action and concrete provider-model resources",
-        "Central policy integration and default-deny behavior",
-        "Exact versioned `SecretRef` credential leasing",
-        "Hosted HTTPS endpoint validation and redirect denial",
-        "Explicit loopback-local HTTP policy",
-        "SSRF, proxy, DNS, TLS, and credential-leakage tests",
-        "Generic authorization and provider-enumeration failures",
+        "Complete inference execution",
+        "Ordered bounded streaming with one terminal record",
+        "Cooperative cancellation and finite cleanup",
+        "Deadline, first-byte, duration, byte, token, and chunk limits",
+        "Global, provider, and model admission controls",
+        "No-transparent-retry execution semantics",
+        "Timeout, malformed-stream, saturation, and race tests",
     ):
-        assert f"- [x] {phrase}" in slice_2
+        assert f"- [x] {phrase}" in slice_3
 
 
 def test_rfc_0026_records_slice_1_implementation_boundary() -> None:
@@ -143,5 +145,17 @@ def test_rfc_0026_records_slice_2_security_boundary() -> None:
         "pinned literal destination addresses",
         "No provider HTTP request",
         "redirects and ambient proxies remain disabled",
+    ):
+        assert phrase in rfc
+
+
+def test_rfc_0026_records_slice_3_execution_boundary() -> None:
+    rfc = _normalized(_RFC.read_text(encoding="utf-8"))
+    for phrase in (
+        "`InferenceRuntime`",
+        "fail-fast global, provider, and model admission",
+        "exactly one validated terminal record",
+        "No execution path performs a transparent retry",
+        "No hosted-provider transport",
     ):
         assert phrase in rfc
