@@ -80,9 +80,12 @@ def test_ipv4_mapped_ipv6_is_evaluated_as_the_effective_ipv4_address() -> None:
         "http://localhost/v1",
         mode=ModelEndpointMode.LOOPBACK_HTTP,
     )
-    admitted = admit_model_endpoint(loopback, ("::ffff:127.0.0.1",))
+    admitted = admit_model_endpoint(
+        loopback,
+        ("::ffff:127.0.0.1", "127.0.0.1"),
+    )
 
-    assert admitted.addresses == ("::ffff:7f00:1",)
+    assert admitted.addresses == ("127.0.0.1",)
 
 
 def test_endpoint_admission_deduplicates_sorts_and_pins_literal_addresses() -> None:

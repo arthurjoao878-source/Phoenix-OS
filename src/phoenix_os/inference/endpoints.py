@@ -165,7 +165,7 @@ def admit_model_endpoint(
         if not isinstance(item, str):
             raise TypeError("resolved addresses must be strings")
         try:
-            addresses.add(ipaddress.ip_address(item))
+            addresses.add(_effective_address(ipaddress.ip_address(item)))
         except ValueError as exception:
             raise InferenceEndpointRejectedError(
                 InferenceEndpointRejectionCode.INVALID_ADDRESS
