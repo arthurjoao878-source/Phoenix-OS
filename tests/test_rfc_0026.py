@@ -101,19 +101,34 @@ def test_rfc_0026_keeps_version_0250_during_planning() -> None:
     assert "changes to `0.26.0` only in the final release slice" in rfc
 
 
-def test_rfc_0026_slices_1_through_3_are_implemented() -> None:
+def test_rfc_0026_slices_1_through_4_are_implemented() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
-    plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
+    plan = rfc.split("## Slice plan", maxsplit=1)[1].split(
+        "## Acceptance",
+        maxsplit=1,
+    )[0]
     slice_1 = plan.split("### Slice 2", maxsplit=1)[0]
-    slice_2 = plan.split("### Slice 2", maxsplit=1)[1].split("### Slice 3", maxsplit=1)[0]
-    slice_3 = plan.split("### Slice 3", maxsplit=1)[1].split("### Slice 4", maxsplit=1)[0]
+    slice_2 = plan.split("### Slice 2", maxsplit=1)[1].split(
+        "### Slice 3",
+        maxsplit=1,
+    )[0]
+    slice_3 = plan.split("### Slice 3", maxsplit=1)[1].split(
+        "### Slice 4",
+        maxsplit=1,
+    )[0]
+    slice_4 = plan.split("### Slice 4", maxsplit=1)[1].split(
+        "### Slice 5",
+        maxsplit=1,
+    )[0]
 
     assert plan.count("### Slice ") == 5
-    assert plan.count("- [x]") == 21
-    assert plan.count("- [ ]") == 14
+    assert plan.count("- [x]") == 28
+    assert plan.count("- [ ]") == 7
     assert slice_1.count("- [x]") == 7
     assert slice_2.count("- [x]") == 7
     assert slice_3.count("- [x]") == 7
+    assert slice_4.count("- [x]") == 7
+
     for phrase in (
         "Complete inference execution",
         "Ordered bounded streaming with one terminal record",
@@ -124,6 +139,17 @@ def test_rfc_0026_slices_1_through_3_are_implemented() -> None:
         "Timeout, malformed-stream, saturation, and race tests",
     ):
         assert f"- [x] {phrase}" in slice_3
+
+    for phrase in (
+        "Typed provider, model, endpoint, credential, and limit configuration",
+        "RuntimeAssembler optional composition and deterministic rollback",
+        "Safe Runtime service exposure and health snapshots",
+        "Content-free audit facts and redacted observability",
+        "Phoenix-owned content-free Event Bus lifecycle events",
+        "Bounded shutdown, cancellation, and adapter cleanup",
+        "Compatibility tests with inference omitted",
+    ):
+        assert f"- [x] {phrase}" in slice_4
 
 
 def test_rfc_0026_records_slice_1_implementation_boundary() -> None:
@@ -157,5 +183,18 @@ def test_rfc_0026_records_slice_3_execution_boundary() -> None:
         "exactly one validated terminal record",
         "No execution path performs a transparent retry",
         "No hosted-provider transport",
+    ):
+        assert phrase in rfc
+
+
+def test_rfc_0026_records_slice_4_runtime_boundary() -> None:
+    rfc = _normalized(_RFC.read_text(encoding="utf-8"))
+    for phrase in (
+        "`RuntimeAssembler` composition",
+        "`inference.runtime`",
+        "empty payloads",
+        "exclude prompt text, response text, credentials",
+        "Shutdown first drains active invocations",
+        "No hosted-provider SDK",
     ):
         assert phrase in rfc
