@@ -77,6 +77,11 @@
           <strong id="webhooks-subscriptions-total" class="metric">0</strong>
           <p id="webhooks-summary" class="muted">Subsystem unavailable</p>
         </article>
+        <article id="inbound-card" class="card hidden">
+          <p class="label">Inbound events</p>
+          <strong id="inbound-sources-total" class="metric">0</strong>
+          <p id="inbound-summary" class="muted">Subsystem unavailable</p>
+        </article>
       </section>
 
       <section class="panel-grid">
@@ -393,6 +398,47 @@
               <tbody id="webhook-deliveries-table"></tbody>
             </table>
           </div>
+        </article>
+
+
+        <article id="inbound-sources-panel" class="panel wide hidden">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Authenticated external producers</p><h2>Inbound event sources</h2></div>
+            <span id="inbound-sources-page" class="muted"></span>
+          </div>
+          <form id="create-inbound-source-form" class="inbound-form" autocomplete="off">
+            <label>Name<input id="inbound-name" required maxlength="128" spellcheck="false" placeholder="release.events"></label>
+            <label>Display name<input id="inbound-display-name" required maxlength="256" placeholder="Release Events"></label>
+            <label>Event types, one per line<textarea id="inbound-event-types" rows="3" required spellcheck="false" placeholder="release.completed"></textarea></label>
+            <label>HMAC secret name<input id="inbound-secret-name" required maxlength="128" spellcheck="false" placeholder="release-inbound"></label>
+            <label>Secret namespace<input id="inbound-secret-namespace" required maxlength="128" spellcheck="false" value="inbound"></label>
+            <label>Secret version<input id="inbound-secret-version" type="number" min="1" step="1" required value="1"></label>
+            <label>Maximum body bytes<input id="inbound-max-body-bytes" type="number" min="1" step="1" required value="262144"></label>
+            <label>Maximum concurrency<input id="inbound-max-concurrency" type="number" min="1" step="1" required value="8"></label>
+            <label>Requests per minute<input id="inbound-requests-per-minute" type="number" min="1" step="1" required value="120"></label>
+            <label>Maximum publication attempts<input id="inbound-max-attempts" type="number" min="1" max="20" step="1" required value="5"></label>
+            <label>Initial retry delay seconds<input id="inbound-initial-delay" type="number" min="0.001" step="0.001" required value="1"></label>
+            <label>Maximum retry delay seconds<input id="inbound-max-delay" type="number" min="0.001" step="0.001" required value="300"></label>
+            <button id="create-inbound-source-submit" type="submit">Create disabled source</button>
+          </form>
+          <p id="inbound-source-status" class="muted">Sources begin disabled. Secret references and credential material are never displayed.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Source</th><th>Events</th><th>Authentication</th><th>Limits</th><th>Status</th><th>Revision</th><th>Action</th></tr></thead>
+            <tbody id="inbound-sources-table"></tbody>
+          </table></div>
+        </article>
+
+        <article id="inbound-events-panel" class="panel wide hidden">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Payload-free durable history</p><h2>Inbound accepted events</h2></div>
+            <span id="inbound-events-page" class="muted"></span>
+          </div>
+          <p id="inbound-event-status" class="muted">Normalized payloads, protected digests, signatures, authorization headers, and internal exceptions are never displayed.</p>
+          <p id="inbound-receipt-status" class="credential-output muted">Select Receipt to inspect stable receipt metadata.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Accepted</th><th>Event</th><th>Source</th><th>Status</th><th>Attempts</th><th>Receipt</th><th>Action</th></tr></thead>
+            <tbody id="inbound-events-table"></tbody>
+          </table></div>
         </article>
 
         <article class="panel wide">

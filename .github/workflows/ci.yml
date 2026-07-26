@@ -26,3 +26,4 @@ jobs:
       - run: mypy
       - run: pytest
       - run: python scripts/check_webhook_release.py
+      - run: python scripts/check_inbound_release.py

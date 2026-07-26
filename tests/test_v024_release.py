@@ -12,19 +12,19 @@ _RFC = _ROOT / "docs" / "rfcs" / "RFC-0024-durable-signed-webhooks-and-event-sub
 _GATE = _ROOT / "scripts" / "check_webhook_release.py"
 
 
-def test_project_version_is_v0240() -> None:
+def test_project_version_has_not_regressed_below_v0240() -> None:
     document = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert document["project"]["version"] == "0.24.0"
+    parts = tuple(int(part) for part in document["project"]["version"].split("."))
+    assert parts >= (0, 24, 0)
 
 
-def test_readme_announces_twenty_four_accepted_specifications() -> None:
+def test_readme_preserves_v0240_release_history() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.24.0` implements twenty-four accepted specifications:" in readme
     assert "**RFC-0024 — Durable Signed Webhooks and Event Subscriptions:**" in readme
     assert "[Phoenix OS 0.24.0](docs/releases/v0.24.0.md)" in readme
 
 
-def test_changelog_starts_with_v0240_release() -> None:
+def test_changelog_preserves_v0240_release_order() -> None:
     changelog = _CHANGELOG.read_text(encoding="utf-8")
     current = "## [0.24.0] - 2026-07-24"
     previous = "## [0.23.0] - 2026-07-21"

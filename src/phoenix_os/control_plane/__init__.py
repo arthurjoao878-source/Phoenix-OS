@@ -258,6 +258,17 @@ from phoenix_os.control_plane.idempotency import (
     ControlPlaneCommandClock,
     InMemoryControlPlaneIdempotencyStore,
 )
+from phoenix_os.control_plane.inbound_machine_http import (
+    CONTROL_PLANE_INBOUND_MACHINE_BASE_PATH,
+    CONTROL_PLANE_INBOUND_MACHINE_RESOURCE,
+    ControlPlaneInboundMachineAdministration,
+    control_plane_inbound_machine_routes,
+)
+from phoenix_os.control_plane.inbound_management_http import (
+    INBOUND_MANAGEMENT_BASE_PATH,
+    ControlPlaneInboundManagementCsrfVerifier,
+    ControlPlaneInboundManagementHttpAdapter,
+)
 from phoenix_os.control_plane.job_commands import (
     MAX_JOB_COMMAND_ARGUMENT_BYTES,
     MAX_JOB_COMMAND_ARGUMENT_DEPTH,
@@ -690,6 +701,8 @@ __all__ = [
     "CONTROL_PLANE_API_TOKENS_ISSUE_PERMISSION",
     "CONTROL_PLANE_API_TOKENS_REVOKE_PERMISSION",
     "CONTROL_PLANE_API_TOKENS_ROTATE_PERMISSION",
+    "CONTROL_PLANE_INBOUND_MACHINE_BASE_PATH",
+    "CONTROL_PLANE_INBOUND_MACHINE_RESOURCE",
     "CONTROL_PLANE_OPERATORS_CREATE_PERMISSION",
     "CONTROL_PLANE_OPERATORS_DISABLE_PERMISSION",
     "CONTROL_PLANE_OPERATORS_READ_PERMISSION",
@@ -748,6 +761,7 @@ __all__ = [
     "DEFAULT_REMOTE_LOGIN_OPERATOR_ATTEMPTS",
     "DEFAULT_REMOTE_LOGIN_OPERATOR_CAPACITY",
     "DEFAULT_REMOTE_LOGIN_WINDOW",
+    "INBOUND_MANAGEMENT_BASE_PATH",
     "MAX_COMMAND_JOURNAL_CAPACITY",
     "MAX_COMMAND_JOURNAL_PAGE_SIZE",
     "MAX_CONTROL_PLANE_API_TOKENS_PER_ACCOUNT",
@@ -985,6 +999,9 @@ __all__ = [
     "ControlPlaneIdempotencyStore",
     "ControlPlaneIdempotencyStoreClosedError",
     "ControlPlaneInboundHttpAdapter",
+    "ControlPlaneInboundMachineAdministration",
+    "ControlPlaneInboundManagementCsrfVerifier",
+    "ControlPlaneInboundManagementHttpAdapter",
     "ControlPlaneJobCommandHandler",
     "ControlPlaneJobCommandResult",
     "ControlPlaneJobScheduler",
@@ -1230,6 +1247,7 @@ __all__ = [
     "confirmation_challenge_to_dict",
     "control_plane_api_token_record_digest",
     "control_plane_durable_session_record_digest",
+    "control_plane_inbound_machine_routes",
     "control_plane_operator_record_digest",
     "control_plane_service_account_api_context",
     "control_plane_service_account_api_scope",

@@ -55,6 +55,14 @@ if TYPE_CHECKING:
         ControlPlaneServiceAccountMachineRoute,
     )
     from phoenix_os.identity import AuthenticationManager
+    from phoenix_os.inbound_events import (
+        InboundAdmissionLimitPolicy,
+        InboundEventNormalizer,
+        InboundEventRepository,
+        InboundPublisherConfig,
+        InboundReplayRepository,
+        InboundSourceRepository,
+    )
     from phoenix_os.jobs import JobScheduler
     from phoenix_os.secrets import SecretsManager
     from phoenix_os.webhooks import (
@@ -99,6 +107,26 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "control_plane.remote-audit",
         "control_plane.webhook-http",
         "control_plane.webhooks",
+        "control_plane.inbound",
+        "control_plane.inbound-http",
+        "control_plane.inbound-management-http",
+        "inbound",
+        "inbound.admission",
+        "inbound.authentication",
+        "inbound.events",
+        "inbound.gateway",
+        "inbound.ingress",
+        "inbound.limiter",
+        "inbound.manager",
+        "inbound.owner",
+        "inbound.publisher",
+        "inbound.publisher-worker",
+        "inbound.recovery",
+        "inbound.recovery-worker",
+        "inbound.replay",
+        "inbound.schemas",
+        "inbound.service-account-security",
+        "inbound.sources",
         "observability",
         "plugins",
         "policy",
@@ -310,6 +338,21 @@ class RuntimeAssembler:
         webhook_subscription_capacity: int = 256,
         webhook_delivery_capacity: int = 4096,
         webhook_signing_context: SecurityContext | None = None,
+        inbound_events_enabled: bool = False,
+        inbound_service_account_administration_enabled: bool = False,
+        inbound_source_repository: InboundSourceRepository | None = None,
+        inbound_event_repository: InboundEventRepository | None = None,
+        inbound_replay_repository: InboundReplayRepository | None = None,
+        inbound_event_normalizers: tuple[InboundEventNormalizer, ...] = (),
+        inbound_publisher_config: InboundPublisherConfig | None = None,
+        inbound_admission_policy: InboundAdmissionLimitPolicy | None = None,
+        inbound_publisher_poll_interval: float = 1.0,
+        inbound_recovery_poll_interval: float = 60.0,
+        inbound_recovery_batch_size: int = 50,
+        inbound_source_capacity: int = 256,
+        inbound_event_capacity: int = 4096,
+        inbound_replay_capacity: int = 16_384,
+        inbound_hmac_context: SecurityContext | None = None,
         control_plane_authenticator: AdminTokenAuthenticator | None = None,
         control_plane_operator_registry: ControlPlaneOperatorRegistry | None = None,
         control_plane_operator_token: ControlPlaneOperatorToken | None = None,
@@ -394,6 +437,23 @@ class RuntimeAssembler:
         self._webhook_subscription_capacity = webhook_subscription_capacity
         self._webhook_delivery_capacity = webhook_delivery_capacity
         self._webhook_signing_context = webhook_signing_context
+        self._inbound_events_enabled = inbound_events_enabled
+        self._inbound_service_account_administration_enabled = (
+            inbound_service_account_administration_enabled
+        )
+        self._inbound_source_repository = inbound_source_repository
+        self._inbound_event_repository = inbound_event_repository
+        self._inbound_replay_repository = inbound_replay_repository
+        self._inbound_event_normalizers = tuple(inbound_event_normalizers)
+        self._inbound_publisher_config = inbound_publisher_config
+        self._inbound_admission_policy = inbound_admission_policy
+        self._inbound_publisher_poll_interval = inbound_publisher_poll_interval
+        self._inbound_recovery_poll_interval = inbound_recovery_poll_interval
+        self._inbound_recovery_batch_size = inbound_recovery_batch_size
+        self._inbound_source_capacity = inbound_source_capacity
+        self._inbound_event_capacity = inbound_event_capacity
+        self._inbound_replay_capacity = inbound_replay_capacity
+        self._inbound_hmac_context = inbound_hmac_context
         self._control_plane_authenticator = control_plane_authenticator
         self._control_plane_operator_registry = control_plane_operator_registry
         self._control_plane_operator_token = control_plane_operator_token
@@ -485,6 +545,58 @@ class RuntimeAssembler:
                 raise ValueError("webhook delivery capacity is outside supported bounds")
             if webhook_signing_context is not None and not webhook_signing_context.authenticated:
                 raise ValueError("webhook signing context must be authenticated")
+        if not isinstance(inbound_events_enabled, bool):
+            raise TypeError("inbound events enabled flag must be bool")
+        if not isinstance(
+            inbound_service_account_administration_enabled,
+            bool,
+        ):
+            raise TypeError("inbound service-account administration enabled flag must be bool")
+        inbound_options_supplied = any(
+            (
+                inbound_source_repository is not None,
+                inbound_event_repository is not None,
+                inbound_replay_repository is not None,
+                bool(self._inbound_event_normalizers),
+                inbound_publisher_config is not None,
+                inbound_admission_policy is not None,
+                inbound_hmac_context is not None,
+                inbound_service_account_administration_enabled,
+            )
+        )
+        if inbound_options_supplied and not inbound_events_enabled:
+            raise ValueError("inbound options require inbound_events_enabled")
+        repository_count = sum(
+            repository is not None
+            for repository in (
+                inbound_source_repository,
+                inbound_event_repository,
+                inbound_replay_repository,
+            )
+        )
+        if repository_count not in {0, 3}:
+            raise ValueError("custom inbound composition requires all three repositories")
+        if inbound_events_enabled:
+            if secrets is None:
+                raise ValueError("enabled inbound events require a SecretsManager")
+            if policy is None:
+                raise ValueError("enabled inbound events require a PolicyEngine")
+            if not self._inbound_event_normalizers:
+                raise ValueError("enabled inbound events require at least one normalizer")
+            if inbound_publisher_poll_interval <= 0:
+                raise ValueError("inbound publisher poll interval must be positive")
+            if inbound_recovery_poll_interval <= 0:
+                raise ValueError("inbound recovery poll interval must be positive")
+            if not 1 <= inbound_recovery_batch_size <= 200:
+                raise ValueError("inbound recovery batch size is outside supported bounds")
+            if not 1 <= inbound_source_capacity <= 10_000:
+                raise ValueError("inbound source capacity is outside supported bounds")
+            if not 1 <= inbound_event_capacity <= 100_000:
+                raise ValueError("inbound event capacity is outside supported bounds")
+            if not 1 <= inbound_replay_capacity <= 500_000:
+                raise ValueError("inbound replay capacity is outside supported bounds")
+            if inbound_hmac_context is not None and not inbound_hmac_context.authenticated:
+                raise ValueError("inbound HMAC context must be authenticated")
         operator_mode = (
             control_plane_operator_registry is not None or control_plane_operator_token is not None
         )
@@ -516,6 +628,12 @@ class RuntimeAssembler:
             raise ValueError("service accounts require durable operator mode")
         if webhook_service_account_administration_enabled and not service_accounts_enabled:
             raise ValueError("webhook machine administration requires service accounts")
+        if inbound_service_account_administration_enabled and not service_accounts_enabled:
+            raise ValueError("inbound machine administration requires service accounts")
+        if inbound_service_account_administration_enabled and control_plane_network_policy is None:
+            raise ValueError("inbound machine administration requires a secure network policy")
+        if inbound_service_account_administration_enabled and policy is None:
+            raise ValueError("inbound machine administration requires a PolicyEngine")
         if webhook_service_account_administration_enabled and control_plane_network_policy is None:
             raise ValueError("webhook machine administration requires a secure network policy")
         if webhook_service_account_administration_enabled and policy is None:
@@ -534,6 +652,8 @@ class RuntimeAssembler:
         if control_plane_authenticator is not None and operator_mode:
             raise ValueError("legacy and operator control-plane authentication are exclusive")
         control_plane_enabled = control_plane_authenticator is not None or operator_mode
+        if inbound_events_enabled and not control_plane_enabled:
+            raise ValueError("enabled inbound events require a control-plane listener")
         if not control_plane_enabled and any(
             item is not None
             for item in (
@@ -692,6 +812,93 @@ class RuntimeAssembler:
             state_store = None if self._state.default_name is None else self._state.store()
         else:
             state_store = self._state
+
+        inbound_runtime = None
+        if self._inbound_events_enabled:
+            from phoenix_os.inbound_events import (
+                InboundManagerConfig,
+                StateInboundEventRepository,
+                StateInboundReplayRepository,
+                StateInboundSourceRepository,
+                create_in_memory_inbound_repositories,
+                create_inbound_runtime,
+            )
+
+            inbound_sources = self._inbound_source_repository
+            inbound_events = self._inbound_event_repository
+            inbound_replay = self._inbound_replay_repository
+
+            if inbound_sources is None:
+                if state_store is None:
+                    repositories = create_in_memory_inbound_repositories(
+                        source_capacity=self._inbound_source_capacity,
+                        event_capacity=self._inbound_event_capacity,
+                        replay_capacity=self._inbound_replay_capacity,
+                    )
+                    inbound_sources = repositories.sources
+                    inbound_events = repositories.events
+                    inbound_replay = repositories.replay
+                else:
+                    inbound_sources = StateInboundSourceRepository(
+                        state_store,
+                        capacity=self._inbound_source_capacity,
+                    )
+                    inbound_events = StateInboundEventRepository(
+                        state_store,
+                        capacity=self._inbound_event_capacity,
+                        replay_capacity=self._inbound_replay_capacity,
+                    )
+                    inbound_replay = StateInboundReplayRepository(
+                        state_store,
+                        capacity=self._inbound_replay_capacity,
+                    )
+
+            assert inbound_events is not None
+            assert inbound_replay is not None
+            assert self._secrets is not None
+            assert self._policy is not None
+
+            inbound_runtime = create_inbound_runtime(
+                event_bus=self._events,
+                sources=inbound_sources,
+                events=inbound_events,
+                replay=inbound_replay,
+                secrets=self._secrets,
+                normalizers=self._inbound_event_normalizers,
+                policy_engine=self._policy,
+                hmac_context=self._inbound_hmac_context,
+                manager_config=InboundManagerConfig(
+                    machine_administration_enabled=(
+                        self._inbound_service_account_administration_enabled
+                    )
+                ),
+                publisher_config=self._inbound_publisher_config,
+                admission_policy=self._inbound_admission_policy,
+                publisher_poll_interval=(self._inbound_publisher_poll_interval),
+                recovery_poll_interval=(self._inbound_recovery_poll_interval),
+                recovery_batch_size=self._inbound_recovery_batch_size,
+                audit=self._audit,
+                observability=self._observability,
+            )
+            custom_services["inbound"] = inbound_runtime
+            custom_services["inbound.sources"] = inbound_runtime.sources
+            custom_services["inbound.events"] = inbound_runtime.events
+            custom_services["inbound.replay"] = inbound_runtime.replay
+            custom_services["inbound.schemas"] = inbound_runtime.schemas
+            custom_services["inbound.service-account-security"] = (
+                inbound_runtime.service_account_security
+            )
+            custom_services["inbound.authentication"] = inbound_runtime.authentication
+            custom_services["inbound.admission"] = inbound_runtime.admission
+            custom_services["inbound.limiter"] = inbound_runtime.limiter
+            custom_services["inbound.gateway"] = inbound_runtime.gateway
+            custom_services["inbound.ingress"] = inbound_runtime.ingress
+            custom_services["inbound.publisher"] = inbound_runtime.publisher
+            custom_services["inbound.publisher-worker"] = inbound_runtime.publisher_worker
+            custom_services["inbound.recovery"] = inbound_runtime.recovery
+            custom_services["inbound.recovery-worker"] = inbound_runtime.recovery_worker
+            custom_services["inbound.manager"] = inbound_runtime.manager
+            custom_services["inbound.owner"] = inbound_runtime.owner
 
         webhook_runtime = None
         if self._webhooks_enabled:
@@ -890,6 +1097,15 @@ class RuntimeAssembler:
                     )
 
             machine_routes = self._control_plane_service_account_machine_routes
+            if inbound_runtime is not None and self._inbound_service_account_administration_enabled:
+                from phoenix_os.control_plane.inbound_machine_http import (
+                    control_plane_inbound_machine_routes,
+                )
+
+                machine_routes = (
+                    *machine_routes,
+                    *control_plane_inbound_machine_routes(inbound_runtime.manager),
+                )
             if webhook_runtime is not None and self._webhook_service_account_administration_enabled:
                 from phoenix_os.control_plane.webhook_machine_http import (
                     control_plane_webhook_machine_routes,
@@ -926,6 +1142,12 @@ class RuntimeAssembler:
                 service_account_machine_routes=machine_routes,
                 service_account_audit_secret=(self._control_plane_service_account_audit_secret),
                 service_account_replay_secret=(self._control_plane_service_account_replay_secret),
+                inbound_manager=(
+                    None
+                    if inbound_runtime is None or not operator_mode
+                    else inbound_runtime.manager
+                ),
+                inbound_http=(None if inbound_runtime is None else inbound_runtime.ingress),
                 webhook_manager=(
                     None
                     if webhook_runtime is None or not operator_mode
@@ -956,6 +1178,16 @@ class RuntimeAssembler:
                     self._control_plane_command_retention_poll_interval
                 ),
             )
+            if inbound_runtime is not None and control_plane_stack.service_accounts is not None:
+                service_account_policy = control_plane_stack.service_accounts.policy
+                if service_account_policy is None:
+                    raise AssertionError("inbound service-account binding lost policy")
+                inbound_runtime.service_account_security.bind(
+                    authentication=(control_plane_stack.service_accounts.authentication),
+                    replay=control_plane_stack.service_accounts.replay,
+                    policy=service_account_policy,
+                )
+
             custom_services["control_plane"] = control_plane_stack.service
             custom_services["control_plane.command-journal"] = control_plane_stack.journal
             custom_services["control_plane.command-history"] = control_plane_stack.history
@@ -1009,6 +1241,15 @@ class RuntimeAssembler:
             if control_plane_stack.operator_step_up is not None:
                 custom_services["control_plane.operator-step-up"] = (
                     control_plane_stack.operator_step_up
+                )
+
+            if control_plane_stack.inbound is not None:
+                custom_services["control_plane.inbound"] = control_plane_stack.inbound
+            if control_plane_stack.inbound_http is not None:
+                custom_services["control_plane.inbound-http"] = control_plane_stack.inbound_http
+            if control_plane_stack.inbound_management_http is not None:
+                custom_services["control_plane.inbound-management-http"] = (
+                    control_plane_stack.inbound_management_http
                 )
 
             if control_plane_stack.webhooks is not None:
@@ -1100,6 +1341,21 @@ class RuntimeAssembler:
             )
             components.append(ComponentSpec("control_plane.events", control_plane_stack.events))
             components.append(ComponentSpec("control_plane.commands", control_plane_stack.commands))
+
+        if inbound_runtime is not None:
+            components.append(ComponentSpec("inbound", inbound_runtime.owner))
+            components.append(
+                ComponentSpec(
+                    "inbound.publisher",
+                    inbound_runtime.publisher_worker,
+                )
+            )
+            components.append(
+                ComponentSpec(
+                    "inbound.recovery",
+                    inbound_runtime.recovery_worker,
+                )
+            )
 
         if webhook_runtime is not None:
             components.append(ComponentSpec("webhooks", webhook_runtime.owner))

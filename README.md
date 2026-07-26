@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.24.0` implements twenty-four accepted specifications:
+Version `0.25.0` implements twenty-five accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -62,12 +62,9 @@ Version `0.24.0` implements twenty-four accepted specifications:
 - **RFC-0024 — Durable Signed Webhooks and Event Subscriptions:** reviewed event disclosure,
   canonical durable envelopes, versioned HMAC signing, fail-closed egress and SSRF controls,
   bounded retry and redrive, safe human and machine administration, and Runtime-owned lifecycle.
-
-## Draft specifications
-
-- **[RFC-0025 — Secure Inbound Event Gateway and External Event Sources](docs/rfcs/RFC-0025-secure-inbound-event-gateway-and-external-event-sources.md):**
-  proposed authenticated, replay-resistant, schema-allowlisted, durably accepted
-  external events with bounded publication into the Event Bus.
+- **RFC-0025 — Secure Inbound Event Gateway and External Event Sources:** authenticated,
+  replay-resistant, schema-allowlisted, durably accepted external events, bounded publication,
+  exact ingress routes, safe administration, and Runtime-owned lifecycle.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -112,12 +109,28 @@ and replay suites; builds and inspects wheel and sdist artifacts; rebuilds a
 wheel from the sdist; and installs both wheels in offline isolated environments
 before importing and exercising the packaged webhook surface.
 
+## Inbound event release gate
+
+RFC-0025 adds a named gate for the external ingress, authentication, replay,
+admission, persistence, publication, administration, and Runtime boundaries:
+
+```bash
+python scripts/check_inbound_release.py
+```
+
+The gate reruns the selected inbound regression and security suites; validates
+wheel and sdist metadata, paths, modules, Control Plane integrations, Dashboard
+assets, migration guidance, and ADRs; rebuilds a wheel from the sdist; and
+installs both wheels in isolated offline environments before exercising the
+packaged inbound and administration surfaces without source-tree imports.
+
 ## Release notes
 
+- [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize webhook behavior, security boundaries, compatibility,
-migration, architecture decisions, validation, and package artifacts.
+The release notes summarize inbound and webhook behavior, security boundaries,
+compatibility, migration, architecture decisions, validation, and package artifacts.
 
 ## Upgrade guidance
 
@@ -129,12 +142,24 @@ security, persistence, receiver-verification, and rollback guide:
 Existing v0.23.0 behavior remains unchanged when webhook configuration is
 omitted.
 
+The opt-in v0.25.0 secure inbound event gateway has a staged compatibility,
+schema, authentication, persistence, rollout, and rollback guide:
+
+- [Migrate v0.24.0 deployments to v0.25.0 inbound events](docs/migrations/v0.24.0-to-v0.25.0-inbound-events.md)
+
+Existing v0.24.0 behavior remains unchanged when inbound configuration is
+omitted.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
 [`docs/adrs/README.md`](docs/adrs/README.md). The RFC-0024 webhook records cover
 serializer allowlisting, canonical durable envelopes, versioned signing keys,
 fail-closed egress, bounded retry and redrive, and opt-in Runtime ownership.
+The RFC-0025 inbound records cover reviewed schemas and normalization,
+per-source authentication and durable replay, shared exact ingress routing,
+durable acceptance with at-least-once publication, and separated Runtime
+ownership and administration.
 
 ## Local dashboard example
 

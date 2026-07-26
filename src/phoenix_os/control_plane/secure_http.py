@@ -39,6 +39,9 @@ from phoenix_os.control_plane.http import (
     _Request,
     _single_header,
 )
+from phoenix_os.control_plane.inbound_management_http import (
+    ControlPlaneInboundManagementHttpAdapter,
+)
 from phoenix_os.control_plane.journal_history import (
     ControlPlaneCommandHistoryReader,
 )
@@ -123,6 +126,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
         service_account_http: ControlPlaneServiceAccountHttpAdapter | None = None,
         service_account_machine_http: ControlPlaneServiceAccountMachineHttpAdapter | None = None,
         webhook_http: ControlPlaneWebhookHttpAdapter | None = None,
+        inbound_management_http: (ControlPlaneInboundManagementHttpAdapter | None) = None,
         inbound_http: ControlPlaneInboundHttpAdapter | None = None,
         client_rate_limit: ControlPlaneClientRateLimitPolicy | None = None,
         tls_config: ControlPlaneTlsListenerConfig | None = None,
@@ -152,6 +156,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
             durable_operator_http=durable_operator_http,
             service_account_http=service_account_http,
             webhook_http=webhook_http,
+            inbound_management_http=inbound_management_http,
             inbound_http=inbound_http,
         )
         self._service_account_machine_http = service_account_machine_http

@@ -59,7 +59,14 @@ from phoenix_os.control_plane.event_stream import (
     ControlPlaneEventStream,
     ControlPlaneEventStreamConfig,
 )
-from phoenix_os.control_plane.http import ControlPlaneHttpConfig, ControlPlaneHttpServer
+from phoenix_os.control_plane.http import (
+    ControlPlaneHttpConfig,
+    ControlPlaneHttpServer,
+    ControlPlaneInboundHttpAdapter,
+)
+from phoenix_os.control_plane.inbound_management_http import (
+    ControlPlaneInboundManagementHttpAdapter,
+)
 from phoenix_os.control_plane.job_commands import (
     ControlPlaneJobCommandHandler,
     ControlPlaneJobScheduler,
@@ -129,6 +136,7 @@ from phoenix_os.control_plane.workflow_commands import (
     ControlPlaneWorkflowOrchestrator,
 )
 from phoenix_os.events import EventBus
+from phoenix_os.inbound_events import InboundManager
 from phoenix_os.jobs import JobSchedulerSnapshot
 from phoenix_os.policy import PolicyEngine
 from phoenix_os.runtime import PhoenixRuntime, RuntimeSnapshot
@@ -255,6 +263,9 @@ class ControlPlaneRuntimeStack:
     operator_step_up: ControlPlaneOperatorStepUpService | None
     service_accounts: ControlPlaneServiceAccountRuntimeBundle | None
     service_accounts_owner: ControlPlaneServiceAccountRuntimeOwner | None
+    inbound: InboundManager | None
+    inbound_http: ControlPlaneInboundHttpAdapter | None
+    inbound_management_http: ControlPlaneInboundManagementHttpAdapter | None
     webhooks: WebhookManager | None
     webhook_http: ControlPlaneWebhookHttpAdapter | None
     _runtime: _RuntimeSnapshotProxy
@@ -283,6 +294,8 @@ class ControlPlaneRuntimeStack:
         ] = (),
         service_account_audit_secret: bytes | bytearray | memoryview | None = None,
         service_account_replay_secret: bytes | bytearray | memoryview | None = None,
+        inbound_manager: InboundManager | None = None,
+        inbound_http: ControlPlaneInboundHttpAdapter | None = None,
         webhook_manager: WebhookManager | None = None,
         policy_engine: PolicyEngine | None = None,
         jobs: JobSnapshotSource | None = None,
@@ -352,6 +365,13 @@ class ControlPlaneRuntimeStack:
 
         if service_account_machine_routes and policy_engine is None:
             raise ValueError("machine routes require a PolicyEngine")
+        if inbound_manager is not None and operator_registry is None:
+            raise ValueError("inbound administration requires durable operator mode")
+        if inbound_http is not None and not all(
+            callable(getattr(inbound_http, name, None))
+            for name in ("handles", "body_limit", "dispatch")
+        ):
+            raise TypeError("inbound HTTP adapter is invalid")
         if webhook_manager is not None and operator_registry is None:
             raise ValueError("webhook administration requires durable operator mode")
 
@@ -387,6 +407,7 @@ class ControlPlaneRuntimeStack:
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None
         service_accounts: ControlPlaneServiceAccountRuntimeBundle | None = None
         service_accounts_owner: ControlPlaneServiceAccountRuntimeOwner | None = None
+        inbound_management_http: ControlPlaneInboundManagementHttpAdapter | None = None
         webhook_http: ControlPlaneWebhookHttpAdapter | None = None
         default_principal: str
         if operator_registry is not None:
@@ -489,6 +510,15 @@ class ControlPlaneRuntimeStack:
 
             service_accounts_owner = ControlPlaneServiceAccountRuntimeOwner(service_accounts)
 
+        if inbound_manager is not None:
+            if durable_boundary is None or operator_step_up is None:
+                raise AssertionError("inbound administration lost durable operator security")
+            inbound_management_http = ControlPlaneInboundManagementHttpAdapter(
+                manager=inbound_manager,
+                boundary=durable_boundary,
+                step_up=operator_step_up,
+            )
+
         if webhook_manager is not None:
             if durable_boundary is None or operator_step_up is None:
                 raise AssertionError("webhook administration lost durable operator security")
@@ -588,6 +618,8 @@ class ControlPlaneRuntimeStack:
                 durable_operator_http=durable_operator_http,
                 service_account_http=None if service_accounts is None else service_accounts.http,
                 webhook_http=webhook_http,
+                inbound_management_http=inbound_management_http,
+                inbound_http=inbound_http,
             )
         else:
             secure_http = ControlPlaneSecureHttpServer(
@@ -605,6 +637,8 @@ class ControlPlaneRuntimeStack:
                     None if service_accounts is None else service_accounts.machine_http
                 ),
                 webhook_http=webhook_http,
+                inbound_management_http=inbound_management_http,
+                inbound_http=inbound_http,
                 client_rate_limit=client_rate_limit,
                 tls_config=tls_listener_config,
                 remote_authentication=remote_authentication,
@@ -635,6 +669,9 @@ class ControlPlaneRuntimeStack:
             operator_step_up,
             service_accounts,
             service_accounts_owner,
+            inbound_manager,
+            inbound_http,
+            inbound_management_http,
             webhook_manager,
             webhook_http,
             runtime,

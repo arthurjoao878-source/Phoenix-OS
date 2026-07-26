@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.25.0] - 2026-07-25
+
+### Added
+- Accepted RFC-0025 and the five secure-inbound architecture records.
+- Reviewed schema allowlisting and deterministic external-event normalization.
+- Per-source versioned HMAC-SHA-256 or RFC-0023 service-account authentication.
+- Atomic durable replay, source-event idempotency, accepted events, and stable receipts.
+- Exact active-source ingress routes on the shared Control Plane listener.
+- Bounded asynchronous publication, recovery, dead letter, and explicit redrive.
+- Maintainer Dashboard, scoped machine administration, and Runtime lifecycle ownership.
+- Migration guidance, release notes, and an isolated offline packaging and security gate.
+
+### Security
+- Inbound events remain disabled by default with no implicit source, route, credential, repository, worker, grant, or network authority.
+- Raw request bodies never become unrestricted Event Bus payloads or the persisted trusted contract.
+- Authentication modes are mutually exclusive, replay evidence survives restart, and public failures remain generic.
+- Disabled and revoked sources have no active route; every request remains bounded by listener, source, and global admission controls.
+- Source submission, human administration, and machine administration require independent exact permissions.
+
+### Compatibility
+- Phoenix OS 0.24.0 behavior is preserved when inbound configuration is omitted.
+- Existing webhooks are not converted, service accounts gain no inbound grants, and no ingress or persistence state is created automatically.
+
+
 ## [0.24.0] - 2026-07-24
 
 ### Added

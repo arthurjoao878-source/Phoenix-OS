@@ -1,13 +1,13 @@
 # RFC-0025: Secure Inbound Event Gateway and External Event Sources
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.25.0
 - Owners: Phoenix OS maintainers
 - Depends on: RFC-0002, RFC-0007, RFC-0009, RFC-0011, RFC-0012, RFC-0022, RFC-0023, and RFC-0024
 
 ## Summary
 
-RFC-0025 proposes an optional secure inbound event gateway for external systems
+RFC-0025 defines an optional secure inbound event gateway for external systems
 that need to submit reviewed events into Phoenix OS.
 
 Inbound events are authenticated, replay-resistant, schema-allowlisted, bounded,
@@ -318,8 +318,8 @@ service accounts receive no inbound scopes or source resources automatically.
 No source, route, schema, key, credential, replay record, event, or network
 permission is created during upgrade.
 
-The package version remains `0.24.0` during implementation slices and changes to
-`0.25.0` only in the final release slice. Migration must support staged disabled
+The package version remained `0.24.0` during implementation slices and is
+`0.25.0` in the final release slice. Migration must support staged disabled
 configuration, reviewed schema registration, disabled source creation,
 authentication testing, conservative enablement, observation, optional machine
 administration, and state-preserving rollback.
@@ -368,19 +368,96 @@ administration, and state-preserving rollback.
 
 ### Slice 5 — Administration and v0.25.0
 
-- [ ] Maintainer-only source and event administration
-- [ ] Dashboard source, receipt, history, and dead-letter administration
-- [ ] Optional scoped service-account administration
-- [ ] RuntimeAssembler integration and lifecycle ownership
-- [ ] Migration guidance
-- [ ] Architecture Decision Records
-- [ ] Regression, authentication, replay, admission, and packaging gate
-- [ ] Release notes and version 0.25.0
+- [x] Maintainer-only source and event administration
+- [x] Dashboard source, receipt, history, and dead-letter administration
+- [x] Optional scoped service-account administration
+- [x] RuntimeAssembler integration and lifecycle ownership
+- [x] Migration guidance
+- [x] Architecture Decision Records
+- [x] Regression, authentication, replay, admission, and packaging gate
+- [x] Release notes and version 0.25.0
+
+The dependency-free Dashboard now exposes inbound source lifecycle controls,
+safe receipt inspection, bounded payload-free accepted-event history, health
+summaries, and eligible dead-letter redrive. Every panel and action is gated by
+its exact permission, mutations reuse durable-session CSRF protection, reviewed
+sensitive actions require step-up authentication, and optional subsystem
+failures degrade independently from the rest of the Dashboard.
+
+Machine administration remains disabled by default and is exposed only
+when the Runtime explicitly composes the fixed machine route set with an
+`InboundManager` configured for machine administration. The route gateway
+requires the exact RFC-0023 action scope and `inbound-machine` resource, then
+the handler independently requires the concrete `inbound-source:<uuid>`,
+`inbound-event:<uuid>`, or `inbound-receipt:<uuid>` resource before invoking
+the manager. Aggregate inventory, creation, and health routes are intentionally
+absent for service accounts; every request still passes token authentication,
+timestamp and nonce replay protection, the central policy boundary, protected
+audit, and credential-free request handling.
+
+RuntimeAssembler now owns the optional inbound subsystem as one coherent
+lifecycle boundary. It selects coordinated bounded in-memory repositories when
+no default State Store exists and State Store-backed source, event, and replay
+repositories otherwise. Reviewed normalizers register and durable interrupted
+publication recovery completes before publisher and recovery workers start;
+the existing Control Plane listener starts last and serves both exact ingress
+routes and durable-session administration without creating another socket.
+
+The Runtime exposes safe component services for diagnostics, binds RFC-0023
+authentication, replay, and central policy only when service accounts are
+explicitly enabled, and adds concrete machine-administration routes only behind
+the separate opt-in flag and secure network policy. Shutdown stops the listener
+first, then recovery and publication workers, removes ingress routes, and closes
+the manager, recovery service, repositories, and admission state last.
+
+The v0.24.0-to-v0.25.0 migration guide now defines the additive
+disabled-by-default compatibility boundary, reviewed normalizer rollout,
+coordinated repository durability, exact HMAC and RFC-0023 producer contracts,
+disabled source staging, conservative canary enablement, human and machine
+administration separation, health verification, and state-preserving rollback.
+It explicitly prohibits automatic webhook conversion, automatic service-account
+grants, plaintext credential persistence, and deletion of durable replay or
+accepted-event records merely to make a rejected request succeed.
+
+The accepted architecture records make the principal inbound decisions
+durable beyond this release:
+
+- [ADR-0006 — Reviewed inbound schemas and normalization](../adrs/ADR-0006-reviewed-inbound-schemas-and-normalization.md)
+- [ADR-0007 — Per-source authentication, replay, and idempotency](../adrs/ADR-0007-per-source-authentication-replay-and-idempotency.md)
+- [ADR-0008 — Shared Control Plane listener and exact inbound routes](../adrs/ADR-0008-shared-control-plane-listener-and-exact-inbound-routes.md)
+- [ADR-0009 — Durable acceptance and at-least-once publication](../adrs/ADR-0009-durable-acceptance-and-at-least-once-publication.md)
+- [ADR-0010 — Opt-in inbound Runtime and separated administration](../adrs/ADR-0010-opt-in-inbound-runtime-and-separated-administration.md)
+
+Together they preserve the code-reviewed normalization boundary, exact
+per-source credentials, durable replay and idempotency, shared listener and
+exact-route model, stable asynchronous publication identity, and independent
+source-submission, human-administration, and machine-administration authority.
+
+The mandatory inbound release gate is implemented by
+`scripts/check_inbound_release.py`. It reruns the load-bearing contracts, codec,
+repository, authentication, replay, idempotency, admission, HTTP, secure
+transport, publication, recovery, administration, service-account, and Runtime
+integration suites. It builds and validates wheel and sdist metadata and
+contents, rejects unsafe archive paths and secret-bearing file types, requires
+the inbound package, Control Plane integration modules, Dashboard assets,
+migration guide, and ADRs, and rebuilds a wheel from the validated sdist.
+
+Both the direct wheel and the wheel rebuilt from the sdist are installed with
+`--no-index` and `--no-deps` into isolated offline environments. Smoke tests remove
+`PYTHONPATH`, disable the user site, use isolated Python mode, reject
+source-tree imports, and exercise the packaged schema, source authentication,
+retry, admission, canonical JSON, ingress-route, human-administration, and
+machine-administration surfaces.
+
+Phoenix OS 0.25.0 release notes are published at
+[`docs/releases/v0.25.0.md`](../releases/v0.25.0.md), and the package,
+changelog, migration, ADR, and release-gate metadata identify the same accepted
+version and release date.
 
 ## Acceptance
 
-RFC-0025 will be accepted for Phoenix OS 0.25.0 only when every slice is
-complete, the full quality gate passes, wheel and sdist contents are validated,
-isolated installation succeeds, authentication and replay protections fail
-closed, no plaintext credential or unrestricted request body is persisted, and
-compatibility without configured inbound sources is demonstrated.
+RFC-0025 is accepted for Phoenix OS 0.25.0. Every slice is complete, the full
+quality gate passes, wheel and sdist contents are validated, isolated offline
+installation succeeds, authentication and replay protections fail closed, no
+plaintext credential or unrestricted request body is persisted, and compatibility
+without configured inbound sources is demonstrated.

@@ -141,6 +141,17 @@ class InboundSchemaRegistry:
             raise InboundPayloadValidationError
         return normalizer
 
+    def validate_source(self, source: InboundEventSource) -> None:
+        """Require every allowed source event type to have a reviewed registration."""
+
+        if not isinstance(source, InboundEventSource):
+            raise TypeError("inbound schema validation requires InboundEventSource")
+        registered = {event_type for event_type, _ in self._normalizers}
+        if not source.event_types.issubset(registered):
+            raise InboundSchemaRegistrationError(
+                "inbound source references an unregistered event type"
+            )
+
     async def parse_and_normalize(
         self,
         source: InboundEventSource,
