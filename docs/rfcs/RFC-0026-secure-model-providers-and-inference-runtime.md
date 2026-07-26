@@ -332,13 +332,13 @@ Phoenix state.
 
 ### Slice 3 — Execution, streaming, cancellation, and limits
 
-- [ ] Complete inference execution
-- [ ] Ordered bounded streaming with one terminal record
-- [ ] Cooperative cancellation and finite cleanup
-- [ ] Deadline, first-byte, duration, byte, token, and chunk limits
-- [ ] Global, provider, and model admission controls
-- [ ] No-transparent-retry execution semantics
-- [ ] Timeout, malformed-stream, saturation, and race tests
+- [x] Complete inference execution
+- [x] Ordered bounded streaming with one terminal record
+- [x] Cooperative cancellation and finite cleanup
+- [x] Deadline, first-byte, duration, byte, token, and chunk limits
+- [x] Global, provider, and model admission controls
+- [x] No-transparent-retry execution semantics
+- [x] Timeout, malformed-stream, saturation, and race tests
 
 ### Slice 4 — Configuration, Runtime, audit, and observability
 
@@ -385,6 +385,23 @@ disabled.
 
 No provider HTTP request, hosted-provider SDK, TLS connector, credential header,
 Runtime composition, or agent execution is introduced by this slice.
+
+The Slice 3 implementation adds the asynchronous `InferenceRuntime` for
+authorized complete and streaming execution. It performs request admission before
+provider execution, applies fail-fast global, provider, and model admission,
+enforces absolute deadlines, first-byte and total-duration timeouts, UTF-8 byte
+budgets, model character and chunk ceilings, and requested output-token limits.
+
+Provider streams are consumed as ordered immutable chunks and expose exactly one
+validated terminal record. Missing, duplicate, extra, out-of-order, mismatched,
+oversized, or over-budget output fails closed. Caller cancellation and early
+consumer closure cancel pending provider work and attempt adapter cleanup within
+a finite grace period.
+
+No execution path performs a transparent retry after provider work begins. No
+hosted-provider transport, provider SDK, network request, RuntimeAssembler
+composition, persistence, agent loop, tool calling, or operating-system
+automation is introduced by this slice.
 
 ## Acceptance
 

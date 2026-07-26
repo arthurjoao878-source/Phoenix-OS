@@ -18,6 +18,11 @@ class InferenceErrorCode(StrEnum):
     AUTHORIZATION_REJECTED = "authorization_rejected"
     CREDENTIAL_UNAVAILABLE = "credential_unavailable"
     ENDPOINT_REJECTED = "endpoint_rejected"
+    SATURATED = "saturated"
+    TIMEOUT = "timeout"
+    LIMIT_EXCEEDED = "limit_exceeded"
+    MALFORMED_OUTPUT = "malformed_output"
+    CANCELLED = "cancelled"
     PROVIDER_FAILED = "provider_failed"
 
 
@@ -98,6 +103,51 @@ class InferenceEndpointRejectedError(InferenceError):
             raise TypeError("category must be InferenceEndpointRejectionCode")
         self.category = category
         super().__init__("inference endpoint rejected")
+
+
+class InferenceSaturatedError(InferenceError):
+    """Fail-fast admission rejection without provider or model enumeration."""
+
+    code = InferenceErrorCode.SATURATED
+
+    def __init__(self) -> None:
+        super().__init__("inference capacity is unavailable")
+
+
+class InferenceTimeoutError(InferenceError):
+    """Generic deadline, first-byte, or total-duration timeout."""
+
+    code = InferenceErrorCode.TIMEOUT
+
+    def __init__(self) -> None:
+        super().__init__("inference execution timed out")
+
+
+class InferenceLimitExceededError(InferenceError):
+    """Generic request, response, byte, token, or chunk limit rejection."""
+
+    code = InferenceErrorCode.LIMIT_EXCEEDED
+
+    def __init__(self) -> None:
+        super().__init__("inference limit exceeded")
+
+
+class InferenceMalformedOutputError(InferenceError):
+    """Generic malformed provider response or stream failure."""
+
+    code = InferenceErrorCode.MALFORMED_OUTPUT
+
+    def __init__(self) -> None:
+        super().__init__("model provider output is invalid")
+
+
+class InferenceCancelledError(InferenceError):
+    """Provider-reported cancellation distinct from caller task cancellation."""
+
+    code = InferenceErrorCode.CANCELLED
+
+    def __init__(self) -> None:
+        super().__init__("inference execution was cancelled")
 
 
 class ModelProviderExecutionError(InferenceError):
