@@ -15,7 +15,20 @@ class InferenceErrorCode(StrEnum):
     MODEL_NOT_FOUND = "model_not_found"
     CAPABILITY_MISMATCH = "capability_mismatch"
     CODEC_INVALID = "codec_invalid"
+    AUTHORIZATION_REJECTED = "authorization_rejected"
+    CREDENTIAL_UNAVAILABLE = "credential_unavailable"
+    ENDPOINT_REJECTED = "endpoint_rejected"
     PROVIDER_FAILED = "provider_failed"
+
+
+class InferenceEndpointRejectionCode(StrEnum):
+    """Finite endpoint-admission reasons safe for local diagnostics."""
+
+    DNS_NO_ADDRESSES = "dns_no_addresses"
+    TOO_MANY_ADDRESSES = "too_many_addresses"
+    INVALID_ADDRESS = "invalid_address"
+    LOOPBACK_RESOLUTION_MISMATCH = "loopback_resolution_mismatch"
+    DESTINATION_NOT_ALLOWED = "destination_not_allowed"
 
 
 class InferenceError(Exception):
@@ -55,6 +68,36 @@ class InferenceCodecError(InferenceError):
 
     def __init__(self, message: str = "inference document is invalid") -> None:
         super().__init__(message)
+
+
+class InferenceAuthorizationRejectedError(InferenceError):
+    """Generic default-deny result without provider or model enumeration."""
+
+    code = InferenceErrorCode.AUTHORIZATION_REJECTED
+
+    def __init__(self) -> None:
+        super().__init__("inference request authorization failed")
+
+
+class InferenceCredentialUnavailableError(InferenceError):
+    """Generic credential failure without secret names, versions, or material."""
+
+    code = InferenceErrorCode.CREDENTIAL_UNAVAILABLE
+
+    def __init__(self) -> None:
+        super().__init__("inference credential is unavailable")
+
+
+class InferenceEndpointRejectedError(InferenceError):
+    """Generic endpoint rejection with one finite local diagnostic category."""
+
+    code = InferenceErrorCode.ENDPOINT_REJECTED
+
+    def __init__(self, category: InferenceEndpointRejectionCode) -> None:
+        if not isinstance(category, InferenceEndpointRejectionCode):
+            raise TypeError("category must be InferenceEndpointRejectionCode")
+        self.category = category
+        super().__init__("inference endpoint rejected")
 
 
 class ModelProviderExecutionError(InferenceError):

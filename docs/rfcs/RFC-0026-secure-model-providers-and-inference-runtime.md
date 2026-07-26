@@ -322,13 +322,13 @@ Phoenix state.
 
 ### Slice 2 — Authorization, secrets, and endpoint security
 
-- [ ] Exact `model.infer` action and concrete provider-model resources
-- [ ] Central policy integration and default-deny behavior
-- [ ] Exact versioned `SecretRef` credential leasing
-- [ ] Hosted HTTPS endpoint validation and redirect denial
-- [ ] Explicit loopback-local HTTP policy
-- [ ] SSRF, proxy, DNS, TLS, and credential-leakage tests
-- [ ] Generic authorization and provider-enumeration failures
+- [x] Exact `model.infer` action and concrete provider-model resources
+- [x] Central policy integration and default-deny behavior
+- [x] Exact versioned `SecretRef` credential leasing
+- [x] Hosted HTTPS endpoint validation and redirect denial
+- [x] Explicit loopback-local HTTP policy
+- [x] SSRF, proxy, DNS, TLS, and credential-leakage tests
+- [x] Generic authorization and provider-enumeration failures
 
 ### Slice 3 — Execution, streaming, cancellation, and limits
 
@@ -370,6 +370,21 @@ No hosted-provider SDK, credential, endpoint, network request, policy grant,
 Runtime service, agent loop, tool call, persistence, or operating-system
 automation is introduced by this slice. Provider responses are untrusted, and model output remains untrusted data
 without implicit Phoenix authority.
+
+The Slice 2 implementation adds exact `model.infer` authorization against
+concrete provider-model resources through the central deny-by-default Policy
+Engine. It adds exact versioned `SecretRef` leases that are revoked after adapter
+use and generic public failures that do not enumerate providers, models, secrets,
+or credential versions.
+
+Hosted endpoints require canonical HTTPS and admitted public or explicitly
+allowlisted networks. Explicit loopback-local development may use HTTP only when
+every resolved address is loopback. DNS answers are fully admitted and returned
+as pinned literal destination addresses; redirects and ambient proxies remain
+disabled.
+
+No provider HTTP request, hosted-provider SDK, TLS connector, credential header,
+Runtime composition, or agent execution is introduced by this slice.
 
 ## Acceptance
 
