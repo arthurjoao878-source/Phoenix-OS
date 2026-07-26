@@ -374,7 +374,7 @@ administration, and state-preserving rollback.
 - [x] RuntimeAssembler integration and lifecycle ownership
 - [x] Migration guidance
 - [x] Architecture Decision Records
-- [ ] Regression, authentication, replay, admission, and packaging gate
+- [x] Regression, authentication, replay, admission, and packaging gate
 - [ ] Release notes and version 0.25.0
 
 The dependency-free Dashboard now exposes inbound source lifecycle controls,
@@ -432,6 +432,22 @@ Together they preserve the code-reviewed normalization boundary, exact
 per-source credentials, durable replay and idempotency, shared listener and
 exact-route model, stable asynchronous publication identity, and independent
 source-submission, human-administration, and machine-administration authority.
+
+The mandatory inbound release gate is implemented by
+`scripts/check_inbound_release.py`. It reruns the load-bearing contracts, codec,
+repository, authentication, replay, idempotency, admission, HTTP, secure
+transport, publication, recovery, administration, service-account, and Runtime
+integration suites. It builds and validates wheel and sdist metadata and
+contents, rejects unsafe archive paths and secret-bearing file types, requires
+the inbound package, Control Plane integration modules, Dashboard assets,
+migration guide, and ADRs, and rebuilds a wheel from the validated sdist.
+
+Both the direct wheel and the wheel rebuilt from the sdist are installed with
+`--no-index` and `--no-deps` into isolated offline environments. Smoke tests remove
+`PYTHONPATH`, disable the user site, use isolated Python mode, reject
+source-tree imports, and exercise the packaged schema, source authentication,
+retry, admission, canonical JSON, ingress-route, human-administration, and
+machine-administration surfaces.
 
 ## Acceptance
 

@@ -112,6 +112,21 @@ and replay suites; builds and inspects wheel and sdist artifacts; rebuilds a
 wheel from the sdist; and installs both wheels in offline isolated environments
 before importing and exercising the packaged webhook surface.
 
+## Inbound event release gate
+
+RFC-0025 adds a named gate for the external ingress, authentication, replay,
+admission, persistence, publication, administration, and Runtime boundaries:
+
+```bash
+python scripts/check_inbound_release.py
+```
+
+The gate reruns the selected inbound regression and security suites; validates
+wheel and sdist metadata, paths, modules, Control Plane integrations, Dashboard
+assets, migration guidance, and ADRs; rebuilds a wheel from the sdist; and
+installs both wheels in isolated offline environments before exercising the
+packaged inbound and administration surfaces without source-tree imports.
+
 ## Release notes
 
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
