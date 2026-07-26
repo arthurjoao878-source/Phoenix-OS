@@ -11,20 +11,18 @@ _README = _ROOT / "README.md"
 _PYPROJECT = _ROOT / "pyproject.toml"
 
 
-def test_rfc_0025_metadata_is_draft_for_v0250() -> None:
+def test_rfc_0025_metadata_is_accepted_for_v0250() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
     assert rfc.startswith("# RFC-0025: Secure Inbound Event Gateway and External Event Sources")
-    assert "- Status: Draft" in rfc
+    assert "- Status: Accepted" in rfc
     assert "- Target release: Phoenix OS v0.25.0" in rfc
 
 
-def test_readme_lists_rfc_0025_as_draft_not_accepted() -> None:
+def test_readme_lists_rfc_0025_as_accepted() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.24.0` implements twenty-four accepted specifications:" in readme
-    assert "## Draft specifications" in readme
-    accepted, draft = readme.split("## Draft specifications", maxsplit=1)
-    assert "RFC-0025" not in accepted
-    assert "RFC-0025" in draft
+    assert "Version `0.25.0` implements twenty-five accepted specifications:" in readme
+    assert "## Draft specifications" not in readme
+    assert "**RFC-0025 — Secure Inbound Event Gateway and External Event Sources:**" in readme
 
 
 def test_rfc_0025_has_required_design_sections() -> None:
@@ -90,11 +88,12 @@ def test_rfc_0025_defines_durable_idempotent_acceptance() -> None:
 def test_rfc_0025_preserves_v0240_compatibility() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
     project = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert project["project"]["version"] == "0.24.0"
+    assert project["project"]["version"] == "0.25.0"
     assert "Inbound sources are optional and begin empty." in rfc
     assert "Existing webhook subscriptions are not converted" in rfc
     assert "receive no inbound scopes or source resources automatically" in rfc
-    assert "changes to\n`0.25.0` only in the final release slice" in rfc
+    assert "remained `0.24.0` during implementation slices" in rfc
+    assert "`0.25.0` in the final release slice" in rfc
 
 
 def test_rfc_0025_slice_1_is_implemented() -> None:
@@ -102,8 +101,8 @@ def test_rfc_0025_slice_1_is_implemented() -> None:
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
     slice_1 = plan.split("### Slice 2", maxsplit=1)[0]
 
-    assert plan.count("- [x]") == 35
-    assert plan.count("- [ ]") == 1
+    assert plan.count("- [x]") == 36
+    assert plan.count("- [ ]") == 0
     assert slice_1.count("- [x]") == 6
     assert slice_1.count("- [ ]") == 0
     assert (
@@ -171,8 +170,8 @@ def test_rfc_0025_slice_5_administration_foundation_is_implemented() -> None:
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split("## Acceptance", maxsplit=1)[0]
     slice_5 = plan.split("### Slice 5", maxsplit=1)[1]
 
-    assert slice_5.count("- [x]") == 7
-    assert slice_5.count("- [ ]") == 1
+    assert slice_5.count("- [x]") == 8
+    assert slice_5.count("- [ ]") == 0
     assert "- [x] Maintainer-only source and event administration" in slice_5
     assert "- [x] Dashboard source, receipt, history, and dead-letter administration" in slice_5
     assert "- [x] Optional scoped service-account administration" in slice_5
@@ -180,3 +179,4 @@ def test_rfc_0025_slice_5_administration_foundation_is_implemented() -> None:
     assert "- [x] Migration guidance" in slice_5
     assert "- [x] Architecture Decision Records" in slice_5
     assert "- [x] Regression, authentication, replay, admission, and packaging gate" in slice_5
+    assert "- [x] Release notes and version 0.25.0" in slice_5

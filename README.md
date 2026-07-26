@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.24.0` implements twenty-four accepted specifications:
+Version `0.25.0` implements twenty-five accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -62,12 +62,9 @@ Version `0.24.0` implements twenty-four accepted specifications:
 - **RFC-0024 — Durable Signed Webhooks and Event Subscriptions:** reviewed event disclosure,
   canonical durable envelopes, versioned HMAC signing, fail-closed egress and SSRF controls,
   bounded retry and redrive, safe human and machine administration, and Runtime-owned lifecycle.
-
-## Draft specifications
-
-- **[RFC-0025 — Secure Inbound Event Gateway and External Event Sources](docs/rfcs/RFC-0025-secure-inbound-event-gateway-and-external-event-sources.md):**
-  proposed authenticated, replay-resistant, schema-allowlisted, durably accepted
-  external events with bounded publication into the Event Bus.
+- **RFC-0025 — Secure Inbound Event Gateway and External Event Sources:** authenticated,
+  replay-resistant, schema-allowlisted, durably accepted external events, bounded publication,
+  exact ingress routes, safe administration, and Runtime-owned lifecycle.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -129,10 +126,11 @@ packaged inbound and administration surfaces without source-tree imports.
 
 ## Release notes
 
+- [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize webhook behavior, security boundaries, compatibility,
-migration, architecture decisions, validation, and package artifacts.
+The release notes summarize inbound and webhook behavior, security boundaries,
+compatibility, migration, architecture decisions, validation, and package artifacts.
 
 ## Upgrade guidance
 

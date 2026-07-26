@@ -32,9 +32,11 @@ _REQUIRED_SECURITY_SUITES = (
     "tests/test_control_plane_inbound_management_http.py",
     "tests/test_control_plane_service_account_inbound_http.py",
     "tests/test_inbound_event_runtime_integration.py",
+    "tests/test_v025_release.py",
 )
 
 _REQUIRED_DOCUMENTS = (
+    "docs/releases/v0.25.0.md",
     "docs/rfcs/RFC-0025-secure-inbound-event-gateway-and-external-event-sources.md",
     "docs/migrations/v0.24.0-to-v0.25.0-inbound-events.md",
     "docs/adrs/ADR-0006-reviewed-inbound-schemas-and-normalization.md",

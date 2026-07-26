@@ -1,13 +1,13 @@
 # RFC-0025: Secure Inbound Event Gateway and External Event Sources
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.25.0
 - Owners: Phoenix OS maintainers
 - Depends on: RFC-0002, RFC-0007, RFC-0009, RFC-0011, RFC-0012, RFC-0022, RFC-0023, and RFC-0024
 
 ## Summary
 
-RFC-0025 proposes an optional secure inbound event gateway for external systems
+RFC-0025 defines an optional secure inbound event gateway for external systems
 that need to submit reviewed events into Phoenix OS.
 
 Inbound events are authenticated, replay-resistant, schema-allowlisted, bounded,
@@ -318,8 +318,8 @@ service accounts receive no inbound scopes or source resources automatically.
 No source, route, schema, key, credential, replay record, event, or network
 permission is created during upgrade.
 
-The package version remains `0.24.0` during implementation slices and changes to
-`0.25.0` only in the final release slice. Migration must support staged disabled
+The package version remained `0.24.0` during implementation slices and is
+`0.25.0` in the final release slice. Migration must support staged disabled
 configuration, reviewed schema registration, disabled source creation,
 authentication testing, conservative enablement, observation, optional machine
 administration, and state-preserving rollback.
@@ -375,7 +375,7 @@ administration, and state-preserving rollback.
 - [x] Migration guidance
 - [x] Architecture Decision Records
 - [x] Regression, authentication, replay, admission, and packaging gate
-- [ ] Release notes and version 0.25.0
+- [x] Release notes and version 0.25.0
 
 The dependency-free Dashboard now exposes inbound source lifecycle controls,
 safe receipt inspection, bounded payload-free accepted-event history, health
@@ -449,10 +449,15 @@ source-tree imports, and exercise the packaged schema, source authentication,
 retry, admission, canonical JSON, ingress-route, human-administration, and
 machine-administration surfaces.
 
+Phoenix OS 0.25.0 release notes are published at
+[`docs/releases/v0.25.0.md`](../releases/v0.25.0.md), and the package,
+changelog, migration, ADR, and release-gate metadata identify the same accepted
+version and release date.
+
 ## Acceptance
 
-RFC-0025 will be accepted for Phoenix OS 0.25.0 only when every slice is
-complete, the full quality gate passes, wheel and sdist contents are validated,
-isolated installation succeeds, authentication and replay protections fail
-closed, no plaintext credential or unrestricted request body is persisted, and
-compatibility without configured inbound sources is demonstrated.
+RFC-0025 is accepted for Phoenix OS 0.25.0. Every slice is complete, the full
+quality gate passes, wheel and sdist contents are validated, isolated offline
+installation succeeds, authentication and replay protections fail closed, no
+plaintext credential or unrestricted request body is persisted, and compatibility
+without configured inbound sources is demonstrated.
