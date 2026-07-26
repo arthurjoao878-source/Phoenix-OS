@@ -312,13 +312,13 @@ Phoenix state.
 
 ### Slice 1 — Contracts, registry, and deterministic provider
 
-- [ ] Immutable inference request, response, chunk, usage, and error contracts
-- [ ] Strict provider, model, role, finish-reason, and limit validation
-- [ ] Provider and model registry with duplicate rejection
-- [ ] Deterministic fake provider with complete and streaming modes
-- [ ] Bounded request and response codecs
-- [ ] Provider capability compatibility checks
-- [ ] Contract, registry, and fake-provider tests
+- [x] Immutable inference request, response, chunk, usage, and error contracts
+- [x] Strict provider, model, role, finish-reason, and limit validation
+- [x] Provider and model registry with duplicate rejection
+- [x] Deterministic fake provider with complete and streaming modes
+- [x] Bounded request and response codecs
+- [x] Provider capability compatibility checks
+- [x] Contract, registry, and fake-provider tests
 
 ### Slice 2 — Authorization, secrets, and endpoint security
 
@@ -359,6 +359,17 @@ Phoenix state.
 - [ ] Architecture Decision Records
 - [ ] Security, limits, streaming, and packaging release gate
 - [ ] Release notes, version 0.26.0, tag, artifacts, and checksums
+
+The Slice 1 implementation adds the dependency-free `phoenix_os.inference`
+package with immutable identifiers, messages, requests, responses, chunks,
+usage, capabilities, limits, descriptors, safe error categories, a deterministic
+provider/model registry, strict canonical schema-v1 transport codecs, and a
+deterministic network-free provider for complete and streamed tests.
+
+No hosted-provider SDK, credential, endpoint, network request, policy grant,
+Runtime service, agent loop, tool call, persistence, or operating-system
+automation is introduced by this slice. Provider responses are untrusted, and model output remains untrusted data
+without implicit Phoenix authority.
 
 ## Acceptance
 
