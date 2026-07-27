@@ -31,6 +31,11 @@ the decision requires a new ADR that explicitly supersedes the previous one.
 | [ADR-0008](ADR-0008-shared-control-plane-listener-and-exact-inbound-routes.md) | Accepted | Reuse the reviewed Control Plane listener and expose only exact active-source ingress routes with pre-read bounds. |
 | [ADR-0009](ADR-0009-durable-acceptance-and-at-least-once-publication.md) | Accepted | Commit trusted accepted events before success and publish asynchronously with stable at-least-once identity and bounded history. |
 | [ADR-0010](ADR-0010-opt-in-inbound-runtime-and-separated-administration.md) | Accepted | Keep inbound events opt-in, Runtime-owned, and separated across submission, human administration, and machine administration. |
+| [ADR-0011](ADR-0011-provider-neutral-contracts-and-reviewed-inference-registry.md) | Accepted | Use Phoenix-owned provider-neutral contracts and a reviewed server-side registry as the provider/model allowlisting boundary. |
+| [ADR-0012](ADR-0012-exact-inference-authorization-and-untrusted-model-output.md) | Accepted | Require exact model invocation policy and treat every model output as untrusted data without implicit Phoenix authority. |
+| [ADR-0013](ADR-0013-exact-credential-leases-and-fail-closed-provider-endpoints.md) | Accepted | Lease exact credential versions only during execution and admit provider endpoints through fail-closed destination and TLS policy. |
+| [ADR-0014](ADR-0014-bounded-streaming-cancellation-and-no-transparent-retry.md) | Accepted | Bound complete and streaming execution, require one terminal record, cancel cooperatively, and never retry provider work transparently. |
+| [ADR-0015](ADR-0015-opt-in-inference-runtime-and-separated-administration.md) | Accepted | Keep inference opt-in, Runtime-owned, content-free in safe output, and separated across invocation, human, and machine authority. |
 
 ## Related specifications
 
@@ -38,3 +43,5 @@ the decision requires a new ADR that explicitly supersedes the previous one.
   [RFC-0024 — Durable Signed Webhooks and Event Subscriptions](../rfcs/RFC-0024-durable-signed-webhooks-and-event-subscriptions.md).
 - ADR-0006 through ADR-0010 record the principal durable choices implemented by
   [RFC-0025 — Secure Inbound Event Gateway and External Event Sources](../rfcs/RFC-0025-secure-inbound-event-gateway-and-external-event-sources.md).
+- ADR-0011 through ADR-0015 record the principal durable choices implemented by
+  [RFC-0026 — Secure Model Providers and Inference Runtime](../rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md).

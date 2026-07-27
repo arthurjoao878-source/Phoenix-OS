@@ -352,11 +352,11 @@ Phoenix state.
 
 ### Slice 5 — Administration and v0.26.0
 
-- [ ] Maintainer-only provider and model administration
-- [ ] Dashboard provider lifecycle and content-free invocation health
-- [ ] Optional scoped service-account administration
-- [ ] Migration guidance and rollback procedure
-- [ ] Architecture Decision Records
+- [x] Maintainer-only provider and model administration
+- [x] Dashboard provider lifecycle and content-free invocation health
+- [x] Optional scoped service-account administration
+- [x] Migration guidance and rollback procedure
+- [x] Architecture Decision Records
 - [ ] Security, limits, streaming, and packaging release gate
 - [ ] Release notes, version 0.26.0, tag, artifacts, and checksums
 
@@ -420,6 +420,30 @@ work within finite bounds before closing the provider registry.
 No hosted-provider SDK, HTTP client, DNS resolver, TLS connector, credential
 header, prompt persistence, response persistence, agent loop, tool calling, or
 operating-system automation is introduced by this slice.
+
+The Slice 5 administration implementation adds Maintainer-only provider and
+model inventory, content-free health, optimistic lifecycle disable/enable
+operations, Dashboard controls protected by durable-session CSRF and
+action-bound step-up, and optional RFC-0023 service-account routes requiring
+exact scopes and concrete runtime, provider, or model resources.
+
+Machine administration remains disabled by default and intentionally exposes no
+aggregate provider or model inventory, registration, endpoint, or credential
+management. Browser and machine security evidence remain mutually exclusive.
+
+Migration and rollback guidance is documented in
+[`v0.25.0-to-v0.26.0-inference.md`](../migrations/v0.25.0-to-v0.26.0-inference.md).
+The principal durable decisions are recorded in:
+
+- [ADR-0011 — Provider-neutral contracts and reviewed inference registry](../adrs/ADR-0011-provider-neutral-contracts-and-reviewed-inference-registry.md)
+- [ADR-0012 — Exact inference authorization and untrusted model output](../adrs/ADR-0012-exact-inference-authorization-and-untrusted-model-output.md)
+- [ADR-0013 — Exact credential leases and fail-closed provider endpoints](../adrs/ADR-0013-exact-credential-leases-and-fail-closed-provider-endpoints.md)
+- [ADR-0014 — Bounded streaming, cancellation, and no transparent retry](../adrs/ADR-0014-bounded-streaming-cancellation-and-no-transparent-retry.md)
+- [ADR-0015 — Opt-in inference Runtime and separated administration](../adrs/ADR-0015-opt-in-inference-runtime-and-separated-administration.md)
+
+The package version remains `0.25.0`; the release gate, release notes, version
+change, tag, artifacts, and checksums remain reserved for the final RFC-0026
+release work.
 
 ## Acceptance
 
