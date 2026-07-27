@@ -101,7 +101,7 @@ def test_rfc_0026_keeps_version_0250_during_planning() -> None:
     assert "changes to `0.26.0` only in the final release slice" in rfc
 
 
-def test_rfc_0026_slices_1_through_4_are_implemented() -> None:
+def test_rfc_0026_implementation_progress_is_current() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
     plan = rfc.split("## Slice plan", maxsplit=1)[1].split(
         "## Acceptance",
@@ -120,10 +120,11 @@ def test_rfc_0026_slices_1_through_4_are_implemented() -> None:
         "### Slice 5",
         maxsplit=1,
     )[0]
+    slice_5 = plan.split("### Slice 5", maxsplit=1)[1]
 
     assert plan.count("### Slice ") == 5
-    assert plan.count("- [x]") == 28
-    assert plan.count("- [ ]") == 7
+    assert plan.count("- [x]") == 33
+    assert plan.count("- [ ]") == 2
     assert slice_1.count("- [x]") == 7
     assert slice_2.count("- [x]") == 7
     assert slice_3.count("- [x]") == 7
@@ -150,6 +151,21 @@ def test_rfc_0026_slices_1_through_4_are_implemented() -> None:
         "Compatibility tests with inference omitted",
     ):
         assert f"- [x] {phrase}" in slice_4
+
+    for phrase in (
+        "Maintainer-only provider and model administration",
+        "Dashboard provider lifecycle and content-free invocation health",
+        "Optional scoped service-account administration",
+        "Migration guidance and rollback procedure",
+        "Architecture Decision Records",
+    ):
+        assert f"- [x] {phrase}" in slice_5
+
+    for phrase in (
+        "Security, limits, streaming, and packaging release gate",
+        "Release notes, version 0.26.0, tag, artifacts, and checksums",
+    ):
+        assert f"- [ ] {phrase}" in slice_5
 
 
 def test_rfc_0026_records_slice_1_implementation_boundary() -> None:

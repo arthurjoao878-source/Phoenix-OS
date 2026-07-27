@@ -157,6 +157,15 @@ schema, authentication, persistence, rollout, and rollback guide:
 Existing v0.24.0 behavior remains unchanged when inbound configuration is
 omitted.
 
+The opt-in v0.26.0 secure inference subsystem has a staged compatibility,
+provider, model, authorization, credential, endpoint, canary, administration,
+and rollback guide:
+
+- [Migrate v0.25.0 deployments to v0.26.0 inference](docs/migrations/v0.25.0-to-v0.26.0-inference.md)
+
+Existing v0.25.0 behavior remains unchanged when inference configuration is
+omitted.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -166,7 +175,11 @@ fail-closed egress, bounded retry and redrive, and opt-in Runtime ownership.
 The RFC-0025 inbound records cover reviewed schemas and normalization,
 per-source authentication and durable replay, shared exact ingress routing,
 durable acceptance with at-least-once publication, and separated Runtime
-ownership and administration.
+ownership and administration. The RFC-0026 inference records cover
+provider-neutral contracts and reviewed registration, exact invocation
+authorization and untrusted output, exact credential leases and fail-closed
+endpoints, bounded streaming and cancellation without transparent retry, and
+opt-in Runtime ownership with separated administration.
 
 ## Local dashboard example
 
