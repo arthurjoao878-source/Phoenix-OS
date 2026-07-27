@@ -16,6 +16,7 @@ from phoenix_os import (
 from phoenix_os.configuration import Configuration
 from phoenix_os.inference import (
     DeterministicModelProvider,
+    InferenceAdministration,
     InferenceMessage,
     InferenceProviderConfiguration,
     InferenceRequest,
@@ -151,6 +152,10 @@ async def test_runtime_assembler_composes_and_owns_enabled_inference() -> None:
     assert runtime.service("inference.health") is service
     assert isinstance(runtime.service("inference.runtime"), InferenceRuntime)
     assert isinstance(runtime.service("inference.registry"), ModelProviderRegistry)
+    assert isinstance(
+        runtime.service("inference.administration"),
+        InferenceAdministration,
+    )
 
     await runtime.start()
     response = await service.infer(_request(), _context())

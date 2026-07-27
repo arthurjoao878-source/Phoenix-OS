@@ -66,6 +66,8 @@ class ControlPlaneStepUpAction(StrEnum):
     REVOKE_INBOUND_SOURCE = "revoke-inbound-source"
     ROTATE_INBOUND_HMAC_KEY = "rotate-inbound-hmac-key"
     REDRIVE_INBOUND_EVENT = "redrive-inbound-event"
+    ENABLE_INFERENCE_PROVIDER = "enable-inference-provider"
+    ENABLE_INFERENCE_MODEL = "enable-inference-model"
 
 
 @dataclass(frozen=True, slots=True)

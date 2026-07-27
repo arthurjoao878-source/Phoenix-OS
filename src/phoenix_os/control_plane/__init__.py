@@ -269,6 +269,11 @@ from phoenix_os.control_plane.inbound_management_http import (
     ControlPlaneInboundManagementCsrfVerifier,
     ControlPlaneInboundManagementHttpAdapter,
 )
+from phoenix_os.control_plane.inference_http import (
+    INFERENCE_CONTROL_PLANE_BASE_PATH,
+    ControlPlaneInferenceCsrfVerifier,
+    ControlPlaneInferenceHttpAdapter,
+)
 from phoenix_os.control_plane.job_commands import (
     MAX_JOB_COMMAND_ARGUMENT_BYTES,
     MAX_JOB_COMMAND_ARGUMENT_DEPTH,
@@ -762,6 +767,7 @@ __all__ = [
     "DEFAULT_REMOTE_LOGIN_OPERATOR_CAPACITY",
     "DEFAULT_REMOTE_LOGIN_WINDOW",
     "INBOUND_MANAGEMENT_BASE_PATH",
+    "INFERENCE_CONTROL_PLANE_BASE_PATH",
     "MAX_COMMAND_JOURNAL_CAPACITY",
     "MAX_COMMAND_JOURNAL_PAGE_SIZE",
     "MAX_CONTROL_PLANE_API_TOKENS_PER_ACCOUNT",
@@ -1002,6 +1008,8 @@ __all__ = [
     "ControlPlaneInboundMachineAdministration",
     "ControlPlaneInboundManagementCsrfVerifier",
     "ControlPlaneInboundManagementHttpAdapter",
+    "ControlPlaneInferenceCsrfVerifier",
+    "ControlPlaneInferenceHttpAdapter",
     "ControlPlaneJobCommandHandler",
     "ControlPlaneJobCommandResult",
     "ControlPlaneJobScheduler",

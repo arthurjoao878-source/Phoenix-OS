@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from phoenix_os.audit import AuditLedger
 from phoenix_os.events import EventBus
+from phoenix_os.inference.administration import InferenceAdministration
 from phoenix_os.inference.admission import InferenceAdmissionController
 from phoenix_os.inference.authorization import PolicyEngineInferenceAuthorizer
 from phoenix_os.inference.configuration import InferenceServiceConfiguration
@@ -27,6 +28,7 @@ class InferenceRuntimeStack:
     registry: ModelProviderRegistry
     runtime: InferenceRuntime
     service: InferenceService
+    administration: InferenceAdministration
 
 
 def create_inference_runtime_stack(
@@ -98,6 +100,14 @@ def create_inference_runtime_stack(
             audit=audit,
             observability=observability,
         )
+        administration = InferenceAdministration(
+            registry,
+            service,
+            configuration,
+            events=events,
+            audit=audit,
+            observability=observability,
+        )
     except BaseException:
         registry.close()
         raise
@@ -107,4 +117,5 @@ def create_inference_runtime_stack(
         registry=registry,
         runtime=runtime,
         service=service,
+        administration=administration,
     )

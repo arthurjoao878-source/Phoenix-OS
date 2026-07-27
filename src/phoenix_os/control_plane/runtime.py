@@ -67,6 +67,9 @@ from phoenix_os.control_plane.http import (
 from phoenix_os.control_plane.inbound_management_http import (
     ControlPlaneInboundManagementHttpAdapter,
 )
+from phoenix_os.control_plane.inference_http import (
+    ControlPlaneInferenceHttpAdapter,
+)
 from phoenix_os.control_plane.job_commands import (
     ControlPlaneJobCommandHandler,
     ControlPlaneJobScheduler,
@@ -137,6 +140,9 @@ from phoenix_os.control_plane.workflow_commands import (
 )
 from phoenix_os.events import EventBus
 from phoenix_os.inbound_events import InboundManager
+from phoenix_os.inference.administration import (
+    InferenceAdministration,
+)
 from phoenix_os.jobs import JobSchedulerSnapshot
 from phoenix_os.policy import PolicyEngine
 from phoenix_os.runtime import PhoenixRuntime, RuntimeSnapshot
@@ -263,6 +269,8 @@ class ControlPlaneRuntimeStack:
     operator_step_up: ControlPlaneOperatorStepUpService | None
     service_accounts: ControlPlaneServiceAccountRuntimeBundle | None
     service_accounts_owner: ControlPlaneServiceAccountRuntimeOwner | None
+    inference: InferenceAdministration | None
+    inference_http: ControlPlaneInferenceHttpAdapter | None
     inbound: InboundManager | None
     inbound_http: ControlPlaneInboundHttpAdapter | None
     inbound_management_http: ControlPlaneInboundManagementHttpAdapter | None
@@ -294,6 +302,7 @@ class ControlPlaneRuntimeStack:
         ] = (),
         service_account_audit_secret: bytes | bytearray | memoryview | None = None,
         service_account_replay_secret: bytes | bytearray | memoryview | None = None,
+        inference_administration: InferenceAdministration | None = None,
         inbound_manager: InboundManager | None = None,
         inbound_http: ControlPlaneInboundHttpAdapter | None = None,
         webhook_manager: WebhookManager | None = None,
@@ -365,6 +374,8 @@ class ControlPlaneRuntimeStack:
 
         if service_account_machine_routes and policy_engine is None:
             raise ValueError("machine routes require a PolicyEngine")
+        if inference_administration is not None and operator_registry is None:
+            raise ValueError("inference administration requires durable operator mode")
         if inbound_manager is not None and operator_registry is None:
             raise ValueError("inbound administration requires durable operator mode")
         if inbound_http is not None and not all(
@@ -407,6 +418,7 @@ class ControlPlaneRuntimeStack:
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None
         service_accounts: ControlPlaneServiceAccountRuntimeBundle | None = None
         service_accounts_owner: ControlPlaneServiceAccountRuntimeOwner | None = None
+        inference_http: ControlPlaneInferenceHttpAdapter | None = None
         inbound_management_http: ControlPlaneInboundManagementHttpAdapter | None = None
         webhook_http: ControlPlaneWebhookHttpAdapter | None = None
         default_principal: str
@@ -509,6 +521,15 @@ class ControlPlaneRuntimeStack:
             )
 
             service_accounts_owner = ControlPlaneServiceAccountRuntimeOwner(service_accounts)
+
+        if inference_administration is not None:
+            if durable_boundary is None or operator_step_up is None:
+                raise AssertionError("inference administration lost durable operator security")
+            inference_http = ControlPlaneInferenceHttpAdapter(
+                administration=inference_administration,
+                boundary=durable_boundary,
+                step_up=operator_step_up,
+            )
 
         if inbound_manager is not None:
             if durable_boundary is None or operator_step_up is None:
@@ -617,6 +638,7 @@ class ControlPlaneRuntimeStack:
                 durable_session_http=durable_boundary,
                 durable_operator_http=durable_operator_http,
                 service_account_http=None if service_accounts is None else service_accounts.http,
+                inference_http=inference_http,
                 webhook_http=webhook_http,
                 inbound_management_http=inbound_management_http,
                 inbound_http=inbound_http,
@@ -636,6 +658,7 @@ class ControlPlaneRuntimeStack:
                 service_account_machine_http=(
                     None if service_accounts is None else service_accounts.machine_http
                 ),
+                inference_http=inference_http,
                 webhook_http=webhook_http,
                 inbound_management_http=inbound_management_http,
                 inbound_http=inbound_http,
@@ -669,6 +692,8 @@ class ControlPlaneRuntimeStack:
             operator_step_up,
             service_accounts,
             service_accounts_owner,
+            inference_administration,
+            inference_http,
             inbound_manager,
             inbound_http,
             inbound_management_http,

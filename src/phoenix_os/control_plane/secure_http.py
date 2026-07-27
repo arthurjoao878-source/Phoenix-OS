@@ -42,6 +42,9 @@ from phoenix_os.control_plane.http import (
 from phoenix_os.control_plane.inbound_management_http import (
     ControlPlaneInboundManagementHttpAdapter,
 )
+from phoenix_os.control_plane.inference_http import (
+    ControlPlaneInferenceHttpAdapter,
+)
 from phoenix_os.control_plane.journal_history import (
     ControlPlaneCommandHistoryReader,
 )
@@ -125,6 +128,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None,
         service_account_http: ControlPlaneServiceAccountHttpAdapter | None = None,
         service_account_machine_http: ControlPlaneServiceAccountMachineHttpAdapter | None = None,
+        inference_http: ControlPlaneInferenceHttpAdapter | None = None,
         webhook_http: ControlPlaneWebhookHttpAdapter | None = None,
         inbound_management_http: (ControlPlaneInboundManagementHttpAdapter | None) = None,
         inbound_http: ControlPlaneInboundHttpAdapter | None = None,
@@ -155,6 +159,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
             durable_session_http=durable_session_http,
             durable_operator_http=durable_operator_http,
             service_account_http=service_account_http,
+            inference_http=inference_http,
             webhook_http=webhook_http,
             inbound_management_http=inbound_management_http,
             inbound_http=inbound_http,
