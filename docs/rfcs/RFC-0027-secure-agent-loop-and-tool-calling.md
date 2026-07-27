@@ -745,13 +745,13 @@ RFC-0026 inference.
 
 ### Slice 1 - Contracts, schemas, registry, and deterministic tools
 
-- [ ] Immutable agent, proposal, invocation, result, limit, and error contracts
-- [ ] Strict bounded schema subset and canonical codecs
-- [ ] Tool descriptors and duplicate-rejecting registry
-- [ ] Server-side concrete resource resolvers
-- [ ] Deterministic fake model-turn adapter
-- [ ] Deterministic read-only and side-effecting fake tools
-- [ ] Contract, schema, registry, and codec tests
+- [x] Immutable agent, proposal, invocation, result, limit, and error contracts
+- [x] Strict bounded schema subset and canonical codecs
+- [x] Tool descriptors and duplicate-rejecting registry
+- [x] Server-side concrete resource resolvers
+- [x] Deterministic fake model-turn adapter
+- [x] Deterministic read-only and side-effecting fake tools
+- [x] Contract, schema, registry, and codec tests
 
 ### Slice 2 - Authorization, approval, and authority separation
 
