@@ -104,6 +104,18 @@ from phoenix_os.agent.errors import (
     ToolExecutionError,
     ToolNotFoundError,
 )
+from phoenix_os.agent.fake import (
+    AgentModelTurnAdapter,
+    AgentModelTurnKind,
+    AgentModelTurnRequest,
+    AgentModelTurnResult,
+    DeterministicFinalTurn,
+    DeterministicModelTurn,
+    DeterministicModelTurnAdapter,
+    DeterministicReadOnlyTool,
+    DeterministicSideEffectTool,
+    DeterministicToolTurn,
+)
 from phoenix_os.agent.registry import ToolRegistration, ToolRegistry
 from phoenix_os.agent.schemas import (
     MAX_TOOL_SCHEMA_ARRAY_ITEMS,
@@ -219,6 +231,10 @@ __all__ = [
     "AgentMessage",
     "AgentMessageRole",
     "AgentMetadata",
+    "AgentModelTurnAdapter",
+    "AgentModelTurnKind",
+    "AgentModelTurnRequest",
+    "AgentModelTurnResult",
     "AgentRegistryClosedError",
     "AgentRunId",
     "AgentRunRequest",
@@ -230,6 +246,12 @@ __all__ = [
     "AgentStateConflictError",
     "AgentStepId",
     "AgentTimeoutError",
+    "DeterministicFinalTurn",
+    "DeterministicModelTurn",
+    "DeterministicModelTurnAdapter",
+    "DeterministicReadOnlyTool",
+    "DeterministicSideEffectTool",
+    "DeterministicToolTurn",
     "StaticToolResourceResolver",
     "ToolAdapter",
     "ToolAlreadyRegisteredError",
