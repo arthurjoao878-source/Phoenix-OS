@@ -83,6 +83,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "events",
         "identity",
         "inference",
+        "inference.administration",
         "inference.health",
         "inference.registry",
         "inference.runtime",
@@ -858,6 +859,7 @@ class RuntimeAssembler:
             custom_services["inference.health"] = inference_stack.service
             custom_services["inference.runtime"] = inference_stack.runtime
             custom_services["inference.registry"] = inference_stack.registry
+            custom_services["inference.administration"] = inference_stack.administration
             components.append(ComponentSpec("inference", inference_stack.service))
 
         inbound_runtime = None
@@ -1189,6 +1191,11 @@ class RuntimeAssembler:
                 service_account_machine_routes=machine_routes,
                 service_account_audit_secret=(self._control_plane_service_account_audit_secret),
                 service_account_replay_secret=(self._control_plane_service_account_replay_secret),
+                inference_administration=(
+                    None
+                    if inference_stack is None or not operator_mode
+                    else inference_stack.administration
+                ),
                 inbound_manager=(
                     None
                     if inbound_runtime is None or not operator_mode

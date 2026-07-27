@@ -16,6 +16,8 @@ class InferenceErrorCode(StrEnum):
     CAPABILITY_MISMATCH = "capability_mismatch"
     CODEC_INVALID = "codec_invalid"
     AUTHORIZATION_REJECTED = "authorization_rejected"
+    ADMINISTRATION_REJECTED = "administration_rejected"
+    ADMINISTRATION_CONFLICT = "administration_conflict"
     CREDENTIAL_UNAVAILABLE = "credential_unavailable"
     ENDPOINT_REJECTED = "endpoint_rejected"
     SERVICE_UNAVAILABLE = "service_unavailable"
@@ -83,6 +85,24 @@ class InferenceAuthorizationRejectedError(InferenceError):
 
     def __init__(self) -> None:
         super().__init__("inference request authorization failed")
+
+
+class InferenceAdministrationAccessDeniedError(InferenceError):
+    """Generic administration denial without inventory disclosure."""
+
+    code = InferenceErrorCode.ADMINISTRATION_REJECTED
+
+    def __init__(self) -> None:
+        super().__init__("inference administration request rejected")
+
+
+class InferenceAdministrationConflictError(InferenceError):
+    """Generic optimistic-revision conflict."""
+
+    code = InferenceErrorCode.ADMINISTRATION_CONFLICT
+
+    def __init__(self) -> None:
+        super().__init__("inference administration conflict")
 
 
 class InferenceCredentialUnavailableError(InferenceError):

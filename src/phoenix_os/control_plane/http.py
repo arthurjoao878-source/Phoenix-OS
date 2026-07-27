@@ -45,6 +45,9 @@ from phoenix_os.control_plane.errors import (
 from phoenix_os.control_plane.inbound_management_http import (
     ControlPlaneInboundManagementHttpAdapter,
 )
+from phoenix_os.control_plane.inference_http import (
+    ControlPlaneInferenceHttpAdapter,
+)
 from phoenix_os.control_plane.journal_contracts import (
     DEFAULT_COMMAND_JOURNAL_PAGE_SIZE,
     ControlPlaneCommandJournalPageRequest,
@@ -194,6 +197,7 @@ class ControlPlaneHttpServer:
         durable_session_http: ControlPlaneDurableSessionHttpBoundary | None = None,
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None,
         service_account_http: ControlPlaneServiceAccountHttpAdapter | None = None,
+        inference_http: ControlPlaneInferenceHttpAdapter | None = None,
         webhook_http: ControlPlaneWebhookHttpAdapter | None = None,
         inbound_management_http: (ControlPlaneInboundManagementHttpAdapter | None) = None,
         inbound_http: ControlPlaneInboundHttpAdapter | None = None,
@@ -204,6 +208,8 @@ class ControlPlaneHttpServer:
             raise ValueError("legacy and durable operator HTTP adapters are exclusive")
         if service_account_http is not None and durable_session_http is None:
             raise ValueError("service-account HTTP requires durable session authentication")
+        if inference_http is not None and durable_session_http is None:
+            raise ValueError("inference HTTP requires durable session authentication")
         if webhook_http is not None and durable_session_http is None:
             raise ValueError("webhook HTTP requires durable session authentication")
         if inbound_management_http is not None and durable_session_http is None:
@@ -223,6 +229,7 @@ class ControlPlaneHttpServer:
         self._durable_session_http = durable_session_http
         self._durable_operator_http = durable_operator_http
         self._service_account_http = service_account_http
+        self._inference_http = inference_http
         self._webhook_http = webhook_http
         self._inbound_management_http = inbound_management_http
         self._inbound_http = inbound_http
@@ -604,6 +611,20 @@ class ControlPlaneHttpServer:
             and self._service_account_http.handles(request.path)
         ):
             return await self._service_account_http.dispatch(
+                authentication=durable_authentication,
+                method=request.method,
+                path=request.path,
+                query=request.query,
+                headers=request.headers,
+                body=request.body,
+                server_origin=server_origin,
+            )
+        if (
+            durable_authentication is not None
+            and self._inference_http is not None
+            and self._inference_http.handles(request.path)
+        ):
+            return await self._inference_http.dispatch(
                 authentication=durable_authentication,
                 method=request.method,
                 path=request.path,
