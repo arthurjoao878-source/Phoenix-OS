@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -8,7 +7,6 @@ _RFC = (
     _ROOT / "docs" / "rfcs" / "RFC-0025-secure-inbound-event-gateway-and-external-event-sources.md"
 )
 _README = _ROOT / "README.md"
-_PYPROJECT = _ROOT / "pyproject.toml"
 
 
 def test_rfc_0025_metadata_is_accepted_for_v0250() -> None:
@@ -18,15 +16,10 @@ def test_rfc_0025_metadata_is_accepted_for_v0250() -> None:
     assert "- Target release: Phoenix OS v0.25.0" in rfc
 
 
-def test_readme_lists_rfc_0025_as_accepted() -> None:
+def test_readme_preserves_rfc_0025_as_accepted() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.25.0` implements twenty-five accepted specifications:" in readme
-    assert "## Draft specifications" in readme
-    assert (
-        "[RFC-0026 — Secure Model Providers and Inference Runtime]"
-        "(docs/rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md)" in readme
-    )
     assert "**RFC-0025 — Secure Inbound Event Gateway and External Event Sources:**" in readme
+    assert "[Phoenix OS 0.25.0](docs/releases/v0.25.0.md)" in readme
 
 
 def test_rfc_0025_has_required_design_sections() -> None:
@@ -91,8 +84,6 @@ def test_rfc_0025_defines_durable_idempotent_acceptance() -> None:
 
 def test_rfc_0025_preserves_v0240_compatibility() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
-    project = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert project["project"]["version"] == "0.25.0"
     assert "Inbound sources are optional and begin empty." in rfc
     assert "Existing webhook subscriptions are not converted" in rfc
     assert "receive no inbound scopes or source resources automatically" in rfc

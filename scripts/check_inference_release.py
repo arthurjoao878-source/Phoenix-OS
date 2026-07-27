@@ -37,6 +37,7 @@ _SECURITY_TESTS = (
     "tests/test_inference_migration_guidance.py",
     "tests/test_inference_adrs.py",
     "tests/test_rfc_0026.py",
+    "tests/test_v026_release.py",
 )
 
 _REQUIRED_SDIST_DOCUMENTS = (
@@ -44,6 +45,7 @@ _REQUIRED_SDIST_DOCUMENTS = (
     "CHANGELOG.md",
     "LICENSE",
     "pyproject.toml",
+    "docs/releases/v0.26.0.md",
     "docs/rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md",
     "docs/migrations/v0.25.0-to-v0.26.0-inference.md",
     "docs/adrs/README.md",

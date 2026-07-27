@@ -1,6 +1,6 @@
 # RFC-0026: Secure Model Providers and Inference Runtime
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.26.0
 - Owners: Phoenix OS maintainers
 - Depends on: RFC-0002, RFC-0004, RFC-0005, RFC-0006, RFC-0009, RFC-0011, RFC-0012, and RFC-0024
@@ -358,7 +358,7 @@ Phoenix state.
 - [x] Migration guidance and rollback procedure
 - [x] Architecture Decision Records
 - [x] Security, limits, streaming, and packaging release gate
-- [ ] Release notes, version 0.26.0, tag, artifacts, and checksums
+- [x] Release notes, version 0.26.0, tag, artifacts, and checksums
 
 The Slice 1 implementation adds the dependency-free `phoenix_os.inference`
 package with immutable identifiers, messages, requests, responses, chunks,
@@ -448,8 +448,12 @@ inspects wheel and sdist artifacts, rebuilds a wheel from the validated sdist,
 and installs both wheels in isolated offline environments before exercising
 the packaged inference and administration surfaces without source-tree imports.
 
-The package version remains `0.25.0`; release notes, the version change, tag,
-artifacts, and checksums remain reserved for the final RFC-0026 release work.
+Release notes are documented in
+[`docs/releases/v0.26.0.md`](../releases/v0.26.0.md). The package version is
+`0.26.0`; the release publishes tag `v0.26.0`, wheel and sdist artifacts, and
+`SHA256SUMS`.
+
+RFC-0026 is accepted for Phoenix OS 0.26.0.
 
 ## Acceptance
 

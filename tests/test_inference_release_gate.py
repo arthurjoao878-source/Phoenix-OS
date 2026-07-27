@@ -34,9 +34,11 @@ _REQUIRED_SECURITY_SUITES = (
     "tests/test_inference_migration_guidance.py",
     "tests/test_inference_adrs.py",
     "tests/test_rfc_0026.py",
+    "tests/test_v026_release.py",
 )
 
 _REQUIRED_DOCUMENTS = (
+    "docs/releases/v0.26.0.md",
     "docs/rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md",
     "docs/migrations/v0.25.0-to-v0.26.0-inference.md",
     "docs/adrs/ADR-0011-provider-neutral-contracts-and-reviewed-inference-registry.md",
@@ -198,3 +200,13 @@ def test_rfc_marks_inference_security_and_packaging_gate_complete() -> None:
     assert "wheel and sdist" in rfc
     assert "isolated offline environments" in rfc
     assert "source-tree imports" in rfc
+
+
+def test_inference_release_gate_includes_v026_release_metadata() -> None:
+    gate = _gate()
+    for phrase in (
+        '"tests/test_v026_release.py"',
+        '"CHANGELOG.md"',
+        '"docs/releases/v0.26.0.md"',
+    ):
+        assert phrase in gate

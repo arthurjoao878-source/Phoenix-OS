@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -15,20 +14,14 @@ _RFC = (
 _GATE = _ROOT / "scripts" / "check_inbound_release.py"
 
 
-def test_project_version_is_v0250() -> None:
-    document = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert document["project"]["version"] == "0.25.0"
+def test_v025_release_metadata_remains_available() -> None:
+    assert _RELEASE_NOTES.is_file()
+    assert _RFC.is_file()
 
 
-def test_readme_announces_twenty_five_accepted_specifications() -> None:
+def test_readme_preserves_v025_release_history() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.25.0` implements twenty-five accepted specifications:" in readme
     assert "**RFC-0025 — Secure Inbound Event Gateway and External Event Sources:**" in readme
-    assert "## Draft specifications" in readme
-    assert (
-        "[RFC-0026 — Secure Model Providers and Inference Runtime]"
-        "(docs/rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md)" in readme
-    )
     assert "[Phoenix OS 0.25.0](docs/releases/v0.25.0.md)" in readme
     assert "[Phoenix OS 0.24.0](docs/releases/v0.24.0.md)" in readme
 

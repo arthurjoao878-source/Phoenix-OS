@@ -13,21 +13,19 @@ def _normalized(text: str) -> str:
     return " ".join(text.split())
 
 
-def test_rfc_0026_metadata_is_draft_for_v0260() -> None:
+def test_rfc_0026_metadata_is_accepted_for_v0260() -> None:
     rfc = _normalized(_RFC.read_text(encoding="utf-8"))
     assert rfc.startswith("# RFC-0026: Secure Model Providers and Inference Runtime")
-    assert "- Status: Draft" in rfc
+    assert "- Status: Accepted" in rfc
     assert "- Target release: Phoenix OS v0.26.0" in rfc
 
 
-def test_readme_lists_rfc_0026_as_draft() -> None:
+def test_readme_lists_rfc_0026_as_accepted() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.25.0` implements twenty-five accepted specifications:" in readme
-    assert "## Draft specifications" in readme
-    assert (
-        "[RFC-0026 — Secure Model Providers and Inference Runtime]"
-        "(docs/rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md)" in readme
-    )
+    assert "Version `0.26.0` implements twenty-six accepted specifications:" in readme
+    assert "**RFC-0026 — Secure Model Providers and Inference Runtime:**" in readme
+    assert "## Draft specifications" not in readme
+    assert "[Phoenix OS 0.26.0](docs/releases/v0.26.0.md)" in readme
 
 
 def test_rfc_0026_has_required_design_sections() -> None:
@@ -91,10 +89,10 @@ def test_rfc_0026_defines_bounded_streaming_and_cancellation() -> None:
         assert phrase in rfc
 
 
-def test_rfc_0026_keeps_version_0250_during_planning() -> None:
+def test_rfc_0026_releases_version_0260_after_implementation() -> None:
     rfc = _normalized(_RFC.read_text(encoding="utf-8"))
     project = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert project["project"]["version"] == "0.25.0"
+    assert project["project"]["version"] == "0.26.0"
     assert "Inference providers are optional and begin empty." in rfc
     assert "No provider, model, endpoint, secret reference" in rfc
     assert "remains `0.25.0` during implementation slices" in rfc
@@ -123,8 +121,8 @@ def test_rfc_0026_implementation_progress_is_current() -> None:
     slice_5 = plan.split("### Slice 5", maxsplit=1)[1]
 
     assert plan.count("### Slice ") == 5
-    assert plan.count("- [x]") == 34
-    assert plan.count("- [ ]") == 1
+    assert plan.count("- [x]") == 35
+    assert plan.count("- [ ]") == 0
     assert slice_1.count("- [x]") == 7
     assert slice_2.count("- [x]") == 7
     assert slice_3.count("- [x]") == 7
@@ -162,7 +160,7 @@ def test_rfc_0026_implementation_progress_is_current() -> None:
         assert f"- [x] {phrase}" in slice_5
 
     assert "- [x] Security, limits, streaming, and packaging release gate" in slice_5
-    assert "- [ ] Release notes, version 0.26.0, tag, artifacts, and checksums" in slice_5
+    assert "- [x] Release notes, version 0.26.0, tag, artifacts, and checksums" in slice_5
 
 
 def test_rfc_0026_records_slice_1_implementation_boundary() -> None:
