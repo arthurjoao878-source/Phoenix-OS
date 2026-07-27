@@ -1,5 +1,15 @@
 """Secure bounded agent and tool-calling contracts."""
 
+from phoenix_os.agent.approval import (
+    InMemoryToolApprovalService,
+    ToolApprovalChallenge,
+    ToolApprovalEvidence,
+    ToolApprovalService,
+    ToolApprovalSnapshot,
+    ToolApprovalStatus,
+    ToolApprovalVerification,
+    tool_descriptor_requires_approval,
+)
 from phoenix_os.agent.authorization import (
     AGENT_RUN_ACTION,
     TOOL_INVOKE_ACTION,
@@ -271,12 +281,19 @@ __all__ = [
     "DeterministicReadOnlyTool",
     "DeterministicSideEffectTool",
     "DeterministicToolTurn",
+    "InMemoryToolApprovalService",
     "PolicyEngineAgentRunAuthorizer",
     "PolicyEngineToolAuthorizer",
     "StaticToolResourceResolver",
     "ToolAdapter",
     "ToolAlreadyRegisteredError",
+    "ToolApprovalChallenge",
+    "ToolApprovalEvidence",
     "ToolApprovalId",
+    "ToolApprovalService",
+    "ToolApprovalSnapshot",
+    "ToolApprovalStatus",
+    "ToolApprovalVerification",
     "ToolAuthorizer",
     "ToolAvailability",
     "ToolCallId",
@@ -328,6 +345,7 @@ __all__ = [
     "freeze_agent_json_object",
     "resolve_server_resource",
     "tool_descriptor_from_record",
+    "tool_descriptor_requires_approval",
     "tool_descriptor_to_record",
     "tool_effect_requires_approval",
     "tool_invocation_resource",
