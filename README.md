@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.25.0` implements twenty-five accepted specifications:
+Version `0.26.0` implements twenty-six accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -65,13 +65,10 @@ Version `0.25.0` implements twenty-five accepted specifications:
 - **RFC-0025 — Secure Inbound Event Gateway and External Event Sources:** authenticated,
   replay-resistant, schema-allowlisted, durably accepted external events, bounded publication,
   exact ingress routes, safe administration, and Runtime-owned lifecycle.
-
-## Draft specifications
-
-- **[RFC-0026 — Secure Model Providers and Inference Runtime](docs/rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md):**
-  proposed provider-neutral, policy-controlled, secret-safe, bounded model
-  inference with complete and streamed responses, cancellation, endpoint
-  security, redacted observability, and Runtime-owned lifecycle.
+- **RFC-0026 — Secure Model Providers and Inference Runtime:** provider-neutral,
+  policy-controlled, secret-safe, bounded complete and streamed model inference,
+  cancellation, endpoint security, redacted observability, separated
+  administration, and Runtime-owned lifecycle.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -151,11 +148,13 @@ administration surfaces without source-tree imports.
 
 ## Release notes
 
+- [Phoenix OS 0.26.0](docs/releases/v0.26.0.md)
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize inbound and webhook behavior, security boundaries,
-compatibility, migration, architecture decisions, validation, and package artifacts.
+The release notes summarize inference, inbound, and webhook behavior, security
+boundaries, compatibility, migration, architecture decisions, validation, and
+package artifacts.
 
 ## Upgrade guidance
 

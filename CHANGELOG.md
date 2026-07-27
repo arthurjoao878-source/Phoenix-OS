@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.26.0] - 2026-07-27
+
+### Added
+- Accepted RFC-0026 and the five secure-inference architecture records.
+- Provider-neutral immutable inference contracts and a reviewed provider/model registry.
+- Exact `model.infer` authorization for concrete provider-model resources.
+- Exact versioned credential leases and fail-closed hosted or loopback endpoint policy.
+- Bounded complete execution, ordered streaming, cancellation, admission, and no-transparent-retry semantics.
+- Optional Runtime composition, content-free diagnostics, safe lifecycle events, and bounded shutdown.
+- Maintainer Dashboard, scoped machine administration, migration guidance, release notes, and an isolated offline packaging and security gate.
+
+### Security
+- Inference remains disabled by default with no implicit provider, model, credential, endpoint, grant, listener, or network authority.
+- Model output remains untrusted data and receives no implicit capability, command, job, workflow, plugin, filesystem, shell, network, or operating-system authority.
+- Credentials, prompts, responses, endpoint details, streaming frames, and raw provider failures remain excluded from safe output.
+- Hosted endpoints require verified HTTPS, complete DNS admission, pinned destinations, disabled redirects and ambient proxies, and finite limits.
+- Invocation, human administration, and machine administration require independent exact permissions.
+
+### Compatibility
+- Phoenix OS 0.25.0 behavior is preserved when inference configuration is omitted.
+- Existing service accounts gain no inference grants, and no provider, model, endpoint, credential, request, or network permission is created automatically.
+
+
 ## [0.25.0] - 2026-07-25
 
 ### Added
