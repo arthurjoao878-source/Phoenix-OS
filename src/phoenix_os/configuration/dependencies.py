@@ -335,6 +335,7 @@ class RuntimeAssembler:
         inference_enabled: bool = False,
         inference_configuration: InferenceServiceConfiguration | None = None,
         inference_providers: tuple[ModelProvider, ...] = (),
+        inference_service_account_administration_enabled: bool = False,
         webhooks_enabled: bool = False,
         webhook_service_account_administration_enabled: bool = False,
         webhook_subscription_repository: WebhookSubscriptionRepository | None = None,
@@ -433,6 +434,9 @@ class RuntimeAssembler:
         self._inference_enabled = inference_enabled
         self._inference_configuration = inference_configuration
         self._inference_providers = tuple(inference_providers)
+        self._inference_service_account_administration_enabled = (
+            inference_service_account_administration_enabled
+        )
         self._webhooks_enabled = webhooks_enabled
         self._webhook_service_account_administration_enabled = (
             webhook_service_account_administration_enabled
@@ -525,8 +529,17 @@ class RuntimeAssembler:
             raise ValueError("workflow orchestration requires a Runtime-owned job scheduler")
         if not isinstance(inference_enabled, bool):
             raise TypeError("inference enabled flag must be bool")
-        inference_options_supplied = inference_configuration is not None or bool(
-            self._inference_providers
+        if not isinstance(
+            inference_service_account_administration_enabled,
+            bool,
+        ):
+            raise TypeError("inference service-account administration enabled flag must be bool")
+        inference_options_supplied = any(
+            (
+                inference_configuration is not None,
+                bool(self._inference_providers),
+                inference_service_account_administration_enabled,
+            )
         )
         if inference_options_supplied and not inference_enabled:
             raise ValueError("inference options require inference_enabled")
@@ -653,6 +666,15 @@ class RuntimeAssembler:
 
         if service_accounts_enabled and not operator_mode:
             raise ValueError("service accounts require durable operator mode")
+        if inference_service_account_administration_enabled and not service_accounts_enabled:
+            raise ValueError("inference machine administration requires service accounts")
+        if (
+            inference_service_account_administration_enabled
+            and control_plane_network_policy is None
+        ):
+            raise ValueError("inference machine administration requires a secure network policy")
+        if inference_service_account_administration_enabled and policy is None:
+            raise ValueError("inference machine administration requires a PolicyEngine")
         if webhook_service_account_administration_enabled and not service_accounts_enabled:
             raise ValueError("webhook machine administration requires service accounts")
         if inbound_service_account_administration_enabled and not service_accounts_enabled:
@@ -1146,6 +1168,18 @@ class RuntimeAssembler:
                     )
 
             machine_routes = self._control_plane_service_account_machine_routes
+            if (
+                inference_stack is not None
+                and self._inference_service_account_administration_enabled
+            ):
+                from phoenix_os.control_plane.inference_machine_http import (
+                    control_plane_inference_machine_routes,
+                )
+
+                machine_routes = (
+                    *machine_routes,
+                    *control_plane_inference_machine_routes(inference_stack.administration),
+                )
             if inbound_runtime is not None and self._inbound_service_account_administration_enabled:
                 from phoenix_os.control_plane.inbound_machine_http import (
                     control_plane_inbound_machine_routes,

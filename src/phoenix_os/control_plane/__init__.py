@@ -274,6 +274,12 @@ from phoenix_os.control_plane.inference_http import (
     ControlPlaneInferenceCsrfVerifier,
     ControlPlaneInferenceHttpAdapter,
 )
+from phoenix_os.control_plane.inference_machine_http import (
+    CONTROL_PLANE_INFERENCE_MACHINE_BASE_PATH,
+    CONTROL_PLANE_INFERENCE_MACHINE_RESOURCE,
+    ControlPlaneInferenceMachineAdministration,
+    control_plane_inference_machine_routes,
+)
 from phoenix_os.control_plane.job_commands import (
     MAX_JOB_COMMAND_ARGUMENT_BYTES,
     MAX_JOB_COMMAND_ARGUMENT_DEPTH,
@@ -708,6 +714,8 @@ __all__ = [
     "CONTROL_PLANE_API_TOKENS_ROTATE_PERMISSION",
     "CONTROL_PLANE_INBOUND_MACHINE_BASE_PATH",
     "CONTROL_PLANE_INBOUND_MACHINE_RESOURCE",
+    "CONTROL_PLANE_INFERENCE_MACHINE_BASE_PATH",
+    "CONTROL_PLANE_INFERENCE_MACHINE_RESOURCE",
     "CONTROL_PLANE_OPERATORS_CREATE_PERMISSION",
     "CONTROL_PLANE_OPERATORS_DISABLE_PERMISSION",
     "CONTROL_PLANE_OPERATORS_READ_PERMISSION",
@@ -1010,6 +1018,7 @@ __all__ = [
     "ControlPlaneInboundManagementHttpAdapter",
     "ControlPlaneInferenceCsrfVerifier",
     "ControlPlaneInferenceHttpAdapter",
+    "ControlPlaneInferenceMachineAdministration",
     "ControlPlaneJobCommandHandler",
     "ControlPlaneJobCommandResult",
     "ControlPlaneJobScheduler",
@@ -1256,6 +1265,7 @@ __all__ = [
     "control_plane_api_token_record_digest",
     "control_plane_durable_session_record_digest",
     "control_plane_inbound_machine_routes",
+    "control_plane_inference_machine_routes",
     "control_plane_operator_record_digest",
     "control_plane_service_account_api_context",
     "control_plane_service_account_api_scope",
