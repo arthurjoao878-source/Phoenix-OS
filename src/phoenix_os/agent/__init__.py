@@ -128,6 +128,11 @@ from phoenix_os.agent.errors import (
     ToolExecutionError,
     ToolNotFoundError,
 )
+from phoenix_os.agent.execution import (
+    BoundedAgentExecutor,
+    validate_agent_model_turn_result,
+    validate_tool_invocation_result,
+)
 from phoenix_os.agent.fake import (
     AgentModelTurnAdapter,
     AgentModelTurnKind,
@@ -284,6 +289,7 @@ __all__ = [
     "AgentStateConflictError",
     "AgentStepId",
     "AgentTimeoutError",
+    "BoundedAgentExecutor",
     "DelegatingAgentModelTurnAuthorizer",
     "DeterministicFinalTurn",
     "DeterministicModelTurn",
@@ -361,6 +367,8 @@ __all__ = [
     "tool_invocation_resource",
     "tool_schema_from_record",
     "tool_schema_to_record",
+    "validate_agent_model_turn_result",
     "validate_tool_input",
+    "validate_tool_invocation_result",
     "validate_tool_output",
 ]
