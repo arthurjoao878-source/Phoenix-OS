@@ -357,7 +357,7 @@ Phoenix state.
 - [x] Optional scoped service-account administration
 - [x] Migration guidance and rollback procedure
 - [x] Architecture Decision Records
-- [ ] Security, limits, streaming, and packaging release gate
+- [x] Security, limits, streaming, and packaging release gate
 - [ ] Release notes, version 0.26.0, tag, artifacts, and checksums
 
 The Slice 1 implementation adds the dependency-free `phoenix_os.inference`
@@ -441,9 +441,15 @@ The principal durable decisions are recorded in:
 - [ADR-0014 — Bounded streaming, cancellation, and no transparent retry](../adrs/ADR-0014-bounded-streaming-cancellation-and-no-transparent-retry.md)
 - [ADR-0015 — Opt-in inference Runtime and separated administration](../adrs/ADR-0015-opt-in-inference-runtime-and-separated-administration.md)
 
-The package version remains `0.25.0`; the release gate, release notes, version
-change, tag, artifacts, and checksums remain reserved for the final RFC-0026
-release work.
+The named `scripts/check_inference_release.py` gate reruns the reviewed
+security, endpoint, limits, complete execution, streaming, cancellation,
+administration, migration, ADR, and compatibility suites. It builds and
+inspects wheel and sdist artifacts, rebuilds a wheel from the validated sdist,
+and installs both wheels in isolated offline environments before exercising
+the packaged inference and administration surfaces without source-tree imports.
+
+The package version remains `0.25.0`; release notes, the version change, tag,
+artifacts, and checksums remain reserved for the final RFC-0026 release work.
 
 ## Acceptance
 
