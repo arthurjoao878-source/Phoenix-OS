@@ -755,13 +755,13 @@ RFC-0026 inference.
 
 ### Slice 2 - Authorization, approval, and authority separation
 
-- [ ] Exact `agent.run` authorization
-- [ ] Independent RFC-0026 `model.infer` authorization per model turn
-- [ ] Exact `tool.invoke` authorization per tool call
-- [ ] Canonical argument digest and server-resolved policy resource
-- [ ] Action-bound single-use approval records
-- [ ] Effect classification and approval requirements
-- [ ] Default-deny, replay, mutation, and confused-deputy tests
+- [x] Exact `agent.run` authorization
+- [x] Independent RFC-0026 `model.infer` authorization per model turn
+- [x] Exact `tool.invoke` authorization per tool call
+- [x] Canonical argument digest and server-resolved policy resource
+- [x] Action-bound single-use approval records
+- [x] Effect classification and approval requirements
+- [x] Default-deny, replay, mutation, and confused-deputy tests
 
 ### Slice 3 - Agent loop, limits, execution, and cancellation
 
