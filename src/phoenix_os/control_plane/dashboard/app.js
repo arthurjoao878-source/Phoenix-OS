@@ -2200,6 +2200,400 @@ async function refreshInbound() {
   }
 }
 
+// RFC-0026 Slice 5C — content-free inference dashboard.
+
+function hideInferenceDashboard() {
+  byId("inference-card").classList.add("hidden");
+  byId("inference-providers-panel").classList.add("hidden");
+  byId("inference-models-panel").classList.add("hidden");
+  byId("inference-providers-table").replaceChildren();
+  byId("inference-models-table").replaceChildren();
+  text("inference-providers-total", 0);
+  text("inference-summary", "Subsystem unavailable");
+  text("inference-providers-page", "");
+  text("inference-models-page", "");
+  text("inference-status", "Inference administration unavailable.");
+  text("inference-model-status", "Inference model inventory unavailable.");
+}
+
+function inferenceCapabilitiesLabel(capabilities) {
+  const modes = [];
+  if (capabilities.complete) modes.push("complete");
+  if (capabilities.streaming) modes.push("streaming");
+  return modes.join(" · ") || "none";
+}
+
+function renderInferenceHealth(snapshot) {
+  const providers = snapshot.providers;
+  const models = snapshot.models;
+  const invocations = snapshot.invocations;
+  const unsuccessful = (
+    invocations.rejected
+    + invocations.failed
+    + invocations.cancelled
+    + invocations.timed_out
+  );
+
+  text("inference-providers-total", providers.providers);
+  text(
+    "inference-summary",
+    `${providers.enabled} enabled · `
+      + `${models.enabled}/${models.models} models · `
+      + `${invocations.active} active`,
+  );
+  text(
+    "inference-status",
+    `Runtime ${snapshot.state} · `
+      + `${invocations.started} started · `
+      + `${invocations.completed} completed · `
+      + `${unsuccessful} unsuccessful · `
+      + `${invocations.forced_cancellations} forced cancellations`,
+  );
+}
+
+function renderInferenceProviders(page) {
+  const body = byId("inference-providers-table");
+
+  body.replaceChildren(...page.items.map((item) => {
+    const row = document.createElement("tr");
+
+    const provider = document.createElement("td");
+    const identifier = document.createElement("strong");
+    identifier.textContent = item.provider_id;
+    provider.append(identifier);
+
+    const capabilities = document.createElement("td");
+    capabilities.textContent = inferenceCapabilitiesLabel(
+      item.capabilities,
+    );
+
+    const models = document.createElement("td");
+    models.textContent = (
+      `${item.enabled_models}/${item.models} enabled`
+    );
+
+    const endpoint = document.createElement("td");
+    endpoint.textContent = item.endpoint_mode || "none";
+
+    const credential = document.createElement("td");
+    credential.textContent = (
+      item.credential_configured ? "configured" : "none"
+    );
+
+    const status = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = statusClass(item.status);
+    badge.textContent = item.status;
+    status.append(badge);
+
+    const revision = document.createElement("td");
+    revision.textContent = item.revision;
+
+    const actions = document.createElement("td");
+    actions.className = "row-actions";
+
+    if (
+      item.status === "active"
+      && hasPermission("inference.provider.disable")
+    ) {
+      actions.append(
+        operationButton(
+          "Disable",
+          () => inferenceLifecycle(
+            "provider",
+            item,
+            "disable",
+          ),
+          true,
+        ),
+      );
+    }
+
+    if (
+      item.status === "disabled"
+      && hasPermission("inference.provider.enable")
+    ) {
+      actions.append(
+        operationButton(
+          "Enable",
+          () => inferenceLifecycle(
+            "provider",
+            item,
+            "enable",
+          ),
+          true,
+        ),
+      );
+    }
+
+    if (!actions.children.length) actions.textContent = "—";
+
+    row.append(
+      provider,
+      capabilities,
+      models,
+      endpoint,
+      credential,
+      status,
+      revision,
+      actions,
+    );
+    return row;
+  }));
+
+  text(
+    "inference-providers-page",
+    `${page.page.returned} of ${page.page.total}`,
+  );
+}
+
+function renderInferenceModels(page) {
+  const body = byId("inference-models-table");
+
+  body.replaceChildren(...page.items.map((item) => {
+    const row = document.createElement("tr");
+
+    const identity = document.createElement("td");
+    const model = document.createElement("strong");
+    model.textContent = item.model_id;
+    const provider = document.createElement("p");
+    provider.className = "muted";
+    provider.textContent = item.provider_id;
+    identity.append(model, provider);
+
+    const capabilities = document.createElement("td");
+    capabilities.textContent = inferenceCapabilitiesLabel(
+      item.capabilities,
+    );
+
+    const limits = document.createElement("td");
+    limits.textContent = (
+      `${item.limits.max_messages} messages · `
+      + `${item.limits.max_total_input_chars} input chars · `
+      + `${item.limits.max_output_tokens} output tokens · `
+      + `${item.limits.max_response_chars} response chars · `
+      + `${item.limits.max_chunks} chunks`
+    );
+
+    const status = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = statusClass(item.status);
+    badge.textContent = item.status;
+    status.append(badge);
+
+    const revision = document.createElement("td");
+    revision.textContent = item.revision;
+
+    const actions = document.createElement("td");
+    actions.className = "row-actions";
+
+    if (
+      item.status === "active"
+      && hasPermission("inference.model.disable")
+    ) {
+      actions.append(
+        operationButton(
+          "Disable",
+          () => inferenceLifecycle(
+            "model",
+            item,
+            "disable",
+          ),
+          true,
+        ),
+      );
+    }
+
+    if (
+      item.status === "disabled"
+      && hasPermission("inference.model.enable")
+    ) {
+      actions.append(
+        operationButton(
+          "Enable",
+          () => inferenceLifecycle(
+            "model",
+            item,
+            "enable",
+          ),
+          true,
+        ),
+      );
+    }
+
+    if (!actions.children.length) actions.textContent = "—";
+
+    row.append(
+      identity,
+      capabilities,
+      limits,
+      status,
+      revision,
+      actions,
+    );
+    return row;
+  }));
+
+  text(
+    "inference-models-page",
+    `${page.page.returned} of ${page.page.total}`,
+  );
+}
+
+async function inferenceLifecycle(kind, item, action) {
+  const identifier = (
+    kind === "provider"
+      ? item.provider_id
+      : `${item.provider_id}/${item.model_id}`
+  );
+  const permission = `inference.${kind}.${action}`;
+
+  if (!hasPermission(permission)) {
+    text(
+      "inference-status",
+      `Inference ${kind} ${action} is not permitted.`,
+    );
+    return;
+  }
+
+  if (
+    !window.confirm(
+      `${action === "enable" ? "Enable" : "Disable"} `
+        + `inference ${kind} ${identifier}?`,
+    )
+  ) {
+    return;
+  }
+
+  const providerSegment = encodeURIComponent(
+    item.provider_id,
+  );
+  const path = (
+    kind === "provider"
+      ? `/v1/control-plane/inference/providers/`
+        + `${providerSegment}/${action}`
+      : `/v1/control-plane/inference/models/`
+        + `${providerSegment}/`
+        + `${encodeURIComponent(item.model_id)}/${action}`
+  );
+  const stepUpAction = (
+    action !== "enable"
+      ? ""
+      : (
+        kind === "provider"
+          ? "enable-inference-provider"
+          : "enable-inference-model"
+      )
+  );
+
+  try {
+    text(
+      "inference-status",
+      `${identifier}: ${action} in progress`,
+    );
+
+    const updated = await operatorCommand(
+      path,
+      {
+        expected_revision: item.revision,
+      },
+      stepUpAction,
+    );
+
+    text(
+      "inference-status",
+      `${identifier}: ${updated.status}`,
+    );
+
+    await refreshInference();
+  } catch (error) {
+    text(
+      "inference-status",
+      `Inference ${kind} action failed: ${error.message}`,
+    );
+  }
+}
+
+async function refreshInference() {
+  const canReadHealth = (
+    state.operatorMode
+    && hasPermission("inference.health.read")
+  );
+  const canReadProviders = (
+    state.operatorMode
+    && hasPermission("inference.provider.read")
+  );
+  const canReadModels = (
+    state.operatorMode
+    && hasPermission("inference.model.read")
+  );
+
+  byId("inference-card").classList.toggle(
+    "hidden",
+    !canReadHealth,
+  );
+  byId("inference-providers-panel").classList.toggle(
+    "hidden",
+    !canReadProviders,
+  );
+  byId("inference-models-panel").classList.toggle(
+    "hidden",
+    !canReadModels,
+  );
+
+  if (!canReadProviders) {
+    byId("inference-providers-table").replaceChildren();
+    text("inference-providers-page", "");
+  }
+
+  if (!canReadModels) {
+    byId("inference-models-table").replaceChildren();
+    text("inference-models-page", "");
+  }
+
+  if (!canReadHealth && !canReadProviders && !canReadModels) {
+    return;
+  }
+
+  try {
+    if (canReadHealth) {
+      renderInferenceHealth(
+        await api("/v1/control-plane/inference/health"),
+      );
+    }
+
+    if (canReadProviders) {
+      renderInferenceProviders(
+        await api(
+          "/v1/control-plane/inference/providers?limit=200",
+        ),
+      );
+    }
+
+    if (canReadModels) {
+      renderInferenceModels(
+        await api(
+          "/v1/control-plane/inference/models?limit=200",
+        ),
+      );
+    }
+  } catch (error) {
+    if (error.message === "not_found") {
+      hideInferenceDashboard();
+      return;
+    }
+
+    if (error.message === "unauthorized") throw error;
+
+    text(
+      "inference-status",
+      `Inference administration unavailable: ${error.message}`,
+    );
+  }
+}
+
+// End RFC-0026 Slice 5C inference dashboard.
+
 function renderOperations(payload) {
   state.operations = payload.actions || {};
   const any = Object.values(state.operations).some(Boolean);
@@ -2244,6 +2638,7 @@ async function refresh() {
     await refreshServiceAccounts();
     await refreshWebhooks();
     await refreshInbound();
+    await refreshInference();
 
     setConnected(
       true,
@@ -2416,6 +2811,7 @@ async function disconnect(reason = "Disconnected") {
   byId("inbound-sources-table").replaceChildren();
   byId("inbound-events-table").replaceChildren();
   state.inboundSources = new Map();
+  hideInferenceDashboard();
 
   state.refreshTimer = null; state.cursor = 0; state.legacyToken = ""; state.csrf = ""; state.operations = {}; state.me = null; state.operatorMode = false;
   byId("token").value = ""; text("operator-identity", "Anonymous"); setConnected(false, reason);

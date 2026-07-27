@@ -82,6 +82,11 @@
           <strong id="inbound-sources-total" class="metric">0</strong>
           <p id="inbound-summary" class="muted">Subsystem unavailable</p>
         </article>
+        <article id="inference-card" class="card hidden">
+          <p class="label">Inference</p>
+          <strong id="inference-providers-total" class="metric">0</strong>
+          <p id="inference-summary" class="muted">Subsystem unavailable</p>
+        </article>
       </section>
 
       <section class="panel-grid">
@@ -439,6 +444,64 @@
             <thead><tr><th>Accepted</th><th>Event</th><th>Source</th><th>Status</th><th>Attempts</th><th>Receipt</th><th>Action</th></tr></thead>
             <tbody id="inbound-events-table"></tbody>
           </table></div>
+        </article>
+
+        <article id="inference-providers-panel" class="panel wide hidden">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Reviewed model adapters</p>
+              <h2>Inference providers</h2>
+            </div>
+            <span id="inference-providers-page" class="muted"></span>
+          </div>
+          <p id="inference-status" class="muted">
+            Content-free runtime health. Prompts, responses, credentials, endpoint URLs, and private provider details are never displayed.
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Capabilities</th>
+                  <th>Models</th>
+                  <th>Endpoint mode</th>
+                  <th>Credential</th>
+                  <th>Status</th>
+                  <th>Revision</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="inference-providers-table"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article id="inference-models-panel" class="panel wide hidden">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Allowlisted registrations</p>
+              <h2>Inference models</h2>
+            </div>
+            <span id="inference-models-page" class="muted"></span>
+          </div>
+          <p id="inference-model-status" class="muted">
+            Only stable identifiers, capabilities, reviewed limits, lifecycle state, and revision are displayed.
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Capabilities</th>
+                  <th>Limits</th>
+                  <th>Status</th>
+                  <th>Revision</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="inference-models-table"></tbody>
+            </table>
+          </div>
         </article>
 
         <article class="panel wide">
