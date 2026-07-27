@@ -161,6 +161,12 @@ from phoenix_os.agent.schemas import (
     validate_tool_input,
     validate_tool_output,
 )
+from phoenix_os.agent.state import (
+    AgentBudgetSnapshot,
+    AgentCancellationToken,
+    AgentRunBudget,
+    AgentRunStateMachine,
+)
 from phoenix_os.agent.tools import (
     MAX_TOOL_DESCRIPTOR_DESCRIPTION_LENGTH,
     MAX_TOOL_DESCRIPTOR_DOCUMENT_BYTES,
@@ -243,6 +249,8 @@ __all__ = [
     "TOOL_INVOKE_ACTION",
     "AgentApprovalRejectedError",
     "AgentAuthorizationRejectedError",
+    "AgentBudgetSnapshot",
+    "AgentCancellationToken",
     "AgentCancelledError",
     "AgentCodecError",
     "AgentError",
@@ -264,9 +272,11 @@ __all__ = [
     "AgentModelTurnResult",
     "AgentRegistryClosedError",
     "AgentRunAuthorizer",
+    "AgentRunBudget",
     "AgentRunId",
     "AgentRunRequest",
     "AgentRunResult",
+    "AgentRunStateMachine",
     "AgentRunStatus",
     "AgentSchemaError",
     "AgentServiceUnavailableError",
