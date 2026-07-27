@@ -131,6 +131,24 @@ assets, migration guidance, and ADRs; rebuilds a wheel from the sdist; and
 installs both wheels in isolated offline environments before exercising the
 packaged inbound and administration surfaces without source-tree imports.
 
+## Inference release gate
+
+RFC-0026 adds a named gate for provider/model contracts, exact authorization,
+credential leasing, endpoint security, limits, complete and streaming
+execution, cancellation, administration, compatibility, and packaging:
+
+```bash
+python scripts/check_inference_release.py
+```
+
+The gate reruns the selected inference regression and security suites; validates
+wheel and sdist metadata, paths, all inference modules, Control Plane and
+Dashboard integrations, migration guidance, and ADRs; rebuilds a wheel from the
+sdist; and installs both wheels in isolated offline environments before
+exercising the packaged deterministic provider, exact action/resource,
+configuration, complete and streaming execution, endpoint, credential, and
+administration surfaces without source-tree imports.
+
 ## Release notes
 
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)

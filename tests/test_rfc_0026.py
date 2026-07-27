@@ -123,8 +123,8 @@ def test_rfc_0026_implementation_progress_is_current() -> None:
     slice_5 = plan.split("### Slice 5", maxsplit=1)[1]
 
     assert plan.count("### Slice ") == 5
-    assert plan.count("- [x]") == 33
-    assert plan.count("- [ ]") == 2
+    assert plan.count("- [x]") == 34
+    assert plan.count("- [ ]") == 1
     assert slice_1.count("- [x]") == 7
     assert slice_2.count("- [x]") == 7
     assert slice_3.count("- [x]") == 7
@@ -161,11 +161,8 @@ def test_rfc_0026_implementation_progress_is_current() -> None:
     ):
         assert f"- [x] {phrase}" in slice_5
 
-    for phrase in (
-        "Security, limits, streaming, and packaging release gate",
-        "Release notes, version 0.26.0, tag, artifacts, and checksums",
-    ):
-        assert f"- [ ] {phrase}" in slice_5
+    assert "- [x] Security, limits, streaming, and packaging release gate" in slice_5
+    assert "- [ ] Release notes, version 0.26.0, tag, artifacts, and checksums" in slice_5
 
 
 def test_rfc_0026_records_slice_1_implementation_boundary() -> None:
