@@ -1,5 +1,10 @@
 """Secure bounded agent and tool-calling contracts."""
 
+from phoenix_os.agent.admission import (
+    AgentAdmissionController,
+    AgentAdmissionLease,
+    AgentAdmissionSnapshot,
+)
 from phoenix_os.agent.approval import (
     InMemoryToolApprovalService,
     ToolApprovalChallenge,
@@ -258,6 +263,9 @@ __all__ = [
     "MAX_TOOL_SCHEMA_REQUIRED_PROPERTIES",
     "MAX_TOOL_SCHEMA_STRING_LENGTH",
     "TOOL_INVOKE_ACTION",
+    "AgentAdmissionController",
+    "AgentAdmissionLease",
+    "AgentAdmissionSnapshot",
     "AgentApprovalRejectedError",
     "AgentAuthorizationRejectedError",
     "AgentBudgetSnapshot",

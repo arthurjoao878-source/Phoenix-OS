@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast, runtime_checkable
 
+from phoenix_os.agent.admission import AgentAdmissionController, AgentAdmissionLease
 from phoenix_os.agent.approval import (
     ToolApprovalChallenge,
     ToolApprovalEvidence,
@@ -42,6 +43,7 @@ from phoenix_os.agent.errors import (
     AgentErrorCode,
     AgentLimitExceededError,
     AgentServiceUnavailableError,
+    AgentTimeoutError,
     ToolExecutionError,
 )
 from phoenix_os.agent.execution import BoundedAgentExecutor
@@ -134,6 +136,7 @@ class AgentLoop:
         inference_requests: AgentInferenceRequestFactory | None = None,
         approval_service: ToolApprovalService | None = None,
         approval_resolver: ToolApprovalResolver | None = None,
+        admission: AgentAdmissionController | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(run_authorizer, AgentRunAuthorizer):
@@ -146,6 +149,9 @@ class AgentLoop:
             raise TypeError("model_adapter must implement AgentModelTurnAdapter")
         if not isinstance(registry, ToolRegistry):
             raise TypeError("registry must be ToolRegistry")
+        resolved_admission = admission or AgentAdmissionController()
+        if not isinstance(resolved_admission, AgentAdmissionController):
+            raise TypeError("admission must be AgentAdmissionController")
         resolved_executor = executor or BoundedAgentExecutor(clock=clock)
         if not isinstance(resolved_executor, BoundedAgentExecutor):
             raise TypeError("executor must be BoundedAgentExecutor")
@@ -168,6 +174,7 @@ class AgentLoop:
         self._tool_authorizer = tool_authorizer
         self._model_adapter = model_adapter
         self._registry = registry
+        self._admission = resolved_admission
         self._executor = resolved_executor
         self._inference_requests = resolved_factory
         self._approval_service = approval_service
@@ -190,6 +197,7 @@ class AgentLoop:
         token = cancellation or AgentCancellationToken()
         if not isinstance(token, AgentCancellationToken):
             raise TypeError("cancellation must be AgentCancellationToken")
+        run_lease: AgentAdmissionLease | None = None
 
         state = AgentRunStateMachine(
             request.run_id,
@@ -202,6 +210,11 @@ class AgentLoop:
         try:
             token.raise_if_cancelled()
             await self._run_authorizer.authorize(request, context)
+            run_lease = await self._admission.acquire_run(
+                request.limits,
+                timeout_seconds=_remaining_seconds(request.deadline, self._now()),
+                cancellation=token,
+            )
             while True:
                 token.raise_if_cancelled()
                 now = self._now()
@@ -221,13 +234,21 @@ class AgentLoop:
                 )
                 inference_request = self._inference_requests.create(request, turn)
                 await self._model_authorizer.authorize(inference_request, context)
-                model_result = await self._executor.complete_model_turn(
-                    self._model_adapter,
-                    turn,
+                model_lease = await self._admission.acquire_model(
+                    request.limits,
                     timeout_seconds=state.budget.model_timeout_seconds(now=self._now()),
-                    cancellation_grace=request.limits.cancellation_grace.total_seconds(),
                     cancellation=token,
                 )
+                try:
+                    model_result = await self._executor.complete_model_turn(
+                        self._model_adapter,
+                        turn,
+                        timeout_seconds=state.budget.model_timeout_seconds(now=self._now()),
+                        cancellation_grace=request.limits.cancellation_grace.total_seconds(),
+                        cancellation=token,
+                    )
+                finally:
+                    await model_lease.release()
                 token.raise_if_cancelled()
 
                 if model_result.kind is AgentModelTurnKind.FINAL_OUTPUT:
@@ -291,14 +312,22 @@ class AgentLoop:
 
                 token.raise_if_cancelled()
                 state.start_tool_invocation(now=self._now())
-                tool_result = await self._executor.invoke_tool(
-                    self._registry.resolve_adapter(invocation.tool_id),
-                    invocation,
-                    resolution.descriptor,
+                tool_lease = await self._admission.acquire_tool(
+                    request.limits,
                     timeout_seconds=state.budget.tool_timeout_seconds(now=self._now()),
-                    cancellation_grace=request.limits.cancellation_grace.total_seconds(),
                     cancellation=token,
                 )
+                try:
+                    tool_result = await self._executor.invoke_tool(
+                        self._registry.resolve_adapter(invocation.tool_id),
+                        invocation,
+                        resolution.descriptor,
+                        timeout_seconds=state.budget.tool_timeout_seconds(now=self._now()),
+                        cancellation_grace=request.limits.cancellation_grace.total_seconds(),
+                        cancellation=token,
+                    )
+                finally:
+                    await tool_lease.release()
                 token.raise_if_cancelled()
                 state.start_result_validation(now=self._now())
                 encoded_result = canonical_tool_invocation_result_bytes(tool_result)
@@ -343,6 +372,9 @@ class AgentLoop:
                 state,
                 error_code=AgentErrorCode.SERVICE_UNAVAILABLE.value,
             )
+        finally:
+            if run_lease is not None:
+                await run_lease.release()
 
     async def _approve(
         self,
@@ -470,6 +502,15 @@ def _require_structured_limits(
                 visit(child, depth + 1)
 
     visit(value, 0)
+
+
+def _remaining_seconds(deadline: datetime, now: datetime) -> float:
+    _require_aware(deadline, "deadline")
+    _require_aware(now, "now")
+    remaining = (deadline - now).total_seconds()
+    if remaining <= 0:
+        raise AgentTimeoutError()
+    return remaining
 
 
 def _deadline(now: datetime, total: datetime, *limits: timedelta) -> datetime:
