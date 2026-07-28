@@ -765,14 +765,14 @@ RFC-0026 inference.
 
 ### Slice 3 - Agent loop, limits, execution, and cancellation
 
-- [ ] Deterministic bounded agent state machine
-- [ ] One tool proposal per model turn
-- [ ] Serial tool execution per run
-- [ ] Model-turn, tool-call, byte, token, step, and duration limits
-- [ ] Tool-result validation and untrusted-result isolation
-- [ ] Cooperative cancellation and finite cleanup
-- [ ] No-transparent-retry and ambiguous-failure semantics
-- [ ] Saturation, timeout, malformed-output, and race tests
+- [x] Deterministic bounded agent state machine
+- [x] One tool proposal per model turn
+- [x] Serial tool execution per run
+- [x] Model-turn, tool-call, byte, token, step, and duration limits
+- [x] Tool-result validation and untrusted-result isolation
+- [x] Cooperative cancellation and finite cleanup
+- [x] No-transparent-retry and ambiguous-failure semantics
+- [x] Saturation, timeout, malformed-output, and race tests
 
 ### Slice 4 - Configuration, Runtime, audit, and administration
 
