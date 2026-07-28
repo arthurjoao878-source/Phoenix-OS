@@ -1,5 +1,10 @@
 """Secure bounded agent and tool-calling contracts."""
 
+from phoenix_os.agent.admission import (
+    AgentAdmissionController,
+    AgentAdmissionLease,
+    AgentAdmissionSnapshot,
+)
 from phoenix_os.agent.approval import (
     InMemoryToolApprovalService,
     ToolApprovalChallenge,
@@ -128,6 +133,11 @@ from phoenix_os.agent.errors import (
     ToolExecutionError,
     ToolNotFoundError,
 )
+from phoenix_os.agent.execution import (
+    BoundedAgentExecutor,
+    validate_agent_model_turn_result,
+    validate_tool_invocation_result,
+)
 from phoenix_os.agent.fake import (
     AgentModelTurnAdapter,
     AgentModelTurnKind,
@@ -139,6 +149,12 @@ from phoenix_os.agent.fake import (
     DeterministicReadOnlyTool,
     DeterministicSideEffectTool,
     DeterministicToolTurn,
+)
+from phoenix_os.agent.loop import (
+    AgentInferenceRequestFactory,
+    AgentLoop,
+    DefaultAgentInferenceRequestFactory,
+    ToolApprovalResolver,
 )
 from phoenix_os.agent.registry import ToolRegistration, ToolRegistry
 from phoenix_os.agent.schemas import (
@@ -160,6 +176,12 @@ from phoenix_os.agent.schemas import (
     tool_schema_to_record,
     validate_tool_input,
     validate_tool_output,
+)
+from phoenix_os.agent.state import (
+    AgentBudgetSnapshot,
+    AgentCancellationToken,
+    AgentRunBudget,
+    AgentRunStateMachine,
 )
 from phoenix_os.agent.tools import (
     MAX_TOOL_DESCRIPTOR_DESCRIPTION_LENGTH,
@@ -241,18 +263,25 @@ __all__ = [
     "MAX_TOOL_SCHEMA_REQUIRED_PROPERTIES",
     "MAX_TOOL_SCHEMA_STRING_LENGTH",
     "TOOL_INVOKE_ACTION",
+    "AgentAdmissionController",
+    "AgentAdmissionLease",
+    "AgentAdmissionSnapshot",
     "AgentApprovalRejectedError",
     "AgentAuthorizationRejectedError",
+    "AgentBudgetSnapshot",
+    "AgentCancellationToken",
     "AgentCancelledError",
     "AgentCodecError",
     "AgentError",
     "AgentErrorCode",
     "AgentId",
+    "AgentInferenceRequestFactory",
     "AgentJsonInput",
     "AgentJsonScalar",
     "AgentJsonValue",
     "AgentLimitExceededError",
     "AgentLimits",
+    "AgentLoop",
     "AgentMalformedProposalError",
     "AgentMessage",
     "AgentMessageRole",
@@ -264,9 +293,11 @@ __all__ = [
     "AgentModelTurnResult",
     "AgentRegistryClosedError",
     "AgentRunAuthorizer",
+    "AgentRunBudget",
     "AgentRunId",
     "AgentRunRequest",
     "AgentRunResult",
+    "AgentRunStateMachine",
     "AgentRunStatus",
     "AgentSchemaError",
     "AgentServiceUnavailableError",
@@ -274,6 +305,8 @@ __all__ = [
     "AgentStateConflictError",
     "AgentStepId",
     "AgentTimeoutError",
+    "BoundedAgentExecutor",
+    "DefaultAgentInferenceRequestFactory",
     "DelegatingAgentModelTurnAuthorizer",
     "DeterministicFinalTurn",
     "DeterministicModelTurn",
@@ -290,6 +323,7 @@ __all__ = [
     "ToolApprovalChallenge",
     "ToolApprovalEvidence",
     "ToolApprovalId",
+    "ToolApprovalResolver",
     "ToolApprovalService",
     "ToolApprovalSnapshot",
     "ToolApprovalStatus",
@@ -351,6 +385,8 @@ __all__ = [
     "tool_invocation_resource",
     "tool_schema_from_record",
     "tool_schema_to_record",
+    "validate_agent_model_turn_result",
     "validate_tool_input",
+    "validate_tool_invocation_result",
     "validate_tool_output",
 ]
