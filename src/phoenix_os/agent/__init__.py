@@ -145,6 +145,12 @@ from phoenix_os.agent.fake import (
     DeterministicSideEffectTool,
     DeterministicToolTurn,
 )
+from phoenix_os.agent.loop import (
+    AgentInferenceRequestFactory,
+    AgentLoop,
+    DefaultAgentInferenceRequestFactory,
+    ToolApprovalResolver,
+)
 from phoenix_os.agent.registry import ToolRegistration, ToolRegistry
 from phoenix_os.agent.schemas import (
     MAX_TOOL_SCHEMA_ARRAY_ITEMS,
@@ -261,11 +267,13 @@ __all__ = [
     "AgentError",
     "AgentErrorCode",
     "AgentId",
+    "AgentInferenceRequestFactory",
     "AgentJsonInput",
     "AgentJsonScalar",
     "AgentJsonValue",
     "AgentLimitExceededError",
     "AgentLimits",
+    "AgentLoop",
     "AgentMalformedProposalError",
     "AgentMessage",
     "AgentMessageRole",
@@ -290,6 +298,7 @@ __all__ = [
     "AgentStepId",
     "AgentTimeoutError",
     "BoundedAgentExecutor",
+    "DefaultAgentInferenceRequestFactory",
     "DelegatingAgentModelTurnAuthorizer",
     "DeterministicFinalTurn",
     "DeterministicModelTurn",
@@ -306,6 +315,7 @@ __all__ = [
     "ToolApprovalChallenge",
     "ToolApprovalEvidence",
     "ToolApprovalId",
+    "ToolApprovalResolver",
     "ToolApprovalService",
     "ToolApprovalSnapshot",
     "ToolApprovalStatus",
