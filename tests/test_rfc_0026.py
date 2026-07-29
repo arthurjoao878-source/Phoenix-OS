@@ -20,11 +20,9 @@ def test_rfc_0026_metadata_is_accepted_for_v0260() -> None:
     assert "- Target release: Phoenix OS v0.26.0" in rfc
 
 
-def test_readme_lists_rfc_0026_as_accepted() -> None:
+def test_readme_preserves_rfc_0026_as_accepted() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.26.0` implements twenty-six accepted specifications:" in readme
     assert "**RFC-0026 — Secure Model Providers and Inference Runtime:**" in readme
-    assert "## Draft specifications" not in readme
     assert "[Phoenix OS 0.26.0](docs/releases/v0.26.0.md)" in readme
 
 
@@ -89,14 +87,15 @@ def test_rfc_0026_defines_bounded_streaming_and_cancellation() -> None:
         assert phrase in rfc
 
 
-def test_rfc_0026_releases_version_0260_after_implementation() -> None:
+def test_rfc_0026_records_completed_v0260_release_boundary() -> None:
     rfc = _normalized(_RFC.read_text(encoding="utf-8"))
     project = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert project["project"]["version"] == "0.26.0"
+    assert project["project"]["version"] >= "0.26.0"
     assert "Inference providers are optional and begin empty." in rfc
     assert "No provider, model, endpoint, secret reference" in rfc
     assert "remains `0.25.0` during implementation slices" in rfc
     assert "changes to `0.26.0` only in the final release slice" in rfc
+    assert "RFC-0026 is accepted for Phoenix OS 0.26.0." in rfc
 
 
 def test_rfc_0026_implementation_progress_is_current() -> None:

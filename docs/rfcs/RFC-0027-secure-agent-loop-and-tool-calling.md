@@ -1,6 +1,6 @@
 # RFC-0027: Secure Agent Loop and Tool Calling Runtime
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.27.0
 - Owners: Phoenix OS maintainers
 - Depends on: RFC-0002, RFC-0004, RFC-0005, RFC-0006, RFC-0009, RFC-0011, RFC-0012, RFC-0023, and RFC-0026
@@ -776,23 +776,72 @@ RFC-0026 inference.
 
 ### Slice 4 - Configuration, Runtime, audit, and administration
 
-- [ ] Typed optional agent and tool configuration
-- [ ] RuntimeAssembler composition and deterministic rollback
-- [ ] Safe Runtime service exposure and health snapshots
-- [ ] Content-free audit, metrics, logs, and Event Bus events
-- [ ] Maintainer tool lifecycle and agent health administration
-- [ ] Bounded shutdown ordering
-- [ ] Compatibility tests with agent configuration omitted
+- [x] Typed optional agent and tool configuration
+- [x] RuntimeAssembler composition and deterministic rollback
+- [x] Safe Runtime service exposure and health snapshots
+- [x] Content-free audit, metrics, logs, and Event Bus events
+- [x] Maintainer tool lifecycle and agent health administration
+- [x] Bounded shutdown ordering
+- [x] Compatibility tests with agent configuration omitted
 
 ### Slice 5 - Migration, architecture decisions, and v0.27.0
 
-- [ ] Migration guidance and rollback procedure
-- [ ] Architecture Decision Records
-- [ ] Threat-model and security-invariant review
-- [ ] Agent and tool-calling release gate
-- [ ] Wheel and sdist isolated offline installation tests
-- [ ] Release notes and package version 0.27.0
-- [ ] Tag, artifacts, and checksums
+- [x] Migration guidance and rollback procedure
+- [x] Architecture Decision Records
+- [x] Threat-model and security-invariant review
+- [x] Agent and tool-calling release gate
+- [x] Wheel and sdist isolated offline installation tests
+- [x] Release notes and package version 0.27.0
+- [x] Tag, artifacts, and checksums
+
+The Slice 4 implementation adds immutable optional `AgentServiceConfiguration`
+and reviewed tool configuration, `RuntimeAssembler` composition, deterministic
+partial-startup rollback, safe `agent.service` and `agent.administration`
+boundaries, content-free `AgentObserver` audit/metric/log/Event Bus integration,
+and bounded shutdown. Shutdown rejects new runs, drains or cancels active work,
+invalidates unused approvals, closes tool adapters in reverse composition order,
+closes the model-turn adapter and agent Runtime, and preserves RFC-0026 inference
+shutdown ordering. Compatibility tests confirm that omitted agent configuration
+creates no agent services, events, tools, approvals, or work.
+
+The final Slice 5 records migration and immediate disable-first rollback in
+[`v0.26.0-to-v0.27.0-agent.md`](../migrations/v0.26.0-to-v0.27.0-agent.md).
+Five accepted ADRs record server-owned strict tools, independent authorization
+and exact approvals, bounded serial execution without transparent retry,
+untrusted result isolation with content-free observation, and opt-in Runtime
+lifecycle ownership:
+
+- [`ADR-0016`](../adrs/ADR-0016-server-owned-tool-registry-and-strict-agent-schemas.md)
+- [`ADR-0017`](../adrs/ADR-0017-independent-agent-model-tool-authorization-and-exact-approvals.md)
+- [`ADR-0018`](../adrs/ADR-0018-bounded-serial-agent-loop-and-no-transparent-retry.md)
+- [`ADR-0019`](../adrs/ADR-0019-untrusted-tool-results-and-content-free-agent-observability.md)
+- [`ADR-0020`](../adrs/ADR-0020-opt-in-agent-runtime-and-bounded-lifecycle.md)
+
+The formal threat-model and security-invariant review is recorded in
+[`RFC-0027-agent-threat-model-review.md`](../security/RFC-0027-agent-threat-model-review.md).
+It maps prompt injection, fabricated tools and resources, schema ambiguity,
+approval replay, leaked authority, unbounded work, duplicate side effects,
+untrusted tool results, cancellation races, ambient adapter authority, safe
+output, and v0.26.0 compatibility to executable regression suites and residual
+risks.
+
+`scripts/check_agent_release.py` is the named agent and tool-calling release gate.
+It runs the selected contract, codec, schema, registry, authorization, approval,
+execution, state, admission, loop, configuration, composition, service,
+observability, Runtime, migration, ADR, threat-review, RFC, and release suites.
+It validates all `phoenix_os.agent` modules and Runtime integration in wheel and
+sdist artifacts, rejects unsafe archive paths and sensitive file types, rebuilds
+a wheel from the validated sdist, and installs both wheels with no dependency or
+index access in isolated offline environments. The smoke program removes
+`PYTHONPATH`, uses isolated mode, verifies imports originate under `sys.prefix`,
+and executes a deterministic final run and one strict tool cycle without source-tree imports.
+
+Release metadata is recorded in
+[`docs/releases/v0.27.0.md`](../releases/v0.27.0.md). The package version is
+`0.27.0`; the release publishes tag `v0.27.0`, wheel and sdist artifacts, and
+`SHA256SUMS`.
+
+RFC-0027 is accepted for Phoenix OS 0.27.0.
 
 ## Acceptance
 

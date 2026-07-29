@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.27.0] - 2026-07-29
+
+### Added
+- Accepted RFC-0027 and the five secure-agent architecture records.
+- Immutable agent, tool proposal, invocation, result, strict schema, limit, and safe error contracts.
+- Server-owned reviewed tool registration with exact resource resolvers and deterministic fake adapters.
+- Independent `agent.run`, per-turn `model.infer`, and per-call `tool.invoke` authorization.
+- Action-bound, actor-bound, short-lived, single-use approval evidence for sensitive effects.
+- Deterministic serial agent execution with finite budgets, cancellation, shutdown, and no transparent retry.
+- Optional Runtime composition, content-free observability, safe administration, migration, threat review, and isolated package gate.
+
+### Security
+- Agent execution remains disabled by default with no implicit tool, permission, approval, run, worker, listener, network, filesystem, shell, or operating-system authority.
+- Model output and tool results remain untrusted data; policy resources are resolved only by trusted server-side code after strict validation.
+- Approvals are bound to the exact normalized invocation and fail closed after mutation, replay, expiry, denial, cancellation, or consumption.
+- Prompts, model responses, raw arguments, tool results, credentials, secret references, approval evidence, endpoint details, and raw exceptions remain absent from safe output.
+- Model and tool execution are never retried transparently, and ambiguous external failures are not automatically repeated.
+
+### Compatibility
+- Phoenix OS 0.26.0 behavior is preserved when agent configuration is omitted.
+- RFC-0026 inference remains independently configurable, and existing principals or service accounts gain no agent or tool authority automatically.
+
+
 ## [0.26.0] - 2026-07-27
 
 ### Added
