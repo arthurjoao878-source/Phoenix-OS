@@ -36,6 +36,11 @@ the decision requires a new ADR that explicitly supersedes the previous one.
 | [ADR-0013](ADR-0013-exact-credential-leases-and-fail-closed-provider-endpoints.md) | Accepted | Lease exact credential versions only during execution and admit provider endpoints through fail-closed destination and TLS policy. |
 | [ADR-0014](ADR-0014-bounded-streaming-cancellation-and-no-transparent-retry.md) | Accepted | Bound complete and streaming execution, require one terminal record, cancel cooperatively, and never retry provider work transparently. |
 | [ADR-0015](ADR-0015-opt-in-inference-runtime-and-separated-administration.md) | Accepted | Keep inference opt-in, Runtime-owned, content-free in safe output, and separated across invocation, human, and machine authority. |
+| [ADR-0016](ADR-0016-server-owned-tool-registry-and-strict-agent-schemas.md) | Accepted | Keep the tool inventory server-owned and validate every proposal and result through strict bounded Phoenix schemas. |
+| [ADR-0017](ADR-0017-independent-agent-model-tool-authorization-and-exact-approvals.md) | Accepted | Require independent run, model, and tool policy decisions plus exact single-use approvals for sensitive effects. |
+| [ADR-0018](ADR-0018-bounded-serial-agent-loop-and-no-transparent-retry.md) | Accepted | Execute a finite serial agent state machine and never retry model or tool work transparently. |
+| [ADR-0019](ADR-0019-untrusted-tool-results-and-content-free-agent-observability.md) | Accepted | Treat tool results as untrusted and keep audit, health, administration, logs, metrics, and events content-free. |
+| [ADR-0020](ADR-0020-opt-in-agent-runtime-and-bounded-lifecycle.md) | Accepted | Keep agent execution opt-in, Runtime-owned, deterministically rolled back, and bounded during cancellation and shutdown. |
 
 ## Related specifications
 
@@ -45,3 +50,6 @@ the decision requires a new ADR that explicitly supersedes the previous one.
   [RFC-0025 — Secure Inbound Event Gateway and External Event Sources](../rfcs/RFC-0025-secure-inbound-event-gateway-and-external-event-sources.md).
 - ADR-0011 through ADR-0015 record the principal durable choices implemented by
   [RFC-0026 — Secure Model Providers and Inference Runtime](../rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md).
+
+- ADR-0016 through ADR-0020 record the principal durable choices implemented by
+  [RFC-0027 — Secure Agent Loop and Tool Calling Runtime](../rfcs/RFC-0027-secure-agent-loop-and-tool-calling.md).
