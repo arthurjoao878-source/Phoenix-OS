@@ -315,3 +315,53 @@ async def test_agent_shutdown_closes_tool_adapters_in_reverse_composition_order(
     await stack.service.stop(_runtime_context())
 
     assert closed == ["second", "first", "model"]
+
+
+class StubbornClosingModelAdapter:
+    adapter_id = "stubborn-closing-model"
+
+    def __init__(self) -> None:
+        self._delegate = DeterministicModelTurnAdapter((DeterministicFinalTurn("done"),))
+        self.close_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def complete_turn(self, request: AgentModelTurnRequest) -> AgentModelTurnResult:
+        return await self._delegate.complete_turn(request)
+
+    async def aclose(self) -> None:
+        self.close_started.set()
+        while not self.release.is_set():
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                continue
+
+
+@pytest.mark.asyncio
+async def test_agent_shutdown_bounds_stubborn_adapter_close_and_finishes_state() -> None:
+    limits = AgentLimits(
+        cancellation_grace=timedelta(milliseconds=20),
+        shutdown_grace=timedelta(milliseconds=20),
+    )
+    configuration = _configuration(limits=limits)
+    adapter = StubbornClosingModelAdapter()
+    stack = create_agent_runtime_stack(
+        configuration=configuration,
+        model_adapter=adapter,
+        tool_resolvers=(),
+        tool_adapters=(),
+        policy=_policy(configuration),
+        events=EventBus(),
+    )
+    await stack.service.start(_runtime_context())
+
+    with pytest.raises(TimeoutError, match="shutdown close timed out"):
+        await asyncio.wait_for(stack.service.stop(_runtime_context()), timeout=1)
+
+    assert adapter.close_started.is_set()
+    snapshot = await stack.service.snapshot()
+    assert snapshot.state is AgentServiceState.STOPPED
+    assert stack.registry.closed
+
+    adapter.release.set()
+    await asyncio.sleep(0)

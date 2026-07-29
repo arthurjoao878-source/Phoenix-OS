@@ -37,7 +37,16 @@ from phoenix_os.agent import (
     ToolSchemaType,
 )
 from phoenix_os.configuration import Configuration
-from phoenix_os.inference import ModelId, ModelProviderId
+from phoenix_os.events import Event
+from phoenix_os.inference import (
+    DeterministicModelProvider,
+    InferenceProviderConfiguration,
+    InferenceServiceConfiguration,
+    ModelCapabilities,
+    ModelDescriptor,
+    ModelId,
+    ModelProviderId,
+)
 from phoenix_os.policy import PolicyEngine
 
 
@@ -100,9 +109,30 @@ def _model_adapter() -> DeterministicModelTurnAdapter:
     return DeterministicModelTurnAdapter((DeterministicFinalTurn("done"),))
 
 
+def _inference_configuration() -> InferenceServiceConfiguration:
+    return InferenceServiceConfiguration(
+        providers=(InferenceProviderConfiguration(ModelProviderId("deterministic")),),
+        models=(
+            ModelDescriptor(
+                provider_id=ModelProviderId("deterministic"),
+                model_id=ModelId("chat"),
+                provider_model_name="chat",
+                capabilities=ModelCapabilities(complete=True, streaming=True),
+            ),
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_runtime_assembler_preserves_compatibility_when_agent_is_omitted() -> None:
     configuration, events, kernel, capabilities = await _base()
+    captured: list[Event] = []
+
+    async def capture(event: Event) -> None:
+        if event.name.startswith("agent."):
+            captured.append(event)
+
+    await events.subscribe("*", capture)
     runtime = await RuntimeAssembler(
         kernel=kernel,
         events=events,
@@ -119,6 +149,7 @@ async def test_runtime_assembler_preserves_compatibility_when_agent_is_omitted()
     assert "agent.executor" not in runtime.services
     await runtime.start()
     await runtime.stop()
+    assert captured == []
 
 
 @pytest.mark.asyncio
@@ -225,3 +256,56 @@ async def test_enabled_agent_requires_policy_configuration_and_model_adapter() -
             agent_enabled=True,
             agent_configuration=_agent_configuration(descriptor),
         )
+
+
+@pytest.mark.asyncio
+async def test_runtime_shutdown_stops_agent_before_inference() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    descriptor = _descriptor()
+    stopped: list[str] = []
+
+    async def capture(event: Event) -> None:
+        if event.name == "runtime.component.stopped":
+            component = event.payload.get("component")
+            if isinstance(component, str):
+                stopped.append(component)
+
+    await events.subscribe("*", capture)
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        inference_enabled=True,
+        inference_configuration=_inference_configuration(),
+        inference_providers=(
+            DeterministicModelProvider(
+                {"chat": "inference"},
+                provider_id="deterministic",
+            ),
+        ),
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(descriptor),
+        agent_model_adapter=_model_adapter(),
+        agent_tool_resolvers=(
+            StaticToolResourceResolver(
+                resolver_id=descriptor.resolver_id,
+                resource="workspace/read",
+            ),
+        ),
+        agent_tool_adapters=(
+            DeterministicReadOnlyTool(
+                descriptor.tool_id,
+                {"value": "ok"},
+                adapter_id=descriptor.adapter_id,
+            ),
+        ),
+    ).assemble()
+
+    await runtime.start()
+    await runtime.stop()
+
+    assert "agent" in stopped
+    assert "inference" in stopped
+    assert stopped.index("agent") < stopped.index("inference")

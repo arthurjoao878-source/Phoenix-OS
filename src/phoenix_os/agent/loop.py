@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast, runtime_checkable
@@ -18,6 +19,7 @@ from phoenix_os.agent.authorization import (
     AgentModelTurnAuthorizer,
     AgentRunAuthorizer,
     ToolAuthorizer,
+    canonical_tool_argument_digest,
 )
 from phoenix_os.agent.codec import (
     canonical_tool_call_proposal_bytes,
@@ -31,6 +33,10 @@ from phoenix_os.agent.contracts import (
     AgentRunRequest,
     AgentRunResult,
     AgentStepId,
+    ToolApprovalId,
+    ToolCallId,
+    ToolEffect,
+    ToolId,
     ToolInvocationRequest,
     ToolInvocationResult,
     ToolResultStatus,
@@ -51,6 +57,14 @@ from phoenix_os.agent.fake import (
     AgentModelTurnAdapter,
     AgentModelTurnKind,
     AgentModelTurnRequest,
+)
+from phoenix_os.agent.observer import (
+    AgentObserver,
+    AgentOperation,
+    AgentOperationObservation,
+    AgentOperationOutcome,
+    NullAgentObserver,
+    resolved_resource_category,
 )
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.state import AgentCancellationToken, AgentRunStateMachine
@@ -137,6 +151,7 @@ class AgentLoop:
         approval_service: ToolApprovalService | None = None,
         approval_resolver: ToolApprovalResolver | None = None,
         admission: AgentAdmissionController | None = None,
+        observer: AgentObserver | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(run_authorizer, AgentRunAuthorizer):
@@ -166,6 +181,9 @@ class AgentLoop:
             approval_resolver, ToolApprovalResolver
         ):
             raise TypeError("approval_resolver must implement ToolApprovalResolver")
+        resolved_observer = NullAgentObserver() if observer is None else observer
+        if not isinstance(resolved_observer, AgentObserver):
+            raise TypeError("observer must implement AgentObserver")
         if not callable(clock):
             raise TypeError("clock must be callable")
 
@@ -179,6 +197,7 @@ class AgentLoop:
         self._inference_requests = resolved_factory
         self._approval_service = approval_service
         self._approval_resolver = approval_resolver
+        self._observer = resolved_observer
         self._clock = clock
 
     async def run(
@@ -209,17 +228,46 @@ class AgentLoop:
 
         try:
             token.raise_if_cancelled()
-            await self._run_authorizer.authorize(request, context)
-            run_lease = await self._admission.acquire_run(
-                request.limits,
-                timeout_seconds=_remaining_seconds(request.deadline, self._now()),
-                cancellation=token,
+            await self._authorize_observed(
+                self._run_authorizer.authorize(request, context),
+                AgentOperationObservation(
+                    operation=AgentOperation.RUN_AUTHORIZATION,
+                    outcome=AgentOperationOutcome.SUCCEEDED,
+                    agent_id=request.agent_id,
+                    run_id=request.run_id,
+                ),
+                context,
             )
+            try:
+                run_lease = await self._admission.acquire_run(
+                    request.limits,
+                    timeout_seconds=_remaining_seconds(request.deadline, self._now()),
+                    cancellation=token,
+                )
+            except BaseException as exception:
+                await self._observe_exception(
+                    AgentOperation.RUN_ADMISSION,
+                    request,
+                    context,
+                    exception,
+                )
+                raise
+            await self._observe(
+                AgentOperationObservation(
+                    operation=AgentOperation.RUN_ADMISSION,
+                    outcome=AgentOperationOutcome.SUCCEEDED,
+                    agent_id=request.agent_id,
+                    run_id=request.run_id,
+                ),
+                context,
+            )
+
             while True:
                 token.raise_if_cancelled()
                 now = self._now()
                 _require_prompt_limits(messages, request)
                 state.start_inference(now=now)
+                model_turn = state.budget.model_turns
                 turn = AgentModelTurnRequest(
                     run_id=request.run_id,
                     step_id=AgentStepId(),
@@ -233,13 +281,36 @@ class AgentLoop:
                     ),
                 )
                 inference_request = self._inference_requests.create(request, turn)
-                await self._model_authorizer.authorize(inference_request, context)
+                await self._authorize_observed(
+                    self._model_authorizer.authorize(inference_request, context),
+                    AgentOperationObservation(
+                        operation=AgentOperation.MODEL_AUTHORIZATION,
+                        outcome=AgentOperationOutcome.SUCCEEDED,
+                        agent_id=request.agent_id,
+                        run_id=request.run_id,
+                        step_id=turn.step_id,
+                        model_turn=model_turn,
+                    ),
+                    context,
+                )
                 model_lease = await self._admission.acquire_model(
                     request.limits,
                     timeout_seconds=state.budget.model_timeout_seconds(now=self._now()),
                     cancellation=token,
                 )
+                model_started = time.perf_counter()
                 try:
+                    await self._observe(
+                        AgentOperationObservation(
+                            operation=AgentOperation.MODEL_TURN,
+                            outcome=AgentOperationOutcome.STARTED,
+                            agent_id=request.agent_id,
+                            run_id=request.run_id,
+                            step_id=turn.step_id,
+                            model_turn=model_turn,
+                        ),
+                        context,
+                    )
                     model_result = await self._executor.complete_model_turn(
                         self._model_adapter,
                         turn,
@@ -247,8 +318,31 @@ class AgentLoop:
                         cancellation_grace=request.limits.cancellation_grace.total_seconds(),
                         cancellation=token,
                     )
+                except BaseException as exception:
+                    await self._observe_exception(
+                        AgentOperation.MODEL_TURN,
+                        request,
+                        context,
+                        exception,
+                        step_id=turn.step_id,
+                        model_turn=model_turn,
+                        duration_ms=_duration_ms(model_started),
+                    )
+                    raise
                 finally:
                     await model_lease.release()
+                await self._observe(
+                    AgentOperationObservation(
+                        operation=AgentOperation.MODEL_TURN,
+                        outcome=AgentOperationOutcome.SUCCEEDED,
+                        agent_id=request.agent_id,
+                        run_id=request.run_id,
+                        step_id=turn.step_id,
+                        model_turn=model_turn,
+                        duration_ms=_duration_ms(model_started),
+                    ),
+                    context,
+                )
                 token.raise_if_cancelled()
 
                 if model_result.kind is AgentModelTurnKind.FINAL_OUTPUT:
@@ -262,62 +356,122 @@ class AgentLoop:
                     )
 
                 assert model_result.proposal is not None
-                state.budget.record_model_usage(
-                    len(canonical_tool_call_proposal_bytes(model_result.proposal))
-                )
+                proposal = model_result.proposal
+                state.budget.record_model_usage(len(canonical_tool_call_proposal_bytes(proposal)))
                 state.start_proposal_validation(now=self._now())
-                resolution = self._registry.admit_tool_call(
-                    model_result.proposal.tool_id,
-                    model_result.proposal.arguments,
-                )
-                _require_structured_limits(
-                    resolution.arguments,
-                    max_depth=request.limits.max_structured_depth,
-                    max_items=request.limits.max_structured_items,
-                )
-                argument_bytes = len(canonical_agent_json_bytes(resolution.arguments))
-                state.budget.require_argument_bytes(argument_bytes)
-                invocation_created_at = self._now()
-                invocation = ToolInvocationRequest(
-                    run_id=request.run_id,
-                    step_id=turn.step_id,
-                    call_id=model_result.proposal.call_id,
-                    tool_id=resolution.descriptor.tool_id,
-                    arguments=resolution.arguments,
-                    resolved_resource=resolution.resolved_resource,
-                    created_at=invocation_created_at,
-                    deadline=_deadline(
-                        invocation_created_at,
-                        state.budget.deadline,
-                        request.limits.tool_call_timeout,
-                        resolution.descriptor.timeout,
-                        model_result.proposal.deadline - invocation_created_at,
+                try:
+                    resolution = self._registry.admit_tool_call(
+                        proposal.tool_id,
+                        proposal.arguments,
+                    )
+                    _require_structured_limits(
+                        resolution.arguments,
+                        max_depth=request.limits.max_structured_depth,
+                        max_items=request.limits.max_structured_items,
+                    )
+                    argument_bytes = len(canonical_agent_json_bytes(resolution.arguments))
+                    state.budget.require_argument_bytes(argument_bytes)
+                    invocation_created_at = self._now()
+                    invocation = ToolInvocationRequest(
+                        run_id=request.run_id,
+                        step_id=turn.step_id,
+                        call_id=proposal.call_id,
+                        tool_id=resolution.descriptor.tool_id,
+                        arguments=resolution.arguments,
+                        resolved_resource=resolution.resolved_resource,
+                        created_at=invocation_created_at,
+                        deadline=_deadline(
+                            invocation_created_at,
+                            state.budget.deadline,
+                            request.limits.tool_call_timeout,
+                            resolution.descriptor.timeout,
+                            proposal.deadline - invocation_created_at,
+                        ),
+                    )
+                except BaseException as exception:
+                    await self._observe_exception(
+                        AgentOperation.PROPOSAL_VALIDATION,
+                        request,
+                        context,
+                        exception,
+                        step_id=turn.step_id,
+                        call_id=proposal.call_id,
+                        tool_id=proposal.tool_id,
+                        model_turn=model_turn,
+                    )
+                    raise
+                await self._observe(
+                    AgentOperationObservation(
+                        operation=AgentOperation.PROPOSAL_VALIDATION,
+                        outcome=AgentOperationOutcome.SUCCEEDED,
+                        agent_id=request.agent_id,
+                        run_id=request.run_id,
+                        step_id=turn.step_id,
+                        call_id=invocation.call_id,
+                        tool_id=invocation.tool_id,
+                        effect=resolution.descriptor.effect,
+                        argument_digest=canonical_tool_argument_digest(invocation.arguments),
+                        resource_category=resolved_resource_category(invocation.resolved_resource),
+                        model_turn=model_turn,
                     ),
+                    context,
                 )
 
                 state.start_tool_authorization(now=self._now())
-                await self._tool_authorizer.authorize(
-                    invocation,
-                    resolution.descriptor,
+                await self._authorize_observed(
+                    self._tool_authorizer.authorize(
+                        invocation,
+                        resolution.descriptor,
+                        context,
+                    ),
+                    AgentOperationObservation(
+                        operation=AgentOperation.TOOL_AUTHORIZATION,
+                        outcome=AgentOperationOutcome.SUCCEEDED,
+                        agent_id=request.agent_id,
+                        run_id=request.run_id,
+                        step_id=invocation.step_id,
+                        call_id=invocation.call_id,
+                        tool_id=invocation.tool_id,
+                        effect=resolution.descriptor.effect,
+                        argument_digest=canonical_tool_argument_digest(invocation.arguments),
+                        resource_category=resolved_resource_category(invocation.resolved_resource),
+                        model_turn=model_turn,
+                    ),
                     context,
                 )
                 if tool_descriptor_requires_approval(resolution.descriptor):
                     await self._approve(
+                        request,
                         invocation,
                         resolution.descriptor,
                         context,
                         state=state,
                         cancellation=token,
+                        model_turn=model_turn,
                     )
 
                 token.raise_if_cancelled()
                 state.start_tool_invocation(now=self._now())
+                tool_call = state.budget.tool_calls
                 tool_lease = await self._admission.acquire_tool(
                     request.limits,
                     timeout_seconds=state.budget.tool_timeout_seconds(now=self._now()),
                     cancellation=token,
                 )
+                tool_started = time.perf_counter()
                 try:
+                    await self._observe(
+                        self._tool_observation(
+                            request,
+                            invocation,
+                            resolution.descriptor,
+                            operation=AgentOperation.TOOL_INVOCATION,
+                            outcome=AgentOperationOutcome.STARTED,
+                            model_turn=model_turn,
+                            tool_call=tool_call,
+                        ),
+                        context,
+                    )
                     tool_result = await self._executor.invoke_tool(
                         self._registry.resolve_adapter(invocation.tool_id),
                         invocation,
@@ -326,8 +480,44 @@ class AgentLoop:
                         cancellation_grace=request.limits.cancellation_grace.total_seconds(),
                         cancellation=token,
                     )
+                except BaseException as exception:
+                    await self._observe_exception(
+                        AgentOperation.TOOL_INVOCATION,
+                        request,
+                        context,
+                        exception,
+                        step_id=invocation.step_id,
+                        call_id=invocation.call_id,
+                        tool_id=invocation.tool_id,
+                        effect=resolution.descriptor.effect,
+                        argument_digest=canonical_tool_argument_digest(invocation.arguments),
+                        resource_category=resolved_resource_category(invocation.resolved_resource),
+                        model_turn=model_turn,
+                        tool_call=tool_call,
+                        duration_ms=_duration_ms(tool_started),
+                    )
+                    raise
                 finally:
                     await tool_lease.release()
+                tool_outcome = (
+                    AgentOperationOutcome.SUCCEEDED
+                    if tool_result.status is ToolResultStatus.SUCCEEDED
+                    else AgentOperationOutcome.INDETERMINATE
+                )
+                await self._observe(
+                    self._tool_observation(
+                        request,
+                        invocation,
+                        resolution.descriptor,
+                        operation=AgentOperation.TOOL_INVOCATION,
+                        outcome=tool_outcome,
+                        model_turn=model_turn,
+                        tool_call=tool_call,
+                        duration_ms=_duration_ms(tool_started),
+                        error_code=tool_result.error_code,
+                    ),
+                    context,
+                )
                 token.raise_if_cancelled()
                 state.start_result_validation(now=self._now())
                 encoded_result = canonical_tool_invocation_result_bytes(tool_result)
@@ -378,32 +568,239 @@ class AgentLoop:
 
     async def _approve(
         self,
+        request: AgentRunRequest,
         invocation: ToolInvocationRequest,
         descriptor: ToolDescriptor,
         context: SecurityContext,
         *,
         state: AgentRunStateMachine,
         cancellation: AgentCancellationToken,
+        model_turn: int,
     ) -> None:
         service = self._approval_service
         resolver = self._approval_resolver
         if service is None or resolver is None:
             raise AgentApprovalRejectedError()
         state.start_approval(now=self._now())
-        challenge = await service.request(invocation, descriptor, context)
-        evidence = await _await_approval(
-            resolver.resolve(challenge),
-            timeout_seconds=state.budget.approval_timeout_seconds(now=self._now()),
-            cancellation_grace=state.budget.limits.cancellation_grace.total_seconds(),
-            cancellation=cancellation,
-        )
-        if not isinstance(evidence, ToolApprovalEvidence):
-            raise AgentApprovalRejectedError()
-        await service.verify_and_consume(
-            evidence,
-            invocation,
-            descriptor,
+        try:
+            challenge = await service.request(invocation, descriptor, context)
+        except BaseException as exception:
+            await self._observe_exception(
+                AgentOperation.APPROVAL,
+                request,
+                context,
+                exception,
+                step_id=invocation.step_id,
+                call_id=invocation.call_id,
+                tool_id=invocation.tool_id,
+                effect=descriptor.effect,
+                argument_digest=canonical_tool_argument_digest(invocation.arguments),
+                resource_category=resolved_resource_category(invocation.resolved_resource),
+                model_turn=model_turn,
+            )
+            raise
+        await self._observe(
+            self._tool_observation(
+                request,
+                invocation,
+                descriptor,
+                operation=AgentOperation.APPROVAL,
+                outcome=AgentOperationOutcome.REQUESTED,
+                model_turn=model_turn,
+                approval_id=challenge.approval_id,
+            ),
             context,
+        )
+        try:
+            evidence = await _await_approval(
+                resolver.resolve(challenge),
+                timeout_seconds=state.budget.approval_timeout_seconds(now=self._now()),
+                cancellation_grace=state.budget.limits.cancellation_grace.total_seconds(),
+                cancellation=cancellation,
+            )
+            if not isinstance(evidence, ToolApprovalEvidence):
+                raise AgentApprovalRejectedError()
+        except BaseException as exception:
+            await self._observe_exception(
+                AgentOperation.APPROVAL,
+                request,
+                context,
+                exception,
+                step_id=invocation.step_id,
+                call_id=invocation.call_id,
+                tool_id=invocation.tool_id,
+                approval_id=challenge.approval_id,
+                effect=descriptor.effect,
+                argument_digest=canonical_tool_argument_digest(invocation.arguments),
+                resource_category=resolved_resource_category(invocation.resolved_resource),
+                model_turn=model_turn,
+            )
+            raise
+        await self._observe(
+            self._tool_observation(
+                request,
+                invocation,
+                descriptor,
+                operation=AgentOperation.APPROVAL,
+                outcome=AgentOperationOutcome.APPROVED,
+                model_turn=model_turn,
+                approval_id=evidence.approval_id,
+            ),
+            context,
+        )
+        try:
+            await service.verify_and_consume(
+                evidence,
+                invocation,
+                descriptor,
+                context,
+            )
+        except BaseException as exception:
+            await self._observe_exception(
+                AgentOperation.APPROVAL,
+                request,
+                context,
+                exception,
+                step_id=invocation.step_id,
+                call_id=invocation.call_id,
+                tool_id=invocation.tool_id,
+                approval_id=evidence.approval_id,
+                effect=descriptor.effect,
+                argument_digest=canonical_tool_argument_digest(invocation.arguments),
+                resource_category=resolved_resource_category(invocation.resolved_resource),
+                model_turn=model_turn,
+            )
+            raise
+        await self._observe(
+            self._tool_observation(
+                request,
+                invocation,
+                descriptor,
+                operation=AgentOperation.APPROVAL,
+                outcome=AgentOperationOutcome.CONSUMED,
+                model_turn=model_turn,
+                approval_id=evidence.approval_id,
+            ),
+            context,
+        )
+
+    async def _authorize_observed(
+        self,
+        awaitable: Awaitable[object],
+        succeeded: AgentOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        try:
+            await awaitable
+        except BaseException as exception:
+            await self._observe_exception(
+                succeeded.operation,
+                None,
+                context,
+                exception,
+                template=succeeded,
+            )
+            raise
+        await self._observe(succeeded, context)
+
+    async def _observe(
+        self,
+        observation: AgentOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        try:
+            await self._observer.record(observation, context)
+        except Exception:
+            pass
+
+    async def _observe_exception(
+        self,
+        operation: AgentOperation,
+        request: AgentRunRequest | None,
+        context: SecurityContext,
+        exception: BaseException,
+        *,
+        template: AgentOperationObservation | None = None,
+        step_id: AgentStepId | None = None,
+        call_id: ToolCallId | None = None,
+        tool_id: ToolId | None = None,
+        approval_id: ToolApprovalId | None = None,
+        effect: ToolEffect | None = None,
+        argument_digest: str | None = None,
+        resource_category: str | None = None,
+        duration_ms: int | None = None,
+        model_turn: int | None = None,
+        tool_call: int | None = None,
+    ) -> None:
+        if template is not None:
+            agent_id = template.agent_id
+            run_id = template.run_id
+            step_id = template.step_id
+            call_id = template.call_id
+            tool_id = template.tool_id
+            approval_id = template.approval_id
+            effect = template.effect
+            argument_digest = template.argument_digest
+            resource_category = template.resource_category
+            model_turn = template.model_turn
+            tool_call = template.tool_call
+        else:
+            if request is None:
+                raise ValueError("request or template is required")
+            agent_id = request.agent_id
+            run_id = request.run_id
+        outcome, error_code = _operation_failure(exception)
+        await self._observe(
+            AgentOperationObservation(
+                operation=operation,
+                outcome=outcome,
+                agent_id=agent_id,
+                run_id=run_id,
+                step_id=step_id,
+                call_id=call_id,
+                tool_id=tool_id,
+                approval_id=approval_id,
+                effect=effect,
+                argument_digest=argument_digest,
+                resource_category=resource_category,
+                duration_ms=duration_ms,
+                model_turn=model_turn,
+                tool_call=tool_call,
+                error_code=error_code,
+            ),
+            context,
+        )
+
+    @staticmethod
+    def _tool_observation(
+        request: AgentRunRequest,
+        invocation: ToolInvocationRequest,
+        descriptor: ToolDescriptor,
+        *,
+        operation: AgentOperation,
+        outcome: AgentOperationOutcome,
+        model_turn: int,
+        tool_call: int | None = None,
+        approval_id: ToolApprovalId | None = None,
+        duration_ms: int | None = None,
+        error_code: str | None = None,
+    ) -> AgentOperationObservation:
+        return AgentOperationObservation(
+            operation=operation,
+            outcome=outcome,
+            agent_id=request.agent_id,
+            run_id=request.run_id,
+            step_id=invocation.step_id,
+            call_id=invocation.call_id,
+            tool_id=invocation.tool_id,
+            approval_id=approval_id,
+            effect=descriptor.effect,
+            argument_digest=canonical_tool_argument_digest(invocation.arguments),
+            resource_category=resolved_resource_category(invocation.resolved_resource),
+            duration_ms=duration_ms,
+            model_turn=model_turn,
+            tool_call=tool_call,
+            error_code=error_code,
         )
 
     def _result(
@@ -438,6 +835,33 @@ class AgentLoop:
         value = self._clock()
         _require_aware(value, "clock result")
         return value
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1_000))
+
+
+def _operation_failure(exception: BaseException) -> tuple[AgentOperationOutcome, str]:
+    if isinstance(exception, (asyncio.CancelledError, AgentCancelledError)):
+        return AgentOperationOutcome.CANCELLED, AgentErrorCode.CANCELLED.value
+    if isinstance(exception, AgentTimeoutError):
+        return AgentOperationOutcome.TIMED_OUT, AgentErrorCode.TIMEOUT.value
+    if isinstance(exception, AgentError):
+        rejected = {
+            AgentErrorCode.APPROVAL_REJECTED,
+            AgentErrorCode.AUTHORIZATION_REJECTED,
+            AgentErrorCode.LIMIT_EXCEEDED,
+            AgentErrorCode.MALFORMED_PROPOSAL,
+            AgentErrorCode.SCHEMA_INVALID,
+            AgentErrorCode.TOOL_NOT_FOUND,
+        }
+        outcome = (
+            AgentOperationOutcome.REJECTED
+            if exception.code in rejected
+            else AgentOperationOutcome.FAILED
+        )
+        return outcome, exception.code.value
+    return AgentOperationOutcome.FAILED, AgentErrorCode.SERVICE_UNAVAILABLE.value
 
 
 def _to_inference_message(message: AgentMessage) -> InferenceMessage:

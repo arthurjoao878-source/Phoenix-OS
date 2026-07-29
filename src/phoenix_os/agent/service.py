@@ -32,7 +32,7 @@ from phoenix_os.agent.fake import AgentModelTurnAdapter
 from phoenix_os.agent.loop import AgentLoop
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.state import AgentCancellationToken
-from phoenix_os.agent.tools import ToolAdapter
+from phoenix_os.agent.tools import ToolAdapter, ToolDescriptor
 from phoenix_os.audit import AuditCategory, AuditLedger, AuditOutcome, AuditSeverity
 from phoenix_os.events import EventBus
 from phoenix_os.observability import MetricKind, ObservabilityHub, Severity
@@ -220,6 +220,8 @@ class AgentService:
                 raise AgentServiceUnavailableError()
             self._state = AgentServiceState.RUNNING
         await self._signal_lifecycle("started")
+        for descriptor in self._configuration.descriptors:
+            await self._signal_tool_registration(descriptor)
 
     async def stop(self, context: RuntimeContext) -> None:
         if not isinstance(context, RuntimeContext):
@@ -237,21 +239,35 @@ class AgentService:
         await self._drain_and_cancel(active)
 
         failure: BaseException | None = None
+        close_timeout = self._configuration.limits.shutdown_grace.total_seconds()
+        close_cancellation_grace = self._configuration.limits.cancellation_grace.total_seconds()
         approval = self._approval_service
         if approval is not None:
             try:
-                await approval.close()
+                await _close_bounded(
+                    approval,
+                    timeout_seconds=close_timeout,
+                    cancellation_grace_seconds=close_cancellation_grace,
+                )
             except (Exception, asyncio.CancelledError) as exception:
                 failure = exception
 
         for adapter in reversed(self._tool_adapters):
             try:
-                await _close_adapter(adapter)
+                await _close_bounded(
+                    adapter,
+                    timeout_seconds=close_timeout,
+                    cancellation_grace_seconds=close_cancellation_grace,
+                )
             except (Exception, asyncio.CancelledError) as exception:
                 if failure is None:
                     failure = exception
         try:
-            await _close_adapter(self._model_adapter)
+            await _close_bounded(
+                self._model_adapter,
+                timeout_seconds=close_timeout,
+                cancellation_grace_seconds=close_cancellation_grace,
+            )
         except (Exception, asyncio.CancelledError) as exception:
             if failure is None:
                 failure = exception
@@ -493,6 +509,66 @@ class AgentService:
             except Exception:
                 pass
 
+    async def _signal_tool_registration(self, descriptor: ToolDescriptor) -> None:
+        metadata = {
+            "agent_id": str(self._configuration.agent_id),
+            "tool_id": str(descriptor.tool_id),
+            "effect": descriptor.effect.value,
+            "availability": descriptor.availability.value,
+            "approval_may_be_required": str(descriptor.approval_may_be_required).lower(),
+        }
+        name = "agent.tool.registered"
+        options = self._configuration.observability
+        if options.events_enabled:
+            try:
+                await self._events.emit(
+                    name,
+                    source=self._configuration.source,
+                    payload={},
+                    metadata=metadata,
+                )
+            except Exception:
+                pass
+        if options.audit_enabled and self._audit is not None:
+            try:
+                await self._audit.record_security(
+                    name,
+                    category=AuditCategory.CONFIGURATION,
+                    action="agent.tool.register",
+                    resource=(f"agent:{self._configuration.agent_id}/tool:{descriptor.tool_id}"),
+                    actor="phoenix",
+                    outcome=AuditOutcome.SUCCEEDED,
+                    severity=AuditSeverity.INFO,
+                    details=metadata,
+                    source=self._configuration.source,
+                )
+            except Exception:
+                pass
+        if self._observability is not None:
+            try:
+                if options.logs_enabled:
+                    await self._observability.log(
+                        name,
+                        source=self._configuration.source,
+                        message="agent tool registration activated",
+                        severity=Severity.INFO,
+                        attributes=metadata,
+                    )
+                if options.metrics_enabled:
+                    await self._observability.metric(
+                        "agent.tools.registered",
+                        1,
+                        source=self._configuration.source,
+                        kind=MetricKind.COUNTER,
+                        unit="tool",
+                        attributes={
+                            "effect": descriptor.effect.value,
+                            "availability": descriptor.availability.value,
+                        },
+                    )
+            except Exception:
+                pass
+
     async def _signal_run(
         self,
         request: AgentRunRequest,
@@ -668,21 +744,59 @@ def _observation_severity(outcome: AgentRunOutcome) -> Severity:
     return Severity.INFO
 
 
-async def _close_adapter(adapter: object) -> None:
-    close = getattr(adapter, "aclose", None)
+async def _close_bounded(
+    resource: object,
+    *,
+    timeout_seconds: float,
+    cancellation_grace_seconds: float,
+) -> None:
+    operation = asyncio.create_task(_close_resource(resource))
+    try:
+        done, _pending = await asyncio.wait({operation}, timeout=timeout_seconds)
+        if operation in done:
+            operation.result()
+            return
+        operation.cancel()
+        done, _pending = await asyncio.wait(
+            {operation},
+            timeout=cancellation_grace_seconds,
+        )
+        if operation in done:
+            try:
+                operation.result()
+            except asyncio.CancelledError as exception:
+                raise TimeoutError("agent shutdown close timed out") from exception
+            return
+        operation.add_done_callback(_consume_task)
+        raise TimeoutError("agent shutdown close timed out")
+    except asyncio.CancelledError:
+        if not operation.done():
+            operation.cancel()
+            operation.add_done_callback(_consume_task)
+        raise
+
+
+async def _close_resource(resource: object) -> None:
+    close = getattr(resource, "aclose", None)
     if callable(close):
-        result = close()
-        if inspect.isawaitable(result):
-            await cast(Awaitable[object], result)
+        if inspect.iscoroutinefunction(close):
+            await cast(Awaitable[object], close())
+        else:
+            result = await asyncio.to_thread(close)
+            if inspect.isawaitable(result):
+                await cast(Awaitable[object], result)
         return
-    close = getattr(adapter, "close", None)
+    close = getattr(resource, "close", None)
     if callable(close):
-        result = close()
-        if inspect.isawaitable(result):
-            await cast(Awaitable[object], result)
+        if inspect.iscoroutinefunction(close):
+            await cast(Awaitable[object], close())
+        else:
+            result = await asyncio.to_thread(close)
+            if inspect.isawaitable(result):
+                await cast(Awaitable[object], result)
 
 
-def _consume_task(task: asyncio.Task[object]) -> None:
+def _consume_task[T](task: asyncio.Task[T]) -> None:
     if task.cancelled():
         return
     try:

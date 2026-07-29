@@ -18,6 +18,7 @@ from phoenix_os.agent.contracts import ToolId
 from phoenix_os.agent.execution import BoundedAgentExecutor
 from phoenix_os.agent.fake import AgentModelTurnAdapter
 from phoenix_os.agent.loop import AgentLoop, ToolApprovalResolver
+from phoenix_os.agent.observer import AgentObserver, ContentFreeAgentObserver
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.service import AgentService
 from phoenix_os.agent.tools import ToolAdapter, ToolResourceResolver
@@ -39,6 +40,7 @@ class AgentRuntimeStack:
     admission: AgentAdmissionController
     executor: BoundedAgentExecutor
     runtime: AgentLoop
+    observer: AgentObserver
     service: AgentService
     administration: AgentAdministration
     lifecycle: AgentService
@@ -133,6 +135,12 @@ def create_agent_runtime_stack(
 
         admission = AgentAdmissionController(configuration.limits)
         executor = BoundedAgentExecutor()
+        observer = ContentFreeAgentObserver(
+            configuration,
+            events=resolved_events,
+            audit=audit,
+            observability=observability,
+        )
         runtime = AgentLoop(
             run_authorizer=PolicyEngineAgentRunAuthorizer(policy),
             model_authorizer=DelegatingAgentModelTurnAuthorizer(
@@ -145,6 +153,7 @@ def create_agent_runtime_stack(
             approval_service=approval_service,
             approval_resolver=approval_resolver,
             admission=admission,
+            observer=observer,
         )
         service = AgentService(
             runtime,
@@ -176,6 +185,7 @@ def create_agent_runtime_stack(
         admission=admission,
         executor=executor,
         runtime=runtime,
+        observer=observer,
         service=service,
         administration=administration,
         lifecycle=service,

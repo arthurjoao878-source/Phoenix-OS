@@ -183,6 +183,15 @@ from phoenix_os.agent.loop import (
     DefaultAgentInferenceRequestFactory,
     ToolApprovalResolver,
 )
+from phoenix_os.agent.observer import (
+    AgentObserver,
+    AgentOperation,
+    AgentOperationObservation,
+    AgentOperationOutcome,
+    ContentFreeAgentObserver,
+    NullAgentObserver,
+    resolved_resource_category,
+)
 from phoenix_os.agent.registry import ToolLifecycleState, ToolRegistration, ToolRegistry
 from phoenix_os.agent.schemas import (
     MAX_TOOL_SCHEMA_ARRAY_ITEMS,
@@ -336,6 +345,10 @@ __all__ = [
     "AgentModelTurnRequest",
     "AgentModelTurnResult",
     "AgentObservabilityConfiguration",
+    "AgentObserver",
+    "AgentOperation",
+    "AgentOperationObservation",
+    "AgentOperationOutcome",
     "AgentRegistryClosedError",
     "AgentRunAuthorizer",
     "AgentRunBudget",
@@ -360,6 +373,7 @@ __all__ = [
     "AgentToolConfiguration",
     "AgentToolView",
     "BoundedAgentExecutor",
+    "ContentFreeAgentObserver",
     "DefaultAgentInferenceRequestFactory",
     "DelegatingAgentModelTurnAuthorizer",
     "DeterministicFinalTurn",
@@ -369,6 +383,7 @@ __all__ = [
     "DeterministicSideEffectTool",
     "DeterministicToolTurn",
     "InMemoryToolApprovalService",
+    "NullAgentObserver",
     "PolicyEngineAgentRunAuthorizer",
     "PolicyEngineToolAuthorizer",
     "StaticToolResourceResolver",
@@ -437,6 +452,7 @@ __all__ = [
     "encode_tool_output_schema",
     "freeze_agent_json_object",
     "resolve_server_resource",
+    "resolved_resource_category",
     "tool_descriptor_from_record",
     "tool_descriptor_requires_approval",
     "tool_descriptor_to_record",
