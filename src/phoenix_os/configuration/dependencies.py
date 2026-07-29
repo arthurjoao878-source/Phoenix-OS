@@ -28,6 +28,14 @@ from phoenix_os.runtime import ComponentSpec, LifecycleComponent, PhoenixRuntime
 from phoenix_os.state import StateStore, StateStoreRegistry
 
 if TYPE_CHECKING:
+    from phoenix_os.agent import (
+        AgentModelTurnAdapter,
+        AgentServiceConfiguration,
+        ToolAdapter,
+        ToolApprovalResolver,
+        ToolApprovalService,
+        ToolResourceResolver,
+    )
     from phoenix_os.audit import AuditLedger
     from phoenix_os.control_plane import (
         AdminTokenAuthenticator,
@@ -82,6 +90,12 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "kernel",
         "events",
         "identity",
+        "agent",
+        "agent.admission",
+        "agent.approvals",
+        "agent.executor",
+        "agent.registry",
+        "agent.runtime",
         "inference",
         "inference.administration",
         "inference.health",
@@ -336,6 +350,13 @@ class RuntimeAssembler:
         inference_configuration: InferenceServiceConfiguration | None = None,
         inference_providers: tuple[ModelProvider, ...] = (),
         inference_service_account_administration_enabled: bool = False,
+        agent_enabled: bool = False,
+        agent_configuration: AgentServiceConfiguration | None = None,
+        agent_model_adapter: AgentModelTurnAdapter | None = None,
+        agent_tool_resolvers: tuple[ToolResourceResolver, ...] = (),
+        agent_tool_adapters: tuple[ToolAdapter, ...] = (),
+        agent_approval_service: ToolApprovalService | None = None,
+        agent_approval_resolver: ToolApprovalResolver | None = None,
         webhooks_enabled: bool = False,
         webhook_service_account_administration_enabled: bool = False,
         webhook_subscription_repository: WebhookSubscriptionRepository | None = None,
@@ -437,6 +458,13 @@ class RuntimeAssembler:
         self._inference_service_account_administration_enabled = (
             inference_service_account_administration_enabled
         )
+        self._agent_enabled = agent_enabled
+        self._agent_configuration = agent_configuration
+        self._agent_model_adapter = agent_model_adapter
+        self._agent_tool_resolvers = tuple(agent_tool_resolvers)
+        self._agent_tool_adapters = tuple(agent_tool_adapters)
+        self._agent_approval_service = agent_approval_service
+        self._agent_approval_resolver = agent_approval_resolver
         self._webhooks_enabled = webhooks_enabled
         self._webhook_service_account_administration_enabled = (
             webhook_service_account_administration_enabled
@@ -550,6 +578,27 @@ class RuntimeAssembler:
                 raise ValueError("enabled inference requires configuration")
             if not self._inference_providers:
                 raise ValueError("enabled inference requires at least one provider")
+        if not isinstance(agent_enabled, bool):
+            raise TypeError("agent enabled flag must be bool")
+        agent_options_supplied = any(
+            (
+                agent_configuration is not None,
+                agent_model_adapter is not None,
+                bool(self._agent_tool_resolvers),
+                bool(self._agent_tool_adapters),
+                agent_approval_service is not None,
+                agent_approval_resolver is not None,
+            )
+        )
+        if agent_options_supplied and not agent_enabled:
+            raise ValueError("agent options require agent_enabled")
+        if agent_enabled:
+            if policy is None:
+                raise ValueError("enabled agent requires a PolicyEngine")
+            if agent_configuration is None:
+                raise ValueError("enabled agent requires configuration")
+            if agent_model_adapter is None:
+                raise ValueError("enabled agent requires a model adapter")
         if not isinstance(webhooks_enabled, bool):
             raise TypeError("webhooks enabled flag must be bool")
         if not isinstance(webhook_service_account_administration_enabled, bool):
@@ -883,6 +932,31 @@ class RuntimeAssembler:
             custom_services["inference.registry"] = inference_stack.registry
             custom_services["inference.administration"] = inference_stack.administration
             components.append(ComponentSpec("inference", inference_stack.service))
+
+        agent_stack = None
+        if self._agent_enabled:
+            from phoenix_os.agent import create_agent_runtime_stack
+
+            assert self._agent_configuration is not None
+            assert self._agent_model_adapter is not None
+            assert self._policy is not None
+            agent_stack = create_agent_runtime_stack(
+                configuration=self._agent_configuration,
+                model_adapter=self._agent_model_adapter,
+                tool_resolvers=self._agent_tool_resolvers,
+                tool_adapters=self._agent_tool_adapters,
+                policy=self._policy,
+                approval_service=self._agent_approval_service,
+                approval_resolver=self._agent_approval_resolver,
+            )
+            custom_services["agent"] = agent_stack.runtime
+            custom_services["agent.runtime"] = agent_stack.runtime
+            custom_services["agent.registry"] = agent_stack.registry
+            custom_services["agent.admission"] = agent_stack.admission
+            custom_services["agent.executor"] = agent_stack.executor
+            if agent_stack.approval_service is not None:
+                custom_services["agent.approvals"] = agent_stack.approval_service
+            components.append(ComponentSpec("agent", agent_stack.lifecycle))
 
         inbound_runtime = None
         if self._inbound_events_enabled:

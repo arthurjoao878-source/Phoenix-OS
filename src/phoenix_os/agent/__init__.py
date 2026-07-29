@@ -61,6 +61,11 @@ from phoenix_os.agent.codec import (
     encode_tool_invocation_result,
     encode_tool_output_schema,
 )
+from phoenix_os.agent.composition import (
+    AgentRuntimeLifecycle,
+    AgentRuntimeStack,
+    create_agent_runtime_stack,
+)
 from phoenix_os.agent.configuration import (
     MAX_AGENT_CONFIG_METADATA_ITEMS,
     MAX_AGENT_CONFIG_METADATA_TEXT,
@@ -311,6 +316,8 @@ __all__ = [
     "AgentRunResult",
     "AgentRunStateMachine",
     "AgentRunStatus",
+    "AgentRuntimeLifecycle",
+    "AgentRuntimeStack",
     "AgentSchemaError",
     "AgentServiceConfiguration",
     "AgentServiceUnavailableError",
@@ -372,6 +379,7 @@ __all__ = [
     "canonical_tool_invocation_request_bytes",
     "canonical_tool_invocation_result_bytes",
     "canonical_tool_schema_bytes",
+    "create_agent_runtime_stack",
     "decode_agent_run_request",
     "decode_agent_run_result",
     "decode_agent_snapshot",
