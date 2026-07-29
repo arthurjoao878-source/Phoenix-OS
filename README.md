@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.26.0` implements twenty-six accepted specifications:
+Version `0.27.0` implements twenty-seven accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -69,6 +69,10 @@ Version `0.26.0` implements twenty-six accepted specifications:
   policy-controlled, secret-safe, bounded complete and streamed model inference,
   cancellation, endpoint security, redacted observability, separated
   administration, and Runtime-owned lifecycle.
+- **RFC-0027 — Secure Agent Loop and Tool Calling Runtime:** opt-in bounded
+  model/tool orchestration, server-owned strict tool registration, independent
+  run/model/tool authorization, exact single-use approvals, untrusted result
+  isolation, content-free observability, and Runtime-owned lifecycle.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -146,15 +150,33 @@ exercising the packaged deterministic provider, exact action/resource,
 configuration, complete and streaming execution, endpoint, credential, and
 administration surfaces without source-tree imports.
 
+## Agent release gate
+
+RFC-0027 adds a named gate for strict tools and codecs, independent run/model/tool
+authorization, exact approvals, finite agent execution, cancellation, shutdown,
+content-free observation, compatibility, and packaging:
+
+```bash
+python scripts/check_agent_release.py
+```
+
+The gate reruns the selected agent regression and security suites; validates
+wheel and sdist metadata, paths, all agent modules, Runtime integration,
+migration guidance, threat review, and ADRs; rebuilds a wheel from the sdist;
+and installs both wheels in isolated offline environments before exercising a
+packaged deterministic final run and strict tool cycle without source-tree
+imports.
+
 ## Release notes
 
+- [Phoenix OS 0.27.0](docs/releases/v0.27.0.md)
 - [Phoenix OS 0.26.0](docs/releases/v0.26.0.md)
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize inference, inbound, and webhook behavior, security
-boundaries, compatibility, migration, architecture decisions, validation, and
-package artifacts.
+The release notes summarize agent, inference, inbound, and webhook behavior,
+security boundaries, compatibility, migration, architecture decisions,
+validation, and package artifacts.
 
 ## Upgrade guidance
 
@@ -183,6 +205,15 @@ and rollback guide:
 Existing v0.25.0 behavior remains unchanged when inference configuration is
 omitted.
 
+The opt-in v0.27.0 secure agent subsystem has a staged compatibility, registry,
+schema, authorization, approval, limits, canary, observation, and rollback guide:
+
+- [Migrate v0.26.0 deployments to v0.27.0 agent execution](docs/migrations/v0.26.0-to-v0.27.0-agent.md)
+
+Existing v0.26.0 behavior remains unchanged when agent configuration is omitted.
+The [RFC-0027 threat-model and security-invariant review](docs/security/RFC-0027-agent-threat-model-review.md)
+records the release evidence and residual risks.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -196,7 +227,11 @@ ownership and administration. The RFC-0026 inference records cover
 provider-neutral contracts and reviewed registration, exact invocation
 authorization and untrusted output, exact credential leases and fail-closed
 endpoints, bounded streaming and cancellation without transparent retry, and
-opt-in Runtime ownership with separated administration.
+opt-in Runtime ownership with separated administration. The RFC-0027 agent
+records cover server-owned strict tool registration, independent run/model/tool
+authorization and exact approvals, bounded serial execution without transparent
+retry, untrusted result isolation with content-free observability, and opt-in
+Runtime ownership with bounded lifecycle cleanup.
 
 ## Local dashboard example
 
