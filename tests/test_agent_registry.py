@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from phoenix_os.agent import (
+    AgentAdministrationConflictError,
     AgentLimitExceededError,
     AgentRegistryClosedError,
     AgentSchemaError,
@@ -182,3 +183,39 @@ def test_registry_close_is_terminal() -> None:
             resolver=StaticToolResourceResolver("resolver.closed", "fixture:closed"),
             adapter=RecordingAdapter("closed"),
         )
+
+
+def test_registry_tool_lifecycle_is_revisioned_and_closed_world() -> None:
+    registry = ToolRegistry()
+    descriptor = _descriptor("lifecycle")
+    _register(registry, descriptor)
+
+    initial = registry.describe("lifecycle")
+    assert initial.enabled is True
+    assert initial.revision == 1
+    assert registry.list_states() == (initial,)
+
+    disabled = registry.set_enabled(
+        "lifecycle",
+        enabled=False,
+        expected_revision=initial.revision,
+    )
+    assert disabled.enabled is False
+    assert disabled.revision == 2
+    assert registry.list_descriptors() == ()
+
+    with pytest.raises(AgentAdministrationConflictError, match="revision conflict"):
+        registry.set_enabled(
+            "lifecycle",
+            enabled=True,
+            expected_revision=initial.revision,
+        )
+
+    enabled = registry.set_enabled(
+        "lifecycle",
+        enabled=True,
+        expected_revision=disabled.revision,
+    )
+    assert enabled.enabled is True
+    assert enabled.revision == 3
+    assert registry.resolve_descriptor("lifecycle").availability is ToolAvailability.ACTIVE

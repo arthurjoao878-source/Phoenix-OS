@@ -3,9 +3,11 @@ from datetime import timedelta
 import pytest
 
 from phoenix_os.agent import (
+    AgentAdministration,
     AgentAdmissionController,
     AgentId,
     AgentRuntimeLifecycle,
+    AgentService,
     AgentServiceConfiguration,
     AgentToolConfiguration,
     BoundedAgentExecutor,
@@ -108,7 +110,10 @@ def test_agent_composition_builds_one_closed_world_runtime_stack() -> None:
     assert stack.admission.limits is configuration.limits
     assert isinstance(stack.admission, AgentAdmissionController)
     assert isinstance(stack.executor, BoundedAgentExecutor)
+    assert isinstance(stack.service, AgentService)
+    assert isinstance(stack.administration, AgentAdministration)
     assert isinstance(stack.lifecycle, AgentRuntimeLifecycle)
+    assert stack.lifecycle is stack.service
     assert stack.approval_service is None
 
 

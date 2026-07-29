@@ -14,10 +14,13 @@ from phoenix_os import (
     RuntimeAssembler,
 )
 from phoenix_os.agent import (
+    AgentAdministration,
     AgentAdmissionController,
     AgentId,
     AgentLoop,
+    AgentService,
     AgentServiceConfiguration,
+    AgentServiceState,
     AgentToolConfiguration,
     BoundedAgentExecutor,
     DeterministicFinalTurn,
@@ -108,6 +111,8 @@ async def test_runtime_assembler_preserves_compatibility_when_agent_is_omitted()
     ).assemble()
 
     assert "agent" not in runtime.services
+    assert "agent.health" not in runtime.services
+    assert "agent.administration" not in runtime.services
     assert "agent.runtime" not in runtime.services
     assert "agent.registry" not in runtime.services
     assert "agent.admission" not in runtime.services
@@ -149,16 +154,20 @@ async def test_runtime_assembler_composes_and_owns_enabled_agent() -> None:
     registry = runtime.service("agent.registry")
     admission = runtime.service("agent.admission")
 
-    assert isinstance(agent, AgentLoop)
-    assert runtime.service("agent.runtime") is agent
+    assert isinstance(agent, AgentService)
+    assert runtime.service("agent.health") is agent
+    assert isinstance(runtime.service("agent.runtime"), AgentLoop)
+    assert isinstance(runtime.service("agent.administration"), AgentAdministration)
     assert isinstance(registry, ToolRegistry)
     assert isinstance(admission, AgentAdmissionController)
     assert isinstance(runtime.service("agent.executor"), BoundedAgentExecutor)
     assert (await runtime.snapshot()).components[-1] == "agent"
 
     await runtime.start()
+    assert (await agent.snapshot()).state is AgentServiceState.RUNNING
     await runtime.stop()
 
+    assert (await agent.snapshot()).state is AgentServiceState.STOPPED
     assert registry.closed
     assert admission.closed
     assert policy.closed

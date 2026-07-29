@@ -91,9 +91,11 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "events",
         "identity",
         "agent",
+        "agent.administration",
         "agent.admission",
         "agent.approvals",
         "agent.executor",
+        "agent.health",
         "agent.registry",
         "agent.runtime",
         "inference",
@@ -946,17 +948,22 @@ class RuntimeAssembler:
                 tool_resolvers=self._agent_tool_resolvers,
                 tool_adapters=self._agent_tool_adapters,
                 policy=self._policy,
+                events=self._events,
                 approval_service=self._agent_approval_service,
                 approval_resolver=self._agent_approval_resolver,
+                audit=self._audit,
+                observability=self._observability,
             )
-            custom_services["agent"] = agent_stack.runtime
+            custom_services["agent"] = agent_stack.service
+            custom_services["agent.health"] = agent_stack.service
             custom_services["agent.runtime"] = agent_stack.runtime
             custom_services["agent.registry"] = agent_stack.registry
             custom_services["agent.admission"] = agent_stack.admission
             custom_services["agent.executor"] = agent_stack.executor
+            custom_services["agent.administration"] = agent_stack.administration
             if agent_stack.approval_service is not None:
                 custom_services["agent.approvals"] = agent_stack.approval_service
-            components.append(ComponentSpec("agent", agent_stack.lifecycle))
+            components.append(ComponentSpec("agent", agent_stack.service))
 
         inbound_runtime = None
         if self._inbound_events_enabled:

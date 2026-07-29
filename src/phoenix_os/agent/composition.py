@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from phoenix_os.agent.administration import AgentAdministration
 from phoenix_os.agent.admission import AgentAdmissionController
 from phoenix_os.agent.approval import ToolApprovalService, tool_descriptor_requires_approval
 from phoenix_os.agent.authorization import (
@@ -19,10 +19,15 @@ from phoenix_os.agent.execution import BoundedAgentExecutor
 from phoenix_os.agent.fake import AgentModelTurnAdapter
 from phoenix_os.agent.loop import AgentLoop, ToolApprovalResolver
 from phoenix_os.agent.registry import ToolRegistry
+from phoenix_os.agent.service import AgentService
 from phoenix_os.agent.tools import ToolAdapter, ToolResourceResolver
+from phoenix_os.audit import AuditLedger
+from phoenix_os.events import EventBus
 from phoenix_os.inference.authorization import PolicyEngineInferenceAuthorizer
+from phoenix_os.observability import ObservabilityHub
 from phoenix_os.policy import PolicyEngine
-from phoenix_os.runtime import RuntimeContext
+
+AgentRuntimeLifecycle = AgentService
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,79 +39,10 @@ class AgentRuntimeStack:
     admission: AgentAdmissionController
     executor: BoundedAgentExecutor
     runtime: AgentLoop
-    lifecycle: AgentRuntimeLifecycle
+    service: AgentService
+    administration: AgentAdministration
+    lifecycle: AgentService
     approval_service: ToolApprovalService | None = None
-
-
-class AgentRuntimeLifecycle:
-    """Own finite agent composition cleanup without starting background work."""
-
-    def __init__(
-        self,
-        *,
-        registry: ToolRegistry,
-        admission: AgentAdmissionController,
-        approval_service: ToolApprovalService | None = None,
-    ) -> None:
-        if not isinstance(registry, ToolRegistry):
-            raise TypeError("registry must be ToolRegistry")
-        if not isinstance(admission, AgentAdmissionController):
-            raise TypeError("admission must be AgentAdmissionController")
-        if approval_service is not None and not isinstance(
-            approval_service,
-            ToolApprovalService,
-        ):
-            raise TypeError("approval_service must implement ToolApprovalService")
-        self._registry = registry
-        self._admission = admission
-        self._approval_service = approval_service
-        self._started = False
-        self._stopped = False
-
-    @property
-    def started(self) -> bool:
-        return self._started
-
-    @property
-    def stopped(self) -> bool:
-        return self._stopped
-
-    async def start(self, context: RuntimeContext) -> None:
-        if not isinstance(context, RuntimeContext):
-            raise TypeError("context must be RuntimeContext")
-        if self._stopped:
-            raise RuntimeError("stopped agent composition cannot be restarted")
-        self._started = True
-
-    async def stop(self, context: RuntimeContext) -> None:
-        if not isinstance(context, RuntimeContext):
-            raise TypeError("context must be RuntimeContext")
-        if self._stopped:
-            return
-
-        failure: BaseException | None = None
-        try:
-            await self._admission.close()
-        except (Exception, asyncio.CancelledError) as exception:
-            failure = exception
-
-        approval = self._approval_service
-        if approval is not None:
-            try:
-                await approval.close()
-            except (Exception, asyncio.CancelledError) as exception:
-                if failure is None:
-                    failure = exception
-
-        try:
-            self._registry.close()
-        except Exception as exception:
-            if failure is None:
-                failure = exception
-
-        self._stopped = True
-        if failure is not None:
-            raise failure
 
 
 def create_agent_runtime_stack(
@@ -116,8 +52,11 @@ def create_agent_runtime_stack(
     tool_resolvers: Iterable[ToolResourceResolver],
     tool_adapters: Iterable[ToolAdapter],
     policy: PolicyEngine,
+    events: EventBus | None = None,
     approval_service: ToolApprovalService | None = None,
     approval_resolver: ToolApprovalResolver | None = None,
+    audit: AuditLedger | None = None,
+    observability: ObservabilityHub | None = None,
 ) -> AgentRuntimeStack:
     """Validate exact installations and compose one closed-world agent stack."""
 
@@ -127,6 +66,9 @@ def create_agent_runtime_stack(
         raise TypeError("model_adapter must implement AgentModelTurnAdapter")
     if not isinstance(policy, PolicyEngine):
         raise TypeError("policy must be PolicyEngine")
+    resolved_events = EventBus() if events is None else events
+    if not isinstance(resolved_events, EventBus):
+        raise TypeError("events must be EventBus")
     if approval_service is not None and not isinstance(
         approval_service,
         ToolApprovalService,
@@ -147,9 +89,14 @@ def create_agent_runtime_stack(
         and approval_service is None
     ):
         raise ValueError("approval-required agent tools require approval services")
+    if audit is not None and not isinstance(audit, AuditLedger):
+        raise TypeError("audit must be AuditLedger")
+    if observability is not None and not isinstance(observability, ObservabilityHub):
+        raise TypeError("observability must be ObservabilityHub")
 
+    resolver_values = tuple(tool_resolvers)
     installed_resolvers: dict[str, ToolResourceResolver] = {}
-    for resolver in tuple(tool_resolvers):
+    for resolver in resolver_values:
         if not isinstance(resolver, ToolResourceResolver):
             raise TypeError("installed resolver must implement ToolResourceResolver")
         if resolver.resolver_id in installed_resolvers:
@@ -160,8 +107,9 @@ def create_agent_runtime_stack(
     if set(installed_resolvers) != configured_resolver_ids:
         raise ValueError("installed agent tool resolvers must exactly match configuration")
 
+    adapter_values = tuple(tool_adapters)
     installed_adapters: dict[ToolId, ToolAdapter] = {}
-    for adapter in tuple(tool_adapters):
+    for adapter in adapter_values:
         if not isinstance(adapter, ToolAdapter):
             raise TypeError("installed adapter must implement ToolAdapter")
         if adapter.tool_id in installed_adapters:
@@ -172,6 +120,7 @@ def create_agent_runtime_stack(
     if set(installed_adapters) != configured_tool_ids:
         raise ValueError("installed agent tool adapters must exactly match configuration")
 
+    ordered_adapters = tuple(installed_adapters[tool_id] for tool_id in configuration.tool_ids)
     registry = ToolRegistry()
     try:
         for configured_tool in configuration.tools:
@@ -197,10 +146,25 @@ def create_agent_runtime_stack(
             approval_resolver=approval_resolver,
             admission=admission,
         )
-        lifecycle = AgentRuntimeLifecycle(
-            registry=registry,
-            admission=admission,
+        service = AgentService(
+            runtime,
+            registry,
+            admission,
+            configuration,
+            events=resolved_events,
+            model_adapter=model_adapter,
+            tool_adapters=ordered_adapters,
             approval_service=approval_service,
+            audit=audit,
+            observability=observability,
+        )
+        administration = AgentAdministration(
+            registry,
+            service,
+            configuration,
+            events=resolved_events,
+            audit=audit,
+            observability=observability,
         )
     except BaseException:
         registry.close()
@@ -212,6 +176,8 @@ def create_agent_runtime_stack(
         admission=admission,
         executor=executor,
         runtime=runtime,
-        lifecycle=lifecycle,
+        service=service,
+        administration=administration,
+        lifecycle=service,
         approval_service=approval_service,
     )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import RLock
 from uuid import UUID, uuid4
 
@@ -14,6 +14,7 @@ from phoenix_os.agent.contracts import (
     canonical_agent_json_bytes,
 )
 from phoenix_os.agent.errors import (
+    AgentAdministrationConflictError,
     AgentLimitExceededError,
     AgentRegistryClosedError,
     ToolAlreadyRegisteredError,
@@ -41,6 +42,26 @@ class ToolRegistration:
             raise TypeError("tool_id must be ToolId")
 
 
+@dataclass(frozen=True, slots=True)
+class ToolLifecycleState:
+    """Content-free administrative state for one reviewed tool registration."""
+
+    descriptor: ToolDescriptor
+    revision: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.descriptor, ToolDescriptor):
+            raise TypeError("descriptor must be ToolDescriptor")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int):
+            raise TypeError("revision must be an integer")
+        if self.revision <= 0:
+            raise ValueError("tool lifecycle revision must be positive")
+
+    @property
+    def enabled(self) -> bool:
+        return self.descriptor.availability is ToolAvailability.ACTIVE
+
+
 @dataclass(slots=True)
 class _RegisteredTool:
     registration: ToolRegistration
@@ -48,6 +69,7 @@ class _RegisteredTool:
     resolver: ToolResourceResolver
     adapter: ToolAdapter
     sequence: int
+    revision: int = 1
 
 
 class ToolRegistry:
@@ -92,6 +114,55 @@ class ToolRegistry:
 
     def resolve_adapter(self, tool_id: ToolId | str) -> ToolAdapter:
         return self._resolve_active(tool_id).adapter
+
+    def describe(self, tool_id: ToolId | str) -> ToolLifecycleState:
+        """Return reviewed descriptor and lifecycle revision even when disabled."""
+
+        normalized = tool_id if isinstance(tool_id, ToolId) else ToolId(tool_id)
+        self._ensure_open()
+        with self._lock:
+            self._ensure_open()
+            registered = self._tools.get(normalized)
+            if registered is None:
+                raise ToolNotFoundError()
+            return _tool_state(registered)
+
+    def list_states(self) -> tuple[ToolLifecycleState, ...]:
+        """Return all reviewed registrations in deterministic composition order."""
+
+        self._ensure_open()
+        with self._lock:
+            self._ensure_open()
+            ordered = sorted(self._tools.values(), key=lambda item: item.sequence)
+            return tuple(_tool_state(item) for item in ordered)
+
+    def set_enabled(
+        self,
+        tool_id: ToolId | str,
+        *,
+        enabled: bool,
+        expected_revision: int,
+    ) -> ToolLifecycleState:
+        """Apply one optimistic enable/disable transition without changing installation."""
+
+        normalized = tool_id if isinstance(tool_id, ToolId) else ToolId(tool_id)
+        _validate_lifecycle_inputs(enabled, expected_revision)
+        self._ensure_open()
+        with self._lock:
+            self._ensure_open()
+            registered = self._tools.get(normalized)
+            if registered is None:
+                raise ToolNotFoundError()
+            if registered.revision != expected_revision:
+                raise AgentAdministrationConflictError()
+            availability = ToolAvailability.ACTIVE if enabled else ToolAvailability.DISABLED
+            if registered.descriptor.availability is not availability:
+                registered.descriptor = replace(
+                    registered.descriptor,
+                    availability=availability,
+                )
+                registered.revision += 1
+            return _tool_state(registered)
 
     def admit_tool_call(
         self,
@@ -161,3 +232,19 @@ def _validate_registration(
         raise ValueError("adapter identity does not match descriptor")
     if adapter.tool_id != descriptor.tool_id:
         raise ValueError("adapter tool id does not match descriptor")
+
+
+def _tool_state(registered: _RegisteredTool) -> ToolLifecycleState:
+    return ToolLifecycleState(
+        descriptor=registered.descriptor,
+        revision=registered.revision,
+    )
+
+
+def _validate_lifecycle_inputs(enabled: bool, expected_revision: int) -> None:
+    if not isinstance(enabled, bool):
+        raise TypeError("enabled must be bool")
+    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+        raise TypeError("expected_revision must be an integer")
+    if expected_revision <= 0:
+        raise ValueError("expected_revision must be positive")
