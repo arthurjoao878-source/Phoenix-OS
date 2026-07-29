@@ -1,5 +1,17 @@
 """Secure bounded agent and tool-calling contracts."""
 
+from phoenix_os.agent.administration import (
+    AGENT_HEALTH_READ_PERMISSION,
+    AGENT_TOOLS_DISABLE_PERMISSION,
+    AGENT_TOOLS_ENABLE_PERMISSION,
+    AGENT_TOOLS_READ_PERMISSION,
+    AgentAdministration,
+    AgentAdministrationSnapshot,
+    AgentToolView,
+    agent_health_resource,
+    agent_tool_resource,
+    agent_tools_resource,
+)
 from phoenix_os.agent.admission import (
     AgentAdmissionController,
     AgentAdmissionLease,
@@ -61,6 +73,19 @@ from phoenix_os.agent.codec import (
     encode_tool_invocation_result,
     encode_tool_output_schema,
 )
+from phoenix_os.agent.composition import (
+    AgentRuntimeLifecycle,
+    AgentRuntimeStack,
+    create_agent_runtime_stack,
+)
+from phoenix_os.agent.configuration import (
+    MAX_AGENT_CONFIG_METADATA_ITEMS,
+    MAX_AGENT_CONFIG_METADATA_TEXT,
+    MAX_AGENT_CONFIG_TOOLS,
+    AgentObservabilityConfiguration,
+    AgentServiceConfiguration,
+    AgentToolConfiguration,
+)
 from phoenix_os.agent.contracts import (
     MAX_AGENT_APPROVAL_WAIT_TIMEOUT,
     MAX_AGENT_ARGUMENT_BYTES,
@@ -116,6 +141,8 @@ from phoenix_os.agent.contracts import (
     freeze_agent_json_object,
 )
 from phoenix_os.agent.errors import (
+    AgentAdministrationAccessDeniedError,
+    AgentAdministrationConflictError,
     AgentApprovalRejectedError,
     AgentAuthorizationRejectedError,
     AgentCancelledError,
@@ -156,7 +183,16 @@ from phoenix_os.agent.loop import (
     DefaultAgentInferenceRequestFactory,
     ToolApprovalResolver,
 )
-from phoenix_os.agent.registry import ToolRegistration, ToolRegistry
+from phoenix_os.agent.observer import (
+    AgentObserver,
+    AgentOperation,
+    AgentOperationObservation,
+    AgentOperationOutcome,
+    ContentFreeAgentObserver,
+    NullAgentObserver,
+    resolved_resource_category,
+)
+from phoenix_os.agent.registry import ToolLifecycleState, ToolRegistration, ToolRegistry
 from phoenix_os.agent.schemas import (
     MAX_TOOL_SCHEMA_ARRAY_ITEMS,
     MAX_TOOL_SCHEMA_CANONICAL_BYTES,
@@ -176,6 +212,12 @@ from phoenix_os.agent.schemas import (
     tool_schema_to_record,
     validate_tool_input,
     validate_tool_output,
+)
+from phoenix_os.agent.service import (
+    AgentRunOutcome,
+    AgentService,
+    AgentServiceSnapshot,
+    AgentServiceState,
 )
 from phoenix_os.agent.state import (
     AgentBudgetSnapshot,
@@ -207,7 +249,11 @@ from phoenix_os.agent.tools import (
 )
 
 __all__ = [
+    "AGENT_HEALTH_READ_PERMISSION",
     "AGENT_RUN_ACTION",
+    "AGENT_TOOLS_DISABLE_PERMISSION",
+    "AGENT_TOOLS_ENABLE_PERMISSION",
+    "AGENT_TOOLS_READ_PERMISSION",
     "MAX_AGENT_APPROVAL_WAIT_TIMEOUT",
     "MAX_AGENT_ARGUMENT_BYTES",
     "MAX_AGENT_CANCELLATION_GRACE",
@@ -216,6 +262,9 @@ __all__ = [
     "MAX_AGENT_CONCURRENT_MODEL_CALLS",
     "MAX_AGENT_CONCURRENT_RUNS",
     "MAX_AGENT_CONCURRENT_TOOL_CALLS",
+    "MAX_AGENT_CONFIG_METADATA_ITEMS",
+    "MAX_AGENT_CONFIG_METADATA_TEXT",
+    "MAX_AGENT_CONFIG_TOOLS",
     "MAX_AGENT_FINAL_OUTPUT_CHARS",
     "MAX_AGENT_IDENTIFIER_LENGTH",
     "MAX_AGENT_INPUT_TOKENS",
@@ -263,6 +312,10 @@ __all__ = [
     "MAX_TOOL_SCHEMA_REQUIRED_PROPERTIES",
     "MAX_TOOL_SCHEMA_STRING_LENGTH",
     "TOOL_INVOKE_ACTION",
+    "AgentAdministration",
+    "AgentAdministrationAccessDeniedError",
+    "AgentAdministrationConflictError",
+    "AgentAdministrationSnapshot",
     "AgentAdmissionController",
     "AgentAdmissionLease",
     "AgentAdmissionSnapshot",
@@ -291,21 +344,36 @@ __all__ = [
     "AgentModelTurnKind",
     "AgentModelTurnRequest",
     "AgentModelTurnResult",
+    "AgentObservabilityConfiguration",
+    "AgentObserver",
+    "AgentOperation",
+    "AgentOperationObservation",
+    "AgentOperationOutcome",
     "AgentRegistryClosedError",
     "AgentRunAuthorizer",
     "AgentRunBudget",
     "AgentRunId",
+    "AgentRunOutcome",
     "AgentRunRequest",
     "AgentRunResult",
     "AgentRunStateMachine",
     "AgentRunStatus",
+    "AgentRuntimeLifecycle",
+    "AgentRuntimeStack",
     "AgentSchemaError",
+    "AgentService",
+    "AgentServiceConfiguration",
+    "AgentServiceSnapshot",
+    "AgentServiceState",
     "AgentServiceUnavailableError",
     "AgentSnapshot",
     "AgentStateConflictError",
     "AgentStepId",
     "AgentTimeoutError",
+    "AgentToolConfiguration",
+    "AgentToolView",
     "BoundedAgentExecutor",
+    "ContentFreeAgentObserver",
     "DefaultAgentInferenceRequestFactory",
     "DelegatingAgentModelTurnAuthorizer",
     "DeterministicFinalTurn",
@@ -315,6 +383,7 @@ __all__ = [
     "DeterministicSideEffectTool",
     "DeterministicToolTurn",
     "InMemoryToolApprovalService",
+    "NullAgentObserver",
     "PolicyEngineAgentRunAuthorizer",
     "PolicyEngineToolAuthorizer",
     "StaticToolResourceResolver",
@@ -339,6 +408,7 @@ __all__ = [
     "ToolInputSchema",
     "ToolInvocationRequest",
     "ToolInvocationResult",
+    "ToolLifecycleState",
     "ToolNotFoundError",
     "ToolOutputSchema",
     "ToolRegistration",
@@ -348,7 +418,10 @@ __all__ = [
     "ToolResultStatus",
     "ToolSchema",
     "ToolSchemaType",
+    "agent_health_resource",
     "agent_run_resource",
+    "agent_tool_resource",
+    "agent_tools_resource",
     "canonical_agent_json_bytes",
     "canonical_agent_run_request_bytes",
     "canonical_agent_run_result_bytes",
@@ -358,6 +431,7 @@ __all__ = [
     "canonical_tool_invocation_request_bytes",
     "canonical_tool_invocation_result_bytes",
     "canonical_tool_schema_bytes",
+    "create_agent_runtime_stack",
     "decode_agent_run_request",
     "decode_agent_run_result",
     "decode_agent_snapshot",
@@ -378,6 +452,7 @@ __all__ = [
     "encode_tool_output_schema",
     "freeze_agent_json_object",
     "resolve_server_resource",
+    "resolved_resource_category",
     "tool_descriptor_from_record",
     "tool_descriptor_requires_approval",
     "tool_descriptor_to_record",

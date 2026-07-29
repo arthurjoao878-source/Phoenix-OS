@@ -20,6 +20,8 @@ class AgentErrorCode(StrEnum):
     CANCELLED = "cancelled"
     SERVICE_UNAVAILABLE = "service_unavailable"
     STATE_CONFLICT = "state_conflict"
+    ADMINISTRATION_DENIED = "administration_denied"
+    ADMINISTRATION_CONFLICT = "administration_conflict"
 
 
 class AgentError(Exception):
@@ -124,3 +126,17 @@ class AgentStateConflictError(AgentError):
 
     def __init__(self) -> None:
         super().__init__("agent state transition conflict")
+
+
+class AgentAdministrationAccessDeniedError(AgentError):
+    code = AgentErrorCode.ADMINISTRATION_DENIED
+
+    def __init__(self) -> None:
+        super().__init__("agent administration access denied")
+
+
+class AgentAdministrationConflictError(AgentError):
+    code = AgentErrorCode.ADMINISTRATION_CONFLICT
+
+    def __init__(self) -> None:
+        super().__init__("agent administration revision conflict")
