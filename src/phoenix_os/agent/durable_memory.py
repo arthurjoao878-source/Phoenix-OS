@@ -9,6 +9,7 @@ from itertools import pairwise
 
 from phoenix_os.agent.durable_codec import CanonicalCheckpointCodec
 from phoenix_os.agent.durable_contracts import (
+    MAX_RECOVERY_CANDIDATE_PAGE,
     CheckpointCodec,
     CheckpointEnvelope,
     CheckpointId,
@@ -136,6 +137,32 @@ class InMemoryDurableRunStore(DurableRunStore):
             checkpoints = tuple(self._decode_stored(payload) for payload in payloads)
             self._validate_history_segment(checkpoints)
             return checkpoints
+
+    async def list_recovery_candidates(
+        self,
+        *,
+        limit: int,
+        after: DurableAgentRunId | None = None,
+    ) -> tuple[DurableAgentRunId, ...]:
+        """Return one deterministic bounded page of non-terminal run identifiers."""
+
+        self._require_recovery_limit(limit)
+        if after is not None:
+            self._require_run_id(after)
+
+        async with self._lock:
+            self._ensure_open()
+            candidates: list[DurableAgentRunId] = []
+            for run_id in sorted(self._runs):
+                if after is not None and run_id <= after:
+                    continue
+                current = self._decode_stored(self._runs[run_id].payloads[-1])
+                if current.status.terminal:
+                    continue
+                candidates.append(run_id)
+                if len(candidates) == limit:
+                    break
+            return tuple(candidates)
 
     async def append(
         self,
@@ -269,6 +296,15 @@ class InMemoryDurableRunStore(DurableRunStore):
         if limit <= 0:
             raise ValueError("limit must be greater than zero")
         if limit > self._limits.max_checkpoints:
+            raise AgentLimitExceededError()
+
+    @staticmethod
+    def _require_recovery_limit(limit: int) -> None:
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise TypeError("limit must be an integer")
+        if limit <= 0:
+            raise ValueError("limit must be greater than zero")
+        if limit > MAX_RECOVERY_CANDIDATE_PAGE:
             raise AgentLimitExceededError()
 
     @staticmethod

@@ -32,6 +32,7 @@ MAX_CHECKPOINTS_PER_RUN = 4_096
 MAX_CHECKPOINT_ENVELOPE_BYTES = 1_048_576
 MAX_PROTECTED_PAYLOAD_BYTES = 4_194_304
 MAX_CHECKPOINT_HISTORY_BYTES = 67_108_864
+MAX_RECOVERY_CANDIDATE_PAGE = 1_024
 MAX_RECOVERY_ATTEMPTS = 128
 MAX_RECONCILIATION_ATTEMPTS = 64
 MAX_PAUSE_DURATION = timedelta(days=30)
@@ -997,6 +998,13 @@ class DurableRunStore(Protocol):
         *,
         limit: int,
     ) -> Awaitable[tuple[CheckpointEnvelope, ...]]: ...
+
+    def list_recovery_candidates(
+        self,
+        *,
+        limit: int,
+        after: DurableAgentRunId | None = None,
+    ) -> Awaitable[tuple[DurableAgentRunId, ...]]: ...
 
     def append(
         self,
