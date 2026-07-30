@@ -685,4 +685,70 @@ async def test_closed_manager_rejects_all_operations() -> None:
         await manager.require_current(lease, now=NOW)
 
     with pytest.raises(RuntimeError, match="closed"):
+        async with manager.guard_current(lease, now=NOW):
+            raise AssertionError("closed guard entered")
+
+    with pytest.raises(RuntimeError, match="closed"):
         await manager.release(lease, now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_guard_current_blocks_renewal_until_context_exit() -> None:
+    manager = _manager()
+    lease = await manager.acquire(
+        RUN_ID,
+        owner_id="worker-a",
+        now=NOW,
+    )
+    entered = asyncio.Event()
+    release_guard = asyncio.Event()
+
+    async def hold_guard() -> None:
+        async with manager.guard_current(
+            lease,
+            now=NOW + timedelta(seconds=1),
+        ):
+            entered.set()
+            await release_guard.wait()
+
+    guard_task = asyncio.create_task(hold_guard())
+    await entered.wait()
+
+    renew_task = asyncio.create_task(
+        manager.renew(
+            lease,
+            now=NOW + timedelta(seconds=2),
+        )
+    )
+    await asyncio.sleep(0)
+    assert not renew_task.done()
+
+    release_guard.set()
+    await guard_task
+    renewed = await renew_task
+
+    assert renewed.lease_id == lease.lease_id
+    assert renewed.generation == lease.generation
+    assert renewed.acquired_at == NOW + timedelta(seconds=2)
+
+
+@pytest.mark.asyncio
+async def test_guard_current_rejects_stale_identity_after_reacquisition() -> None:
+    manager = _manager()
+    stale = await manager.acquire(
+        RUN_ID,
+        owner_id="worker-a",
+        now=NOW,
+    )
+    current = await manager.acquire(
+        RUN_ID,
+        owner_id="worker-b",
+        now=stale.expires_at,
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        async with manager.guard_current(
+            stale,
+            now=current.acquired_at,
+        ):
+            raise AssertionError("stale lease entered guarded mutation")

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import AsyncIterator, Awaitable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -59,6 +60,13 @@ class DurableLeaseManager(Protocol):
         *,
         now: datetime,
     ) -> Awaitable[DurableLease]: ...
+
+    def guard_current(
+        self,
+        lease: DurableLease,
+        *,
+        now: datetime,
+    ) -> AbstractAsyncContextManager[DurableLease]: ...
 
     def release(
         self,
@@ -200,6 +208,22 @@ class InMemoryDurableLeaseManager(DurableLeaseManager):
         async with self._lock:
             self._ensure_open()
             return self._require_current_locked(lease, now=now)
+
+    @asynccontextmanager
+    async def guard_current(
+        self,
+        lease: DurableLease,
+        *,
+        now: datetime,
+    ) -> AsyncIterator[DurableLease]:
+        """Hold exclusive lease authority across one fenced store mutation."""
+
+        self._require_lease(lease)
+        _require_timezone_aware(now, label="now")
+
+        async with self._lock:
+            self._ensure_open()
+            yield self._require_current_locked(lease, now=now)
 
     async def release(
         self,

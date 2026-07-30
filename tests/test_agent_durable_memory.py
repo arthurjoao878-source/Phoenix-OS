@@ -22,10 +22,15 @@ from phoenix_os.agent.durable_contracts import (
     CheckpointSequence,
     CompatibilityDigests,
     DurableAgentRunId,
+    DurableLease,
     DurableRunLimits,
     DurableRunStatus,
     DurableRunStore,
     DurableRunVersion,
+)
+from phoenix_os.agent.durable_lease import (
+    DurableLeaseManager,
+    InMemoryDurableLeaseManager,
 )
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
 from phoenix_os.agent.errors import (
@@ -36,9 +41,24 @@ from phoenix_os.agent.errors import (
 from phoenix_os.agent.state import AgentBudgetSnapshot
 
 NOW = datetime(2026, 7, 29, 16, tzinfo=UTC)
+WRITE_TIME = NOW + timedelta(seconds=10)
 DURABLE_RUN_ID = DurableAgentRunId(UUID("10000000-0000-0000-0000-000000000001"))
 AGENT_RUN_ID = AgentRunId(UUID("20000000-0000-0000-0000-000000000002"))
 STEP_ID = AgentStepId(UUID("30000000-0000-0000-0000-000000000003"))
+
+
+async def _lease(
+    store: InMemoryDurableRunStore,
+    *,
+    run_id: DurableAgentRunId = DURABLE_RUN_ID,
+    owner_id: str = "worker-1",
+    now: datetime = NOW,
+) -> DurableLease:
+    return await store.lease_manager.acquire(
+        run_id,
+        owner_id=owner_id,
+        now=now,
+    )
 
 
 def _digest(character: str) -> CheckpointDigest:
@@ -137,13 +157,25 @@ async def test_store_implements_protocol_and_round_trips_canonical_history() -> 
     third = _next(second)
 
     assert isinstance(store, DurableRunStore)
+    assert isinstance(store.lease_manager, DurableLeaseManager)
     assert store.closed is False
     assert store.run_count == 0
     assert await store.get_current(DURABLE_RUN_ID) is None
 
     await store.create(first)
-    assert await store.append(second, expected_version=DurableRunVersion(1)) == second
-    assert await store.append(third, expected_version=DurableRunVersion(2)) == third
+    lease = await _lease(store)
+    assert (
+        await store.append(
+            second, expected_version=DurableRunVersion(1), lease=lease, now=WRITE_TIME
+        )
+        == second
+    )
+    assert (
+        await store.append(
+            third, expected_version=DurableRunVersion(2), lease=lease, now=WRITE_TIME
+        )
+        == third
+    )
 
     assert store.run_count == 1
     assert await store.get_current(DURABLE_RUN_ID) == third
@@ -194,11 +226,14 @@ async def test_append_rejects_sequence_version_chain_and_id_conflicts_atomically
     store = InMemoryDurableRunStore()
     first = _checkpoint(1)
     await store.create(first)
+    lease = await _lease(store)
     candidate = candidate_factory(first)
     candidate = seal_checkpoint_envelope(candidate)
 
     with pytest.raises(AgentStateConflictError):
-        await store.append(candidate, expected_version=DurableRunVersion(1))
+        await store.append(
+            candidate, expected_version=DurableRunVersion(1), lease=lease, now=WRITE_TIME
+        )
 
     assert await store.get_current(DURABLE_RUN_ID) == first
     assert await store.list_history(DURABLE_RUN_ID, limit=2) == (first,)
@@ -208,10 +243,13 @@ async def test_append_rejects_stale_expected_version_and_terminal_history() -> N
     store = InMemoryDurableRunStore()
     first = _checkpoint(1)
     await store.create(first)
+    lease = await _lease(store)
 
     second = _next(first)
     with pytest.raises(AgentStateConflictError):
-        await store.append(second, expected_version=DurableRunVersion(2))
+        await store.append(
+            second, expected_version=DurableRunVersion(2), lease=lease, now=WRITE_TIME
+        )
     assert await store.get_current(DURABLE_RUN_ID) == first
 
     terminal = _next(
@@ -219,10 +257,12 @@ async def test_append_rejects_stale_expected_version_and_terminal_history() -> N
         status=DurableRunStatus.COMPLETED,
         next_operation=CheckpointNextOperation.NONE,
     )
-    await store.append(terminal, expected_version=DurableRunVersion(1))
+    await store.append(terminal, expected_version=DurableRunVersion(1), lease=lease, now=WRITE_TIME)
 
     with pytest.raises(AgentStateConflictError):
-        await store.append(_next(terminal), expected_version=DurableRunVersion(2))
+        await store.append(
+            _next(terminal), expected_version=DurableRunVersion(2), lease=lease, now=WRITE_TIME
+        )
     assert await store.get_current(DURABLE_RUN_ID) == terminal
 
 
@@ -230,6 +270,7 @@ async def test_append_rejects_run_identity_changes() -> None:
     store = InMemoryDurableRunStore()
     first = _checkpoint(1)
     await store.create(first)
+    lease = await _lease(store)
     different_agent_run = AgentRunId(UUID("20000000-0000-0000-0000-000000000099"))
     candidate = _checkpoint(
         2,
@@ -238,7 +279,9 @@ async def test_append_rejects_run_identity_changes() -> None:
     )
 
     with pytest.raises(AgentStateConflictError):
-        await store.append(candidate, expected_version=DurableRunVersion(1))
+        await store.append(
+            candidate, expected_version=DurableRunVersion(1), lease=lease, now=WRITE_TIME
+        )
 
     assert await store.get_current(DURABLE_RUN_ID) == first
 
@@ -251,10 +294,13 @@ async def test_max_checkpoint_limit_fails_before_mutating_history() -> None:
     third = _next(second)
 
     await store.create(first)
-    await store.append(second, expected_version=DurableRunVersion(1))
+    lease = await _lease(store)
+    await store.append(second, expected_version=DurableRunVersion(1), lease=lease, now=WRITE_TIME)
 
     with pytest.raises(AgentLimitExceededError):
-        await store.append(third, expected_version=DurableRunVersion(2))
+        await store.append(
+            third, expected_version=DurableRunVersion(2), lease=lease, now=WRITE_TIME
+        )
 
     assert await store.get_current(DURABLE_RUN_ID) == second
     assert await store.list_history(DURABLE_RUN_ID, limit=2) == (first, second)
@@ -273,8 +319,11 @@ async def test_history_byte_limit_rolls_back_failed_append() -> None:
     store = InMemoryDurableRunStore(codec=codec, limits=limits)
 
     await store.create(first)
+    lease = await _lease(store)
     with pytest.raises(AgentLimitExceededError):
-        await store.append(second, expected_version=DurableRunVersion(1))
+        await store.append(
+            second, expected_version=DurableRunVersion(1), lease=lease, now=WRITE_TIME
+        )
 
     assert await store.get_current(DURABLE_RUN_ID) == first
     assert await store.list_history(DURABLE_RUN_ID, limit=2) == (first,)
@@ -284,12 +333,13 @@ async def test_concurrent_appends_allow_only_one_writer_for_the_same_version() -
     store = InMemoryDurableRunStore()
     first = _checkpoint(1)
     await store.create(first)
+    lease = await _lease(store)
     left = _next(first, checkpoint_id=_checkpoint_id(2, variant=1))
     right = _next(first, checkpoint_id=_checkpoint_id(2, variant=2))
 
     results = await asyncio.gather(
-        store.append(left, expected_version=DurableRunVersion(1)),
-        store.append(right, expected_version=DurableRunVersion(1)),
+        store.append(left, expected_version=DurableRunVersion(1), lease=lease, now=WRITE_TIME),
+        store.append(right, expected_version=DurableRunVersion(1), lease=lease, now=WRITE_TIME),
         return_exceptions=True,
     )
 
@@ -324,6 +374,7 @@ async def test_close_is_idempotent_and_all_operations_fail_closed() -> None:
     store = InMemoryDurableRunStore()
     first = _checkpoint(1)
     await store.create(first)
+    lease = await _lease(store)
     await store.close()
     await store.close()
 
@@ -340,4 +391,122 @@ async def test_close_is_idempotent_and_all_operations_fail_closed() -> None:
             )
         )
     with pytest.raises(RuntimeError, match="closed"):
-        await store.append(_next(first), expected_version=DurableRunVersion(1))
+        await store.append(
+            _next(first), expected_version=DurableRunVersion(1), lease=lease, now=WRITE_TIME
+        )
+
+
+async def test_close_closes_owned_lease_manager() -> None:
+    store = InMemoryDurableRunStore()
+    manager = store.lease_manager
+
+    await store.close()
+
+    assert store.closed is True
+    assert manager.closed is True
+
+
+async def test_close_does_not_close_injected_lease_manager() -> None:
+    manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=manager)
+
+    await store.close()
+
+    assert store.closed is True
+    assert manager.closed is False
+
+    lease = await manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="worker-after-store-close",
+        now=NOW,
+    )
+    assert lease.run_id == DURABLE_RUN_ID
+    await manager.close()
+
+
+async def test_append_rejects_lease_for_a_different_run_without_mutation() -> None:
+    store = InMemoryDurableRunStore()
+    first = _checkpoint(1)
+    second = _next(first)
+    await store.create(first)
+    wrong_run = DurableAgentRunId(UUID("10000000-0000-0000-0000-000000000099"))
+    wrong_lease = await _lease(
+        store,
+        run_id=wrong_run,
+        owner_id="worker-other",
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await store.append(
+            second,
+            expected_version=DurableRunVersion(1),
+            lease=wrong_lease,
+            now=WRITE_TIME,
+        )
+
+    assert await store.get_current(DURABLE_RUN_ID) == first
+    assert await store.list_history(DURABLE_RUN_ID, limit=2) == (first,)
+
+
+async def test_expired_replaced_worker_is_fenced_from_append() -> None:
+    limits = replace(
+        DurableRunLimits(),
+        lease_duration=timedelta(seconds=2),
+        lease_renewal_interval=timedelta(seconds=1),
+    )
+    store = InMemoryDurableRunStore(limits=limits)
+    first = _checkpoint(1)
+    second = _next(first)
+    await store.create(first)
+
+    stale = await _lease(store)
+    current = await _lease(
+        store,
+        owner_id="worker-2",
+        now=stale.expires_at,
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await store.append(
+            second,
+            expected_version=DurableRunVersion(1),
+            lease=stale,
+            now=current.acquired_at,
+        )
+
+    assert await store.get_current(DURABLE_RUN_ID) == first
+
+    assert (
+        await store.append(
+            second,
+            expected_version=DurableRunVersion(1),
+            lease=current,
+            now=current.acquired_at,
+        )
+        == second
+    )
+
+
+async def test_pre_renewal_token_keeps_same_fenced_identity_for_append() -> None:
+    store = InMemoryDurableRunStore()
+    first = _checkpoint(1)
+    second = _next(first)
+    await store.create(first)
+    original = await _lease(store)
+
+    renewed = await store.lease_manager.renew(
+        original,
+        now=NOW + timedelta(seconds=5),
+    )
+
+    assert (
+        await store.append(
+            second,
+            expected_version=DurableRunVersion(1),
+            lease=original,
+            now=NOW + timedelta(seconds=6),
+        )
+        == second
+    )
+    assert renewed.lease_id == original.lease_id
+    assert renewed.generation == original.generation

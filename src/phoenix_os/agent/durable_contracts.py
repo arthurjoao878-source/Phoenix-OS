@@ -1003,6 +1003,8 @@ class DurableRunStore(Protocol):
         checkpoint: CheckpointEnvelope,
         *,
         expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
     ) -> Awaitable[CheckpointEnvelope]: ...
 
     def close(self) -> Awaitable[None]: ...
