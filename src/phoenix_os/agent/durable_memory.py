@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 from itertools import pairwise
 
 from phoenix_os.agent.durable_codec import CanonicalCheckpointCodec
@@ -12,9 +13,14 @@ from phoenix_os.agent.durable_contracts import (
     CheckpointEnvelope,
     CheckpointId,
     DurableAgentRunId,
+    DurableLease,
     DurableRunLimits,
     DurableRunStore,
     DurableRunVersion,
+)
+from phoenix_os.agent.durable_lease import (
+    DurableLeaseManager,
+    InMemoryDurableLeaseManager,
 )
 from phoenix_os.agent.errors import (
     AgentCodecError,
@@ -38,13 +44,23 @@ class InMemoryDurableRunStore(DurableRunStore):
         *,
         codec: CheckpointCodec | None = None,
         limits: DurableRunLimits | None = None,
+        lease_manager: DurableLeaseManager | None = None,
     ) -> None:
         selected_codec = CanonicalCheckpointCodec() if codec is None else codec
         selected_limits = DurableRunLimits() if limits is None else limits
         if not isinstance(selected_limits, DurableRunLimits):
             raise TypeError("limits must be DurableRunLimits")
+        selected_lease_manager = (
+            InMemoryDurableLeaseManager(limits=selected_limits)
+            if lease_manager is None
+            else lease_manager
+        )
+        if not isinstance(selected_lease_manager, DurableLeaseManager):
+            raise TypeError("lease_manager must be DurableLeaseManager")
         self._codec = selected_codec
         self._limits = selected_limits
+        self._lease_manager = selected_lease_manager
+        self._owns_lease_manager = lease_manager is None
         self._runs: dict[DurableAgentRunId, _StoredRun] = {}
         self._closed = False
         self._lock = asyncio.Lock()
@@ -56,6 +72,10 @@ class InMemoryDurableRunStore(DurableRunStore):
     @property
     def limits(self) -> DurableRunLimits:
         return self._limits
+
+    @property
+    def lease_manager(self) -> DurableLeaseManager:
+        return self._lease_manager
 
     @property
     def run_count(self) -> int:
@@ -122,46 +142,55 @@ class InMemoryDurableRunStore(DurableRunStore):
         checkpoint: CheckpointEnvelope,
         *,
         expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
     ) -> CheckpointEnvelope:
-        """Append one checkpoint if version, sequence, and digest linkage still match."""
+        """Append one checkpoint under current fenced lease authority."""
 
         if not isinstance(expected_version, DurableRunVersion):
             raise TypeError("expected_version must be DurableRunVersion")
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
         encoded, decoded = self._prepare_checkpoint(checkpoint)
+        if lease.run_id != decoded.durable_run_id:
+            raise AgentStateConflictError()
 
-        async with self._lock:
-            self._ensure_open()
-            stored = self._runs.get(decoded.durable_run_id)
-            if stored is None:
-                raise AgentStateConflictError()
+        async with self._lease_manager.guard_current(lease, now=now):
+            async with self._lock:
+                self._ensure_open()
+                stored = self._runs.get(decoded.durable_run_id)
+                if stored is None:
+                    raise AgentStateConflictError()
 
-            current = self._decode_stored(stored.payloads[-1])
-            self._validate_append(
-                current=current,
-                candidate=decoded,
-                expected_version=expected_version,
-                checkpoint_ids=stored.checkpoint_ids,
-            )
+                current = self._decode_stored(stored.payloads[-1])
+                self._validate_append(
+                    current=current,
+                    candidate=decoded,
+                    expected_version=expected_version,
+                    checkpoint_ids=stored.checkpoint_ids,
+                )
 
-            next_count = len(stored.payloads) + 1
-            next_total_bytes = stored.total_bytes + len(encoded)
-            self._require_history_bounds(
-                checkpoint_count=next_count,
-                total_bytes=next_total_bytes,
-            )
+                next_count = len(stored.payloads) + 1
+                next_total_bytes = stored.total_bytes + len(encoded)
+                self._require_history_bounds(
+                    checkpoint_count=next_count,
+                    total_bytes=next_total_bytes,
+                )
 
-            self._runs[decoded.durable_run_id] = _StoredRun(
-                payloads=(*stored.payloads, encoded),
-                checkpoint_ids=stored.checkpoint_ids | {decoded.checkpoint_id},
-                total_bytes=next_total_bytes,
-            )
-            return decoded
+                self._runs[decoded.durable_run_id] = _StoredRun(
+                    payloads=(*stored.payloads, encoded),
+                    checkpoint_ids=stored.checkpoint_ids | {decoded.checkpoint_id},
+                    total_bytes=next_total_bytes,
+                )
+                return decoded
 
     async def close(self) -> None:
         """Close the adapter without mutating retained in-memory history."""
 
         async with self._lock:
             self._closed = True
+        if self._owns_lease_manager:
+            await self._lease_manager.close()
 
     def _prepare_checkpoint(
         self,
