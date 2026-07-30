@@ -213,7 +213,16 @@ from phoenix_os.agent.durable_fake import (
     DeterministicProtectObservation,
     DeterministicUnprotectObservation,
 )
+from phoenix_os.agent.durable_lease import (
+    DurableLeaseManager,
+    InMemoryDurableLeaseManager,
+)
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
+from phoenix_os.agent.durable_state import (
+    DurableCheckpointBoundary,
+    DurableRunStateMachine,
+    durable_transition_allowed,
+)
 from phoenix_os.agent.errors import (
     AgentAdministrationAccessDeniedError,
     AgentAdministrationConflictError,
@@ -495,9 +504,12 @@ __all__ = [
     "DeterministicToolTurn",
     "DeterministicUnprotectObservation",
     "DurableAgentRunId",
+    "DurableCheckpointBoundary",
     "DurableLease",
     "DurableLeaseId",
+    "DurableLeaseManager",
     "DurableRunLimits",
+    "DurableRunStateMachine",
     "DurableRunStatus",
     "DurableRunStore",
     "DurableRunTombstone",
@@ -507,6 +519,7 @@ __all__ = [
     "ExecutionAttemptKind",
     "ExecutionAttemptStatus",
     "FencingGeneration",
+    "InMemoryDurableLeaseManager",
     "InMemoryDurableRunStore",
     "InMemoryToolApprovalService",
     "IndeterminateReason",
@@ -581,6 +594,7 @@ __all__ = [
     "decode_tool_invocation_request",
     "decode_tool_invocation_result",
     "decode_tool_output_schema",
+    "durable_transition_allowed",
     "encode_agent_run_request",
     "encode_agent_run_result",
     "encode_agent_snapshot",
