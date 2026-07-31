@@ -237,6 +237,14 @@ from phoenix_os.agent.durable_state import (
     DurableRunStateMachine,
     durable_transition_allowed,
 )
+from phoenix_os.agent.durable_worker import (
+    BoundedDurableRecoveryWorker,
+    DurableRecoveryWorker,
+    DurableRecoveryWorkerConfiguration,
+    DurableRecoveryWorkerReport,
+    DurableRecoveryWorkerSnapshot,
+    DurableRecoveryWorkerState,
+)
 from phoenix_os.agent.errors import (
     AgentAdministrationAccessDeniedError,
     AgentAdministrationConflictError,
@@ -494,6 +502,7 @@ __all__ = [
     "AgentToolConfiguration",
     "AgentToolView",
     "BoundedAgentExecutor",
+    "BoundedDurableRecoveryWorker",
     "CanonicalCheckpointCodec",
     "CheckpointCodec",
     "CheckpointDigest",
@@ -529,6 +538,11 @@ __all__ = [
     "DurableLeaseManager",
     "DurableRecoveryAssessment",
     "DurableRecoveryCoordinator",
+    "DurableRecoveryWorker",
+    "DurableRecoveryWorkerConfiguration",
+    "DurableRecoveryWorkerReport",
+    "DurableRecoveryWorkerSnapshot",
+    "DurableRecoveryWorkerState",
     "DurableRunLimits",
     "DurableRunStateMachine",
     "DurableRunStatus",
