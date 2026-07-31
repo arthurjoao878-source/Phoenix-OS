@@ -151,6 +151,13 @@ from phoenix_os.agent.durable_codec import (
     encode_checkpoint_envelope,
     seal_checkpoint_envelope,
 )
+from phoenix_os.agent.durable_compatibility import (
+    DurableCompatibilityAssessment,
+    DurableCompatibilityCategory,
+    DurableCompatibilityPolicy,
+    DurableCompatibilityValidator,
+    StaticDurableCompatibilityValidator,
+)
 from phoenix_os.agent.durable_contracts import (
     CURRENT_CHECKPOINT_SCHEMA_VERSION,
     MAX_CHECKPOINT_ENVELOPE_BYTES,
@@ -513,6 +520,10 @@ __all__ = [
     "DeterministicUnprotectObservation",
     "DurableAgentRunId",
     "DurableCheckpointBoundary",
+    "DurableCompatibilityAssessment",
+    "DurableCompatibilityCategory",
+    "DurableCompatibilityPolicy",
+    "DurableCompatibilityValidator",
     "DurableLease",
     "DurableLeaseId",
     "DurableLeaseManager",
@@ -547,6 +558,7 @@ __all__ = [
     "ResumeRequest",
     "RetentionPolicy",
     "StartupDurableRecoveryCoordinator",
+    "StaticDurableCompatibilityValidator",
     "StaticToolResourceResolver",
     "ToolAdapter",
     "ToolAlreadyRegisteredError",

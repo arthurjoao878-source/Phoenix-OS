@@ -9,6 +9,10 @@ from datetime import datetime
 from itertools import pairwise
 from typing import Final, Protocol, runtime_checkable
 
+from phoenix_os.agent.durable_compatibility import (
+    DurableCompatibilityAssessment,
+    DurableCompatibilityValidator,
+)
 from phoenix_os.agent.durable_contracts import (
     CheckpointDigest,
     CheckpointEnvelope,
@@ -69,6 +73,7 @@ class DurableRecoveryAssessment:
     status: DurableRunStatus
     point: RecoveryPoint
     disposition: RecoveryDisposition
+    compatibility: DurableCompatibilityAssessment
     generation: FencingGeneration
     assessed_at: datetime
 
@@ -89,9 +94,14 @@ class DurableRecoveryAssessment:
             raise TypeError("point must be RecoveryPoint")
         if not isinstance(self.disposition, RecoveryDisposition):
             raise TypeError("disposition must be RecoveryDisposition")
+        if not isinstance(self.compatibility, DurableCompatibilityAssessment):
+            raise TypeError("compatibility must be DurableCompatibilityAssessment")
         if not isinstance(self.generation, FencingGeneration):
             raise TypeError("generation must be FencingGeneration")
         _require_timezone_aware(self.assessed_at, label="assessed_at")
+
+        if self.disposition is RecoveryDisposition.RESUME and not self.compatibility.compatible:
+            raise ValueError("resume disposition requires compatible current configuration")
 
         if self.disposition is RecoveryDisposition.MARK_INDETERMINATE_MODEL:
             if self.point is not RecoveryPoint.ACTIVE_MODEL_ATTEMPT:
@@ -145,13 +155,17 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         *,
         store: DurableRunStore,
         lease_manager: DurableLeaseManager,
+        compatibility_validator: DurableCompatibilityValidator,
     ) -> None:
         if not isinstance(store, DurableRunStore):
             raise TypeError("store must be DurableRunStore")
         if not isinstance(lease_manager, DurableLeaseManager):
             raise TypeError("lease_manager must be DurableLeaseManager")
+        if not isinstance(compatibility_validator, DurableCompatibilityValidator):
+            raise TypeError("compatibility_validator must be DurableCompatibilityValidator")
         self._store = store
         self._lease_manager = lease_manager
+        self._compatibility_validator = compatibility_validator
         self._closed = False
 
     @property
@@ -188,12 +202,18 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                 limit=checkpoint.sequence.value,
             )
             _validate_authoritative_history(checkpoint, history)
+            compatibility = self._compatibility_validator.validate(checkpoint)
+            _validate_compatibility_assessment(checkpoint, compatibility)
             point, disposition = classify_recovery_checkpoint(checkpoint, now=now)
+            if not compatibility.compatible and disposition is RecoveryDisposition.RESUME:
+                point = RecoveryPoint.UNSAFE_STATE
+                disposition = RecoveryDisposition.PAUSE_OPERATOR
             return _assessment(
                 checkpoint=checkpoint,
                 lease=lease,
                 point=point,
                 disposition=disposition,
+                compatibility=compatibility,
                 now=now,
             )
         finally:
@@ -337,12 +357,23 @@ def classify_recovery_checkpoint(
     return RecoveryPoint.UNSAFE_STATE, RecoveryDisposition.TERMINATE_FAILED
 
 
+def _validate_compatibility_assessment(
+    checkpoint: CheckpointEnvelope,
+    assessment: DurableCompatibilityAssessment,
+) -> None:
+    if not isinstance(assessment, DurableCompatibilityAssessment):
+        raise TypeError("compatibility validator must return DurableCompatibilityAssessment")
+    if assessment.agent_id != checkpoint.metadata.agent_id:
+        raise AgentStateConflictError()
+
+
 def _assessment(
     *,
     checkpoint: CheckpointEnvelope,
     lease: DurableLease,
     point: RecoveryPoint,
     disposition: RecoveryDisposition,
+    compatibility: DurableCompatibilityAssessment,
     now: datetime,
 ) -> DurableRecoveryAssessment:
     if lease.run_id != checkpoint.durable_run_id:
@@ -356,6 +387,7 @@ def _assessment(
         status=checkpoint.status,
         point=point,
         disposition=disposition,
+        compatibility=compatibility,
         generation=lease.generation,
         assessed_at=now,
     )

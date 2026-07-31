@@ -11,6 +11,11 @@ from phoenix_os.agent.contracts import (
     ToolEffect,
 )
 from phoenix_os.agent.durable_codec import seal_checkpoint_envelope
+from phoenix_os.agent.durable_compatibility import (
+    DurableCompatibilityCategory,
+    DurableCompatibilityPolicy,
+    StaticDurableCompatibilityValidator,
+)
 from phoenix_os.agent.durable_contracts import (
     CheckpointDigest,
     CheckpointEnvelope,
@@ -54,6 +59,27 @@ def _digest(character: str) -> CheckpointDigest:
     return CheckpointDigest(character * 64)
 
 
+def _compatibility() -> CompatibilityDigests:
+    return CompatibilityDigests(
+        configuration=_digest("a"),
+        tool_registry=_digest("b"),
+        model_provider=_digest("c"),
+        checkpoint_codec=_digest("d"),
+    )
+
+
+def _compatibility_validator() -> StaticDurableCompatibilityValidator:
+    return StaticDurableCompatibilityValidator(
+        (
+            DurableCompatibilityPolicy(
+                agent_id=AgentId("assistant"),
+                current=_compatibility(),
+                payload_profile=CheckpointPayloadProfile.METADATA_ONLY,
+            ),
+        )
+    )
+
+
 def _budget(*, deadline: datetime | None = None) -> AgentBudgetSnapshot:
     return AgentBudgetSnapshot(
         steps=0,
@@ -80,12 +106,7 @@ def _metadata(
         actor_id="worker-1",
         next_operation=next_operation,
         budget=_budget(deadline=budget_deadline),
-        compatibility=CompatibilityDigests(
-            configuration=_digest("a"),
-            tool_registry=_digest("b"),
-            model_provider=_digest("c"),
-            checkpoint_codec=_digest("d"),
-        ),
+        compatibility=_compatibility(),
         payload_profile=CheckpointPayloadProfile.METADATA_ONLY,
         retention_deadline=retention_deadline or NOW + timedelta(days=7),
         active_attempt=active_attempt,
@@ -370,6 +391,7 @@ async def test_coordinator_assesses_bounded_sorted_page_and_releases_leases() ->
     coordinator = StartupDurableRecoveryCoordinator(
         store=store,
         lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility_validator(),
     )
     assessments = await coordinator.assess_page(
         owner_id="startup-worker",
@@ -380,6 +402,9 @@ async def test_coordinator_assesses_bounded_sorted_page_and_releases_leases() ->
     assert isinstance(coordinator, DurableRecoveryCoordinator)
     assert tuple(item.run_id for item in assessments) == (first_run, last_run)
     assert all(item.point is RecoveryPoint.SAFE_BOUNDARY for item in assessments)
+    assert all(
+        item.compatibility.category is DurableCompatibilityCategory.EXACT for item in assessments
+    )
     assert all(item.generation.value == 1 for item in assessments)
     assert await store.lease_manager.get_current(first_run, now=RECOVERY_TIME) is None
     assert await store.lease_manager.get_current(last_run, now=RECOVERY_TIME) is None
@@ -400,6 +425,7 @@ async def test_coordinator_uses_authoritative_post_acquisition_checkpoint() -> N
     coordinator = StartupDurableRecoveryCoordinator(
         store=store,
         lease_manager=manager,
+        compatibility_validator=_compatibility_validator(),
     )
     assessment = await coordinator.assess_candidate(
         DURABLE_RUN_ID,
@@ -439,6 +465,7 @@ async def test_coordinator_rejects_incomplete_history_and_releases_lease() -> No
     coordinator = StartupDurableRecoveryCoordinator(
         store=store,
         lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility_validator(),
     )
     with pytest.raises(AgentCodecError, match="incomplete"):
         await coordinator.assess_candidate(
@@ -455,6 +482,7 @@ async def test_closed_coordinator_rejects_new_assessments() -> None:
     coordinator = StartupDurableRecoveryCoordinator(
         store=store,
         lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility_validator(),
     )
 
     await coordinator.close()
