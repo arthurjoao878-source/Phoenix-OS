@@ -219,6 +219,12 @@ from phoenix_os.agent.durable_lease import (
     InMemoryDurableLeaseManager,
 )
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
+from phoenix_os.agent.durable_recovery import (
+    DurableRecoveryAssessment,
+    DurableRecoveryCoordinator,
+    StartupDurableRecoveryCoordinator,
+    classify_recovery_checkpoint,
+)
 from phoenix_os.agent.durable_state import (
     DurableCheckpointBoundary,
     DurableRunStateMachine,
@@ -510,6 +516,8 @@ __all__ = [
     "DurableLease",
     "DurableLeaseId",
     "DurableLeaseManager",
+    "DurableRecoveryAssessment",
+    "DurableRecoveryCoordinator",
     "DurableRunLimits",
     "DurableRunStateMachine",
     "DurableRunStatus",
@@ -538,6 +546,7 @@ __all__ = [
     "ResumeReason",
     "ResumeRequest",
     "RetentionPolicy",
+    "StartupDurableRecoveryCoordinator",
     "StaticToolResourceResolver",
     "ToolAdapter",
     "ToolAlreadyRegisteredError",
@@ -585,6 +594,7 @@ __all__ = [
     "canonical_tool_invocation_result_bytes",
     "canonical_tool_schema_bytes",
     "checkpoint_envelope_digest",
+    "classify_recovery_checkpoint",
     "create_agent_runtime_stack",
     "decode_agent_run_request",
     "decode_agent_run_result",

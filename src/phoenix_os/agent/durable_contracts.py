@@ -204,6 +204,8 @@ class RecoveryPoint(StrEnum):
     SHUTDOWN_PAUSE = "shutdown_pause"
     ACTIVE_MODEL_ATTEMPT = "active_model_attempt"
     ACTIVE_TOOL_ATTEMPT = "active_tool_attempt"
+    EXPIRED = "expired"
+    UNSAFE_STATE = "unsafe_state"
 
 
 class RecoveryDisposition(StrEnum):
