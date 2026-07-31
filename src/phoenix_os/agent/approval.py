@@ -154,6 +154,56 @@ class ToolApprovalVerification:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolApprovalRecord:
+    """Content-free current record returned without consuming approval authority."""
+
+    challenge: ToolApprovalChallenge
+    requester: str
+    status: ToolApprovalStatus
+    approved_at: datetime | None = None
+    consumed_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.challenge, ToolApprovalChallenge):
+            raise TypeError("challenge must be ToolApprovalChallenge")
+        if not isinstance(self.status, ToolApprovalStatus):
+            raise TypeError("status must be ToolApprovalStatus")
+        if not isinstance(self.requester, str):
+            raise TypeError("requester must be a string")
+        requester = self.requester.strip()
+        if not requester or len(requester) > 1_024:
+            raise ValueError("requester is invalid")
+        object.__setattr__(self, "requester", requester)
+
+        for label, timestamp in (
+            ("approved_at", self.approved_at),
+            ("consumed_at", self.consumed_at),
+        ):
+            if timestamp is not None:
+                _require_aware(timestamp, label)
+
+        if self.approved_at is not None and (
+            self.approved_at < self.challenge.requested_at
+            or self.approved_at >= self.challenge.expires_at
+        ):
+            raise ValueError("approved_at falls outside the approval lifetime")
+
+        if self.status is ToolApprovalStatus.PENDING:
+            if self.approved_at is not None or self.consumed_at is not None:
+                raise ValueError("pending approval records cannot contain terminal timestamps")
+        elif self.status is ToolApprovalStatus.APPROVED:
+            if self.approved_at is None or self.consumed_at is not None:
+                raise ValueError("approved records require only approved_at")
+        else:
+            if self.approved_at is None or self.consumed_at is None:
+                raise ValueError("consumed records require approval and consumption times")
+            if self.consumed_at < self.approved_at:
+                raise ValueError("consumed_at cannot precede approved_at")
+            if self.consumed_at >= self.challenge.expires_at:
+                raise ValueError("consumed_at falls outside the approval lifetime")
+
+
+@dataclass(frozen=True, slots=True)
 class ToolApprovalSnapshot:
     """Content-free counters for one bounded approval store."""
 
@@ -205,6 +255,16 @@ class ToolApprovalService(Protocol):
     async def snapshot(self) -> ToolApprovalSnapshot: ...
 
     async def close(self) -> None: ...
+
+
+@runtime_checkable
+class ToolApprovalStateService(Protocol):
+    """Read-only current-state boundary for durable approval revalidation."""
+
+    async def lookup(
+        self,
+        approval_id: ToolApprovalId,
+    ) -> ToolApprovalRecord | None: ...
 
 
 @dataclass(slots=True)
@@ -359,6 +419,17 @@ class InMemoryToolApprovalService:
             consumed_at=now,
         )
 
+    async def lookup(
+        self,
+        approval_id: ToolApprovalId,
+    ) -> ToolApprovalRecord | None:
+        if not isinstance(approval_id, ToolApprovalId):
+            raise TypeError("approval_id must be ToolApprovalId")
+        async with self._lock:
+            self._require_open()
+            entry = self._entries.get(approval_id)
+            return None if entry is None else _record(entry)
+
     async def snapshot(self) -> ToolApprovalSnapshot:
         async with self._lock:
             pending = sum(
@@ -481,6 +552,16 @@ def _binding_digest(
         f"{request.resolved_resource}:{canonical_tool_argument_digest(request.arguments)}"
     ).encode()
     return hashlib.sha256(material).digest()
+
+
+def _record(entry: _ApprovalEntry) -> ToolApprovalRecord:
+    return ToolApprovalRecord(
+        challenge=entry.challenge,
+        requester=entry.requester,
+        status=entry.status,
+        approved_at=entry.approved_at,
+        consumed_at=entry.consumed_at,
+    )
 
 
 def _evidence(entry: _ApprovalEntry) -> ToolApprovalEvidence:

@@ -9,6 +9,11 @@ from datetime import datetime
 from itertools import pairwise
 from typing import Final, Protocol, runtime_checkable
 
+from phoenix_os.agent.durable_approval import (
+    DurableApprovalRevalidation,
+    DurableApprovalRevalidator,
+    DurableApprovalState,
+)
 from phoenix_os.agent.durable_compatibility import (
     DurableCompatibilityAssessment,
     DurableCompatibilityValidator,
@@ -76,6 +81,7 @@ class DurableRecoveryAssessment:
     compatibility: DurableCompatibilityAssessment
     generation: FencingGeneration
     assessed_at: datetime
+    approval_revalidation: DurableApprovalRevalidation | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, DurableAgentRunId):
@@ -99,6 +105,23 @@ class DurableRecoveryAssessment:
         if not isinstance(self.generation, FencingGeneration):
             raise TypeError("generation must be FencingGeneration")
         _require_timezone_aware(self.assessed_at, label="assessed_at")
+        if self.approval_revalidation is not None:
+            if not isinstance(
+                self.approval_revalidation,
+                DurableApprovalRevalidation,
+            ):
+                raise TypeError("approval_revalidation must be DurableApprovalRevalidation or None")
+            if self.status is not DurableRunStatus.PAUSED_APPROVAL:
+                raise ValueError("approval revalidation requires an approval-paused checkpoint")
+            if self.approval_revalidation.run_id != self.run_id:
+                raise ValueError("approval revalidation changed durable run identity")
+            if self.approval_revalidation.checkpoint_id != self.checkpoint_id:
+                raise ValueError("approval revalidation changed checkpoint identity")
+            if self.point not in {
+                RecoveryPoint.AWAITING_APPROVAL,
+                RecoveryPoint.UNSAFE_STATE,
+            }:
+                raise ValueError("approval revalidation requires an approval recovery point")
 
         if self.disposition is RecoveryDisposition.RESUME and not self.compatibility.compatible:
             raise ValueError("resume disposition requires compatible current configuration")
@@ -156,6 +179,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         store: DurableRunStore,
         lease_manager: DurableLeaseManager,
         compatibility_validator: DurableCompatibilityValidator,
+        approval_revalidator: DurableApprovalRevalidator | None = None,
     ) -> None:
         if not isinstance(store, DurableRunStore):
             raise TypeError("store must be DurableRunStore")
@@ -163,9 +187,15 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             raise TypeError("lease_manager must be DurableLeaseManager")
         if not isinstance(compatibility_validator, DurableCompatibilityValidator):
             raise TypeError("compatibility_validator must be DurableCompatibilityValidator")
+        if approval_revalidator is not None and not isinstance(
+            approval_revalidator,
+            DurableApprovalRevalidator,
+        ):
+            raise TypeError("approval_revalidator must implement DurableApprovalRevalidator")
         self._store = store
         self._lease_manager = lease_manager
         self._compatibility_validator = compatibility_validator
+        self._approval_revalidator = approval_revalidator
         self._closed = False
 
     @property
@@ -205,6 +235,22 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             compatibility = self._compatibility_validator.validate(checkpoint)
             _validate_compatibility_assessment(checkpoint, compatibility)
             point, disposition = classify_recovery_checkpoint(checkpoint, now=now)
+            approval_revalidation: DurableApprovalRevalidation | None = None
+            if point is RecoveryPoint.AWAITING_APPROVAL and self._approval_revalidator is not None:
+                approval_revalidation = await self._approval_revalidator.revalidate(
+                    checkpoint,
+                    now=now,
+                )
+                _validate_approval_revalidation(
+                    checkpoint,
+                    approval_revalidation,
+                )
+                if approval_revalidation.state in {
+                    DurableApprovalState.INVALID_CHECKPOINT,
+                    DurableApprovalState.MISMATCHED,
+                }:
+                    point = RecoveryPoint.UNSAFE_STATE
+                    disposition = RecoveryDisposition.TERMINATE_FAILED
             if not compatibility.compatible and disposition is RecoveryDisposition.RESUME:
                 point = RecoveryPoint.UNSAFE_STATE
                 disposition = RecoveryDisposition.PAUSE_OPERATOR
@@ -214,6 +260,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                 point=point,
                 disposition=disposition,
                 compatibility=compatibility,
+                approval_revalidation=approval_revalidation,
                 now=now,
             )
         finally:
@@ -367,6 +414,18 @@ def _validate_compatibility_assessment(
         raise AgentStateConflictError()
 
 
+def _validate_approval_revalidation(
+    checkpoint: CheckpointEnvelope,
+    assessment: DurableApprovalRevalidation,
+) -> None:
+    if not isinstance(assessment, DurableApprovalRevalidation):
+        raise TypeError("approval revalidator must return DurableApprovalRevalidation")
+    if assessment.run_id != checkpoint.durable_run_id:
+        raise AgentStateConflictError()
+    if assessment.checkpoint_id != checkpoint.checkpoint_id:
+        raise AgentStateConflictError()
+
+
 def _assessment(
     *,
     checkpoint: CheckpointEnvelope,
@@ -374,6 +433,7 @@ def _assessment(
     point: RecoveryPoint,
     disposition: RecoveryDisposition,
     compatibility: DurableCompatibilityAssessment,
+    approval_revalidation: DurableApprovalRevalidation | None,
     now: datetime,
 ) -> DurableRecoveryAssessment:
     if lease.run_id != checkpoint.durable_run_id:
@@ -390,6 +450,7 @@ def _assessment(
         compatibility=compatibility,
         generation=lease.generation,
         assessed_at=now,
+        approval_revalidation=approval_revalidation,
     )
 
 
