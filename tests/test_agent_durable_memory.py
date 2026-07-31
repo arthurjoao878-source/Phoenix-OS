@@ -12,6 +12,7 @@ from phoenix_os.agent.durable_codec import (
     seal_checkpoint_envelope,
 )
 from phoenix_os.agent.durable_contracts import (
+    MAX_RECOVERY_CANDIDATE_PAGE,
     CheckpointDigest,
     CheckpointEnvelope,
     CheckpointId,
@@ -510,3 +511,40 @@ async def test_pre_renewal_token_keeps_same_fenced_identity_for_append() -> None
     )
     assert renewed.lease_id == original.lease_id
     assert renewed.generation == original.generation
+
+
+async def test_list_recovery_candidates_returns_bounded_sorted_pages() -> None:
+    store = InMemoryDurableRunStore()
+    first_run = DurableAgentRunId(UUID("10000000-0000-0000-0000-000000000001"))
+    terminal_run = DurableAgentRunId(UUID("10000000-0000-0000-0000-000000000002"))
+    last_run = DurableAgentRunId(UUID("10000000-0000-0000-0000-000000000003"))
+
+    await store.create(_checkpoint(1, durable_run_id=last_run))
+    await store.create(
+        _checkpoint(
+            1,
+            durable_run_id=terminal_run,
+            status=DurableRunStatus.COMPLETED,
+            next_operation=CheckpointNextOperation.NONE,
+        )
+    )
+    await store.create(_checkpoint(1, durable_run_id=first_run))
+
+    assert await store.list_recovery_candidates(limit=1) == (first_run,)
+    assert await store.list_recovery_candidates(limit=2, after=first_run) == (last_run,)
+    assert await store.list_recovery_candidates(limit=2, after=last_run) == ()
+
+
+async def test_list_recovery_candidates_validates_bounds_and_lifecycle() -> None:
+    store = InMemoryDurableRunStore()
+
+    with pytest.raises(TypeError, match="integer"):
+        await store.list_recovery_candidates(limit=True)
+    with pytest.raises(ValueError, match="greater than zero"):
+        await store.list_recovery_candidates(limit=0)
+    with pytest.raises(AgentLimitExceededError):
+        await store.list_recovery_candidates(limit=MAX_RECOVERY_CANDIDATE_PAGE + 1)
+
+    await store.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        await store.list_recovery_candidates(limit=1)
