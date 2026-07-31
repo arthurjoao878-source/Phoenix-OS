@@ -438,6 +438,7 @@ def _validate_authoritative_history(
     ):
         raise AgentCodecError("authoritative checkpoint history has an invalid root")
 
+    checkpoint_ids: set[CheckpointId] = set()
     for expected_sequence, checkpoint in enumerate(history, start=1):
         if not isinstance(checkpoint, CheckpointEnvelope):
             raise AgentCodecError("authoritative history contains an invalid checkpoint")
@@ -451,7 +452,66 @@ def _validate_authoritative_history(
             raise AgentCodecError("authoritative history has a sequence gap")
         if checkpoint.run_version.value != expected_sequence:
             raise AgentCodecError("authoritative history has a version gap")
+        if checkpoint.checkpoint_id in checkpoint_ids:
+            raise AgentCodecError("authoritative history reused a checkpoint id")
+        checkpoint_ids.add(checkpoint.checkpoint_id)
+
+        metadata = checkpoint.metadata
+        first_metadata = first.metadata
+        if (
+            metadata.agent_id != first_metadata.agent_id
+            or metadata.actor_id != first_metadata.actor_id
+            or metadata.payload_profile is not first_metadata.payload_profile
+        ):
+            raise AgentCodecError("authoritative history changed immutable run identity")
+        if (
+            metadata.budget.started_at != first_metadata.budget.started_at
+            or metadata.budget.deadline != first_metadata.budget.deadline
+        ):
+            raise AgentCodecError("authoritative history changed the original budget window")
+        if metadata.retention_deadline != first_metadata.retention_deadline:
+            raise AgentCodecError("authoritative history changed the retention deadline")
 
     for previous, checkpoint in pairwise(history):
         if checkpoint.previous_digest != previous.digest:
             raise AgentCodecError("authoritative history has a broken digest chain")
+        if checkpoint.created_at < previous.created_at:
+            raise AgentCodecError("authoritative history moved checkpoint time backwards")
+        if previous.status.terminal:
+            raise AgentCodecError("authoritative history continued after a terminal checkpoint")
+        if _budget_counters_decreased(previous, checkpoint):
+            raise AgentCodecError("authoritative history decreased accumulated budget counters")
+
+
+def _budget_counters_decreased(
+    previous: CheckpointEnvelope,
+    checkpoint: CheckpointEnvelope,
+) -> bool:
+    previous_budget = previous.metadata.budget
+    current_budget = checkpoint.metadata.budget
+    previous_counters = (
+        previous_budget.steps,
+        previous_budget.model_turns,
+        previous_budget.tool_calls,
+        previous_budget.model_output_bytes,
+        previous_budget.tool_result_bytes,
+        previous_budget.input_tokens,
+        previous_budget.output_tokens,
+    )
+    current_counters = (
+        current_budget.steps,
+        current_budget.model_turns,
+        current_budget.tool_calls,
+        current_budget.model_output_bytes,
+        current_budget.tool_result_bytes,
+        current_budget.input_tokens,
+        current_budget.output_tokens,
+    )
+    return any(
+        current_value < previous_value
+        for previous_value, current_value in zip(
+            previous_counters,
+            current_counters,
+            strict=True,
+        )
+    )

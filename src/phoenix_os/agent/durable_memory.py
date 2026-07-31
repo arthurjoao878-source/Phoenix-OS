@@ -262,10 +262,22 @@ class InMemoryDurableRunStore(DurableRunStore):
             raise AgentStateConflictError()
         if expected_version != current.run_version:
             raise AgentStateConflictError()
+        if candidate.durable_run_id != current.durable_run_id:
+            raise AgentStateConflictError()
         if candidate.agent_run_id != current.agent_run_id:
             raise AgentStateConflictError()
         if candidate.schema_version != current.schema_version:
             raise AgentStateConflictError()
+
+        self._validate_immutable_run_metadata(
+            current=current,
+            candidate=candidate,
+        )
+        self._validate_budget_progression(
+            current=current,
+            candidate=candidate,
+        )
+
         if candidate.checkpoint_id in checkpoint_ids:
             raise AgentStateConflictError()
         if current.sequence.value >= self._limits.max_checkpoints:
@@ -277,6 +289,63 @@ class InMemoryDurableRunStore(DurableRunStore):
         if candidate.previous_digest != current.digest:
             raise AgentStateConflictError()
         if candidate.created_at < current.created_at:
+            raise AgentStateConflictError()
+
+    @staticmethod
+    def _validate_immutable_run_metadata(
+        *,
+        current: CheckpointEnvelope,
+        candidate: CheckpointEnvelope,
+    ) -> None:
+        current_metadata = current.metadata
+        candidate_metadata = candidate.metadata
+        if candidate_metadata.agent_id != current_metadata.agent_id:
+            raise AgentStateConflictError()
+        if candidate_metadata.actor_id != current_metadata.actor_id:
+            raise AgentStateConflictError()
+        if candidate_metadata.payload_profile is not current_metadata.payload_profile:
+            raise AgentStateConflictError()
+        if candidate_metadata.budget.started_at != current_metadata.budget.started_at:
+            raise AgentStateConflictError()
+        if candidate_metadata.budget.deadline != current_metadata.budget.deadline:
+            raise AgentStateConflictError()
+        if candidate_metadata.retention_deadline != current_metadata.retention_deadline:
+            raise AgentStateConflictError()
+
+    @staticmethod
+    def _validate_budget_progression(
+        *,
+        current: CheckpointEnvelope,
+        candidate: CheckpointEnvelope,
+    ) -> None:
+        current_budget = current.metadata.budget
+        candidate_budget = candidate.metadata.budget
+        current_counters = (
+            current_budget.steps,
+            current_budget.model_turns,
+            current_budget.tool_calls,
+            current_budget.model_output_bytes,
+            current_budget.tool_result_bytes,
+            current_budget.input_tokens,
+            current_budget.output_tokens,
+        )
+        candidate_counters = (
+            candidate_budget.steps,
+            candidate_budget.model_turns,
+            candidate_budget.tool_calls,
+            candidate_budget.model_output_bytes,
+            candidate_budget.tool_result_bytes,
+            candidate_budget.input_tokens,
+            candidate_budget.output_tokens,
+        )
+        if any(
+            candidate_value < current_value
+            for current_value, candidate_value in zip(
+                current_counters,
+                candidate_counters,
+                strict=True,
+            )
+        ):
             raise AgentStateConflictError()
 
     def _require_history_bounds(
