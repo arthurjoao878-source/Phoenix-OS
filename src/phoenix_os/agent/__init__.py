@@ -154,6 +154,16 @@ from phoenix_os.agent.durable_attempts import (
     DurableExecutionAttemptRecorder,
     StoreBackedDurableExecutionAttemptRecorder,
 )
+from phoenix_os.agent.durable_authorization import (
+    AGENT_RECONCILE_ACTION,
+    AGENT_RESUME_ACTION,
+    DurableReconciliationAuthorizer,
+    DurableResumeAuthorizer,
+    PolicyEngineDurableReconciliationAuthorizer,
+    PolicyEngineDurableResumeAuthorizer,
+    durable_agent_run_resource,
+    durable_reconciliation_resource,
+)
 from phoenix_os.agent.durable_codec import (
     DURABLE_CHECKPOINT_CODEC_SCHEMA_VERSION,
     MAX_DURABLE_CHECKPOINT_JSON_DEPTH,
@@ -370,6 +380,8 @@ from phoenix_os.agent.tools import (
 
 __all__ = [
     "AGENT_HEALTH_READ_PERMISSION",
+    "AGENT_RECONCILE_ACTION",
+    "AGENT_RESUME_ACTION",
     "AGENT_RUN_ACTION",
     "AGENT_TOOLS_DISABLE_PERMISSION",
     "AGENT_TOOLS_ENABLE_PERMISSION",
@@ -557,6 +569,7 @@ __all__ = [
     "DurableLease",
     "DurableLeaseId",
     "DurableLeaseManager",
+    "DurableReconciliationAuthorizer",
     "DurableRecoveryAssessment",
     "DurableRecoveryCoordinator",
     "DurableRecoveryWorker",
@@ -564,6 +577,7 @@ __all__ = [
     "DurableRecoveryWorkerReport",
     "DurableRecoveryWorkerSnapshot",
     "DurableRecoveryWorkerState",
+    "DurableResumeAuthorizer",
     "DurableRunLimits",
     "DurableRunStateMachine",
     "DurableRunStatus",
@@ -581,6 +595,8 @@ __all__ = [
     "IndeterminateReason",
     "NullAgentObserver",
     "PolicyEngineAgentRunAuthorizer",
+    "PolicyEngineDurableReconciliationAuthorizer",
+    "PolicyEngineDurableResumeAuthorizer",
     "PolicyEngineToolAuthorizer",
     "ProtectedPayloadReference",
     "ReconciliationDecision",
@@ -658,6 +674,8 @@ __all__ = [
     "decode_tool_invocation_request",
     "decode_tool_invocation_result",
     "decode_tool_output_schema",
+    "durable_agent_run_resource",
+    "durable_reconciliation_resource",
     "durable_transition_allowed",
     "encode_agent_run_request",
     "encode_agent_run_result",
