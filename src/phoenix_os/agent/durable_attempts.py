@@ -23,6 +23,7 @@ from phoenix_os.agent.durable_contracts import (
     ExecutionAttemptId,
     ExecutionAttemptKind,
     ExecutionAttemptStatus,
+    IndeterminateReason,
 )
 from phoenix_os.agent.errors import AgentStateConflictError
 
@@ -82,6 +83,17 @@ class DurableExecutionAttemptRecorder(Protocol):
         *,
         expected_version: DurableRunVersion,
         lease: DurableLease,
+        now: datetime,
+    ) -> Awaitable[CheckpointEnvelope]: ...
+
+    def mark_indeterminate(
+        self,
+        run_id: DurableAgentRunId,
+        attempt_id: ExecutionAttemptId,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        reason: IndeterminateReason,
         now: datetime,
     ) -> Awaitable[CheckpointEnvelope]: ...
 
@@ -248,6 +260,57 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             status=DurableRunStatus.ACTIVE,
             next_operation=current.metadata.next_operation,
             attempt=started,
+        )
+
+    async def mark_indeterminate(
+        self,
+        run_id: DurableAgentRunId,
+        attempt_id: ExecutionAttemptId,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        reason: IndeterminateReason,
+        now: datetime,
+    ) -> CheckpointEnvelope:
+        """Persist one fail-closed unknown external outcome without retry."""
+
+        self._require_attempt_id(attempt_id)
+        if not isinstance(reason, IndeterminateReason):
+            raise TypeError("reason must be IndeterminateReason")
+        current = await self._load_current(
+            run_id,
+            expected_version=expected_version,
+            lease=lease,
+            now=now,
+            require_budget_open=False,
+        )
+        attempt = self._require_current_attempt(
+            current,
+            attempt_id=attempt_id,
+            allowed_statuses=frozenset({ExecutionAttemptStatus.STARTED}),
+        )
+        self._require_attempt_time(attempt, now=now)
+        try:
+            indeterminate = replace(
+                attempt,
+                status=ExecutionAttemptStatus.INDETERMINATE,
+                completed_at=now,
+                indeterminate_reason=reason,
+            )
+        except (TypeError, ValueError) as exception:
+            raise AgentStateConflictError() from exception
+        durable_status = (
+            DurableRunStatus.INDETERMINATE_MODEL
+            if attempt.kind is ExecutionAttemptKind.MODEL_TURN
+            else DurableRunStatus.INDETERMINATE_TOOL
+        )
+        return await self._append(
+            current,
+            lease=lease,
+            now=now,
+            status=durable_status,
+            next_operation=CheckpointNextOperation.OPERATOR_REVIEW,
+            attempt=indeterminate,
         )
 
     async def mark_terminal(

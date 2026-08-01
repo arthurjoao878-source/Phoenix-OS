@@ -241,6 +241,7 @@ from phoenix_os.agent.durable_lease import (
 )
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
 from phoenix_os.agent.durable_recovery import (
+    DurableIndeterminateRecoveryCoordinator,
     DurableRecoveryAssessment,
     DurableRecoveryCoordinator,
     StartupDurableRecoveryCoordinator,
@@ -552,6 +553,7 @@ __all__ = [
     "DurableCompatibilityPolicy",
     "DurableCompatibilityValidator",
     "DurableExecutionAttemptRecorder",
+    "DurableIndeterminateRecoveryCoordinator",
     "DurableLease",
     "DurableLeaseId",
     "DurableLeaseManager",
