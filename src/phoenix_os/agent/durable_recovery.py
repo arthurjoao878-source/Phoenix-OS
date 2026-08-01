@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from itertools import pairwise
 from typing import Final, Protocol, runtime_checkable
@@ -13,6 +13,10 @@ from phoenix_os.agent.durable_approval import (
     DurableApprovalRevalidation,
     DurableApprovalRevalidator,
     DurableApprovalState,
+)
+from phoenix_os.agent.durable_attempts import (
+    DurableExecutionAttemptRecorder,
+    StoreBackedDurableExecutionAttemptRecorder,
 )
 from phoenix_os.agent.durable_compatibility import (
     DurableCompatibilityAssessment,
@@ -32,6 +36,7 @@ from phoenix_os.agent.durable_contracts import (
     ExecutionAttemptKind,
     ExecutionAttemptStatus,
     FencingGeneration,
+    IndeterminateReason,
     RecoveryDisposition,
     RecoveryPoint,
 )
@@ -170,6 +175,23 @@ class DurableRecoveryCoordinator(Protocol):
     def close(self) -> Awaitable[None]: ...
 
 
+@runtime_checkable
+class DurableIndeterminateRecoveryCoordinator(Protocol):
+    """Persist fail-closed indeterminate recovery without resuming external work."""
+
+    @property
+    def closed(self) -> bool: ...
+
+    def persist_indeterminate_candidate(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        owner_id: str,
+        now: datetime,
+        reason: IndeterminateReason = IndeterminateReason.PROCESS_LOSS,
+    ) -> Awaitable[DurableRecoveryAssessment]: ...
+
+
 class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
     """Acquire, re-read, validate, classify, and release bounded startup candidates."""
 
@@ -180,6 +202,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         lease_manager: DurableLeaseManager,
         compatibility_validator: DurableCompatibilityValidator,
         approval_revalidator: DurableApprovalRevalidator | None = None,
+        attempt_recorder: DurableExecutionAttemptRecorder | None = None,
     ) -> None:
         if not isinstance(store, DurableRunStore):
             raise TypeError("store must be DurableRunStore")
@@ -192,10 +215,18 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             DurableApprovalRevalidator,
         ):
             raise TypeError("approval_revalidator must implement DurableApprovalRevalidator")
+        selected_attempt_recorder = (
+            StoreBackedDurableExecutionAttemptRecorder(store=store)
+            if attempt_recorder is None
+            else attempt_recorder
+        )
+        if not isinstance(selected_attempt_recorder, DurableExecutionAttemptRecorder):
+            raise TypeError("attempt_recorder must implement DurableExecutionAttemptRecorder")
         self._store = store
         self._lease_manager = lease_manager
         self._compatibility_validator = compatibility_validator
         self._approval_revalidator = approval_revalidator
+        self._attempt_recorder = selected_attempt_recorder
         self._closed = False
 
     @property
@@ -254,6 +285,104 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             if not compatibility.compatible and disposition is RecoveryDisposition.RESUME:
                 point = RecoveryPoint.UNSAFE_STATE
                 disposition = RecoveryDisposition.PAUSE_OPERATOR
+            return _assessment(
+                checkpoint=checkpoint,
+                lease=lease,
+                point=point,
+                disposition=disposition,
+                compatibility=compatibility,
+                approval_revalidation=approval_revalidation,
+                now=now,
+            )
+        finally:
+            await self._lease_manager.release(lease, now=now)
+
+    async def persist_indeterminate_candidate(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        owner_id: str,
+        now: datetime,
+        reason: IndeterminateReason = IndeterminateReason.PROCESS_LOSS,
+    ) -> DurableRecoveryAssessment:
+        """Persist STARTED as INDETERMINATE and never repeat external work."""
+
+        self._ensure_open()
+        self._require_run_id(run_id)
+        _require_owner_id(owner_id)
+        _require_timezone_aware(now, label="now")
+        if not isinstance(reason, IndeterminateReason):
+            raise TypeError("reason must be IndeterminateReason")
+
+        lease = await self._lease_manager.acquire(
+            run_id,
+            owner_id=owner_id.strip(),
+            now=now,
+        )
+        try:
+            self._ensure_open()
+            checkpoint = await self._store.get_current(run_id)
+            if checkpoint is None or checkpoint.status.terminal:
+                raise AgentStateConflictError()
+
+            history = await self._store.list_history(
+                run_id,
+                limit=checkpoint.sequence.value,
+            )
+            _validate_authoritative_history(checkpoint, history)
+            compatibility = self._compatibility_validator.validate(checkpoint)
+            _validate_compatibility_assessment(checkpoint, compatibility)
+            point, disposition = classify_recovery_checkpoint(checkpoint, now=now)
+            approval_revalidation: DurableApprovalRevalidation | None = None
+            if point is RecoveryPoint.AWAITING_APPROVAL and self._approval_revalidator is not None:
+                approval_revalidation = await self._approval_revalidator.revalidate(
+                    checkpoint,
+                    now=now,
+                )
+                _validate_approval_revalidation(
+                    checkpoint,
+                    approval_revalidation,
+                )
+                if approval_revalidation.state in {
+                    DurableApprovalState.INVALID_CHECKPOINT,
+                    DurableApprovalState.MISMATCHED,
+                }:
+                    point = RecoveryPoint.UNSAFE_STATE
+                    disposition = RecoveryDisposition.TERMINATE_FAILED
+            if not compatibility.compatible and disposition is RecoveryDisposition.RESUME:
+                point = RecoveryPoint.UNSAFE_STATE
+                disposition = RecoveryDisposition.PAUSE_OPERATOR
+
+            if disposition in {
+                RecoveryDisposition.MARK_INDETERMINATE_MODEL,
+                RecoveryDisposition.MARK_INDETERMINATE_TOOL,
+            }:
+                attempt = checkpoint.metadata.active_attempt
+                if attempt is None or attempt.status is not ExecutionAttemptStatus.STARTED:
+                    raise AgentStateConflictError()
+                transitioned = await self._attempt_recorder.mark_indeterminate(
+                    run_id,
+                    attempt.attempt_id,
+                    expected_version=checkpoint.run_version,
+                    lease=lease,
+                    reason=reason,
+                    now=now,
+                )
+                _validate_indeterminate_transition(
+                    checkpoint,
+                    transitioned,
+                    reason=reason,
+                    now=now,
+                )
+                authoritative = await self._store.get_current(run_id)
+                if authoritative != transitioned:
+                    raise AgentStateConflictError()
+                checkpoint = transitioned
+                point, disposition = classify_recovery_checkpoint(checkpoint, now=now)
+                if disposition is not RecoveryDisposition.PAUSE_OPERATOR:
+                    raise AgentStateConflictError()
+                approval_revalidation = None
+
             return _assessment(
                 checkpoint=checkpoint,
                 lease=lease,
@@ -330,39 +459,42 @@ def classify_recovery_checkpoint(
     if now < checkpoint.created_at:
         raise AgentStateConflictError()
 
-    if now >= checkpoint.metadata.retention_deadline or now >= checkpoint.metadata.budget.deadline:
+    if now >= checkpoint.metadata.retention_deadline:
         return RecoveryPoint.EXPIRED, RecoveryDisposition.TERMINATE_EXPIRED
 
     attempt = checkpoint.metadata.active_attempt
-    if attempt is not None:
-        if attempt.status is ExecutionAttemptStatus.STARTED:
-            if attempt.kind is ExecutionAttemptKind.MODEL_TURN:
-                return (
-                    RecoveryPoint.ACTIVE_MODEL_ATTEMPT,
-                    RecoveryDisposition.MARK_INDETERMINATE_MODEL,
-                )
+    if attempt is not None and attempt.status is ExecutionAttemptStatus.STARTED:
+        if attempt.kind is ExecutionAttemptKind.MODEL_TURN:
+            return (
+                RecoveryPoint.ACTIVE_MODEL_ATTEMPT,
+                RecoveryDisposition.MARK_INDETERMINATE_MODEL,
+            )
+        return (
+            RecoveryPoint.ACTIVE_TOOL_ATTEMPT,
+            RecoveryDisposition.MARK_INDETERMINATE_TOOL,
+        )
+
+    if attempt is not None and attempt.status is ExecutionAttemptStatus.INDETERMINATE:
+        if (
+            checkpoint.status is DurableRunStatus.INDETERMINATE_MODEL
+            and attempt.kind is ExecutionAttemptKind.MODEL_TURN
+        ):
+            return (
+                RecoveryPoint.ACTIVE_MODEL_ATTEMPT,
+                RecoveryDisposition.PAUSE_OPERATOR,
+            )
+        if (
+            checkpoint.status is DurableRunStatus.INDETERMINATE_TOOL
+            and attempt.kind is ExecutionAttemptKind.TOOL_INVOCATION
+        ):
             return (
                 RecoveryPoint.ACTIVE_TOOL_ATTEMPT,
-                RecoveryDisposition.MARK_INDETERMINATE_TOOL,
+                RecoveryDisposition.PAUSE_OPERATOR,
             )
-        if attempt.status is ExecutionAttemptStatus.INDETERMINATE:
-            if (
-                checkpoint.status is DurableRunStatus.INDETERMINATE_MODEL
-                and attempt.kind is ExecutionAttemptKind.MODEL_TURN
-            ):
-                return (
-                    RecoveryPoint.ACTIVE_MODEL_ATTEMPT,
-                    RecoveryDisposition.PAUSE_OPERATOR,
-                )
-            if (
-                checkpoint.status is DurableRunStatus.INDETERMINATE_TOOL
-                and attempt.kind is ExecutionAttemptKind.TOOL_INVOCATION
-            ):
-                return (
-                    RecoveryPoint.ACTIVE_TOOL_ATTEMPT,
-                    RecoveryDisposition.PAUSE_OPERATOR,
-                )
-            return RecoveryPoint.UNSAFE_STATE, RecoveryDisposition.TERMINATE_FAILED
+        return RecoveryPoint.UNSAFE_STATE, RecoveryDisposition.TERMINATE_FAILED
+
+    if now >= checkpoint.metadata.budget.deadline:
+        return RecoveryPoint.EXPIRED, RecoveryDisposition.TERMINATE_EXPIRED
 
     if checkpoint.status.indeterminate:
         return RecoveryPoint.UNSAFE_STATE, RecoveryDisposition.TERMINATE_FAILED
@@ -452,6 +584,57 @@ def _assessment(
         assessed_at=now,
         approval_revalidation=approval_revalidation,
     )
+
+
+def _validate_indeterminate_transition(
+    before: CheckpointEnvelope,
+    after: CheckpointEnvelope,
+    *,
+    reason: IndeterminateReason,
+    now: datetime,
+) -> None:
+    before_attempt = before.metadata.active_attempt
+    after_attempt = after.metadata.active_attempt
+    if before_attempt is None or before_attempt.status is not ExecutionAttemptStatus.STARTED:
+        raise AgentStateConflictError()
+    if after_attempt is None:
+        raise AgentStateConflictError()
+
+    expected_status = (
+        DurableRunStatus.INDETERMINATE_MODEL
+        if before_attempt.kind is ExecutionAttemptKind.MODEL_TURN
+        else DurableRunStatus.INDETERMINATE_TOOL
+    )
+    try:
+        expected_attempt = replace(
+            before_attempt,
+            status=ExecutionAttemptStatus.INDETERMINATE,
+            completed_at=now,
+            indeterminate_reason=reason,
+        )
+        expected_metadata = replace(
+            before.metadata,
+            next_operation=CheckpointNextOperation.OPERATOR_REVIEW,
+            active_attempt=expected_attempt,
+        )
+    except (TypeError, ValueError) as exception:
+        raise AgentStateConflictError() from exception
+
+    if (
+        after.durable_run_id != before.durable_run_id
+        or after.agent_run_id != before.agent_run_id
+        or after.schema_version != before.schema_version
+        or after.step_id != before.step_id
+        or after.sequence != before.sequence.next()
+        or after.run_version != before.run_version.next()
+        or after.previous_digest != before.digest
+        or after.checkpoint_id == before.checkpoint_id
+        or after.created_at != now
+        or after.status is not expected_status
+        or after.metadata != expected_metadata
+        or after_attempt != expected_attempt
+    ):
+        raise AgentStateConflictError()
 
 
 def _validate_candidate_page(
