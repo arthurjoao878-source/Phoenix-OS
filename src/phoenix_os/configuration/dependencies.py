@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -31,6 +32,12 @@ if TYPE_CHECKING:
     from phoenix_os.agent import (
         AgentModelTurnAdapter,
         AgentServiceConfiguration,
+        CheckpointProtector,
+        DurableApprovalRevalidator,
+        DurableCompatibilityValidator,
+        DurableLeaseManager,
+        DurableRecoveryWorkerConfiguration,
+        DurableRunStore,
         ToolAdapter,
         ToolApprovalResolver,
         ToolApprovalService,
@@ -98,6 +105,13 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "agent.health",
         "agent.registry",
         "agent.runtime",
+        "agent.durable",
+        "agent.durable.compatibility",
+        "agent.durable.leases",
+        "agent.durable.protector",
+        "agent.durable.recovery",
+        "agent.durable.recovery-worker",
+        "agent.durable.storage",
         "inference",
         "inference.administration",
         "inference.health",
@@ -359,6 +373,13 @@ class RuntimeAssembler:
         agent_tool_adapters: tuple[ToolAdapter, ...] = (),
         agent_approval_service: ToolApprovalService | None = None,
         agent_approval_resolver: ToolApprovalResolver | None = None,
+        agent_durable_enabled: bool = False,
+        agent_durable_store: DurableRunStore | None = None,
+        agent_durable_lease_manager: DurableLeaseManager | None = None,
+        agent_durable_compatibility_validator: DurableCompatibilityValidator | None = None,
+        agent_durable_recovery_configuration: DurableRecoveryWorkerConfiguration | None = None,
+        agent_durable_approval_revalidator: DurableApprovalRevalidator | None = None,
+        agent_checkpoint_protector: CheckpointProtector | None = None,
         webhooks_enabled: bool = False,
         webhook_service_account_administration_enabled: bool = False,
         webhook_subscription_repository: WebhookSubscriptionRepository | None = None,
@@ -467,6 +488,13 @@ class RuntimeAssembler:
         self._agent_tool_adapters = tuple(agent_tool_adapters)
         self._agent_approval_service = agent_approval_service
         self._agent_approval_resolver = agent_approval_resolver
+        self._agent_durable_enabled = agent_durable_enabled
+        self._agent_durable_store = agent_durable_store
+        self._agent_durable_lease_manager = agent_durable_lease_manager
+        self._agent_durable_compatibility_validator = agent_durable_compatibility_validator
+        self._agent_durable_recovery_configuration = agent_durable_recovery_configuration
+        self._agent_durable_approval_revalidator = agent_durable_approval_revalidator
+        self._agent_checkpoint_protector = agent_checkpoint_protector
         self._webhooks_enabled = webhooks_enabled
         self._webhook_service_account_administration_enabled = (
             webhook_service_account_administration_enabled
@@ -601,6 +629,29 @@ class RuntimeAssembler:
                 raise ValueError("enabled agent requires configuration")
             if agent_model_adapter is None:
                 raise ValueError("enabled agent requires a model adapter")
+        if not isinstance(agent_durable_enabled, bool):
+            raise TypeError("agent durable enabled flag must be bool")
+        durable_options_supplied = any(
+            (
+                agent_durable_store is not None,
+                agent_durable_lease_manager is not None,
+                agent_durable_compatibility_validator is not None,
+                agent_durable_recovery_configuration is not None,
+                agent_durable_approval_revalidator is not None,
+                agent_checkpoint_protector is not None,
+            )
+        )
+        if durable_options_supplied and not agent_durable_enabled:
+            raise ValueError("durable agent options require agent_durable_enabled")
+        if agent_durable_enabled:
+            if not agent_enabled:
+                raise ValueError("enabled durable agent requires agent_enabled")
+            if agent_durable_store is None:
+                raise ValueError("enabled durable agent requires a DurableRunStore")
+            if agent_durable_lease_manager is None:
+                raise ValueError("enabled durable agent requires a DurableLeaseManager")
+            if agent_durable_compatibility_validator is None:
+                raise ValueError("enabled durable agent requires a DurableCompatibilityValidator")
         if not isinstance(webhooks_enabled, bool):
             raise TypeError("webhooks enabled flag must be bool")
         if not isinstance(webhook_service_account_administration_enabled, bool):
@@ -1548,15 +1599,83 @@ class RuntimeAssembler:
         if control_plane_stack is not None:
             components.append(ComponentSpec("control_plane.http", control_plane_stack.http))
 
-        runtime = PhoenixRuntime(
-            kernel=self._kernel,
-            events=self._events,
-            capabilities=self._capabilities,
-            components=components,
-            services=custom_services,
-            metadata=self._metadata,
-            source=self._source,
-        )
-        if control_plane_stack is not None:
-            control_plane_stack.bind_runtime(runtime)
-        return runtime
+        durable_agent_stack = None
+        try:
+            if self._agent_durable_enabled:
+                from phoenix_os.agent import (
+                    ToolApprovalDurableRevalidator,
+                    ToolApprovalStateService,
+                    create_durable_agent_runtime_stack,
+                )
+
+                assert self._agent_durable_store is not None
+                assert self._agent_durable_lease_manager is not None
+                assert self._agent_durable_compatibility_validator is not None
+
+                approval_revalidator = self._agent_durable_approval_revalidator
+                if approval_revalidator is None and isinstance(
+                    self._agent_approval_service,
+                    ToolApprovalStateService,
+                ):
+                    approval_revalidator = ToolApprovalDurableRevalidator(
+                        self._agent_approval_service
+                    )
+
+                durable_agent_stack = create_durable_agent_runtime_stack(
+                    store=self._agent_durable_store,
+                    lease_manager=self._agent_durable_lease_manager,
+                    compatibility_validator=self._agent_durable_compatibility_validator,
+                    recovery_configuration=self._agent_durable_recovery_configuration,
+                    approval_revalidator=approval_revalidator,
+                    protector=self._agent_checkpoint_protector,
+                )
+                custom_services["agent.durable"] = durable_agent_stack
+                custom_services["agent.durable.storage"] = durable_agent_stack.store
+                custom_services["agent.durable.leases"] = durable_agent_stack.lease_manager
+                custom_services["agent.durable.compatibility"] = (
+                    durable_agent_stack.compatibility_validator
+                )
+                custom_services["agent.durable.recovery"] = durable_agent_stack.recovery_coordinator
+                custom_services["agent.durable.recovery-worker"] = (
+                    durable_agent_stack.recovery_worker
+                )
+                if durable_agent_stack.protector is not None:
+                    custom_services["agent.durable.protector"] = durable_agent_stack.protector
+
+                agent_component_index = next(
+                    index for index, component in enumerate(components) if component.name == "agent"
+                )
+                components.insert(
+                    agent_component_index,
+                    ComponentSpec(
+                        "agent.durable.storage",
+                        durable_agent_stack.storage_lifecycle,
+                    ),
+                )
+                components.insert(
+                    agent_component_index + 2,
+                    ComponentSpec(
+                        "agent.durable.recovery",
+                        durable_agent_stack.recovery_lifecycle,
+                    ),
+                )
+
+            runtime = PhoenixRuntime(
+                kernel=self._kernel,
+                events=self._events,
+                capabilities=self._capabilities,
+                components=components,
+                services=custom_services,
+                metadata=self._metadata,
+                source=self._source,
+            )
+            if control_plane_stack is not None:
+                control_plane_stack.bind_runtime(runtime)
+            return runtime
+        except (Exception, asyncio.CancelledError) as exception:
+            if durable_agent_stack is not None:
+                try:
+                    await durable_agent_stack.close()
+                except (Exception, asyncio.CancelledError) as rollback_exception:
+                    raise exception from rollback_exception
+            raise
