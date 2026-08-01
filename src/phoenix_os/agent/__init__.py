@@ -150,6 +150,10 @@ from phoenix_os.agent.durable_approval import (
     ToolApprovalDurableRevalidator,
     approval_wait_checkpoint_metadata,
 )
+from phoenix_os.agent.durable_attempts import (
+    DurableExecutionAttemptRecorder,
+    StoreBackedDurableExecutionAttemptRecorder,
+)
 from phoenix_os.agent.durable_codec import (
     DURABLE_CHECKPOINT_CODEC_SCHEMA_VERSION,
     MAX_DURABLE_CHECKPOINT_JSON_DEPTH,
@@ -547,6 +551,7 @@ __all__ = [
     "DurableCompatibilityCategory",
     "DurableCompatibilityPolicy",
     "DurableCompatibilityValidator",
+    "DurableExecutionAttemptRecorder",
     "DurableLease",
     "DurableLeaseId",
     "DurableLeaseManager",
@@ -588,6 +593,7 @@ __all__ = [
     "StartupDurableRecoveryCoordinator",
     "StaticDurableCompatibilityValidator",
     "StaticToolResourceResolver",
+    "StoreBackedDurableExecutionAttemptRecorder",
     "ToolAdapter",
     "ToolAlreadyRegisteredError",
     "ToolApprovalChallenge",
