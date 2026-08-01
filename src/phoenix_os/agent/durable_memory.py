@@ -23,6 +23,7 @@ from phoenix_os.agent.durable_lease import (
     DurableLeaseManager,
     InMemoryDurableLeaseManager,
 )
+from phoenix_os.agent.durable_payload import validate_protected_payload_for_checkpoint
 from phoenix_os.agent.errors import (
     AgentCodecError,
     AgentLimitExceededError,
@@ -35,6 +36,7 @@ class _StoredRun:
     payloads: tuple[bytes, ...]
     checkpoint_ids: frozenset[CheckpointId]
     total_bytes: int
+    protected_payloads: tuple[bytes | None, ...]
 
 
 class InMemoryDurableRunStore(DurableRunStore):
@@ -83,9 +85,32 @@ class InMemoryDurableRunStore(DurableRunStore):
         return len(self._runs)
 
     async def create(self, checkpoint: CheckpointEnvelope) -> None:
-        """Create one run from its sequence-one, version-one checkpoint."""
+        """Create one metadata-only run checkpoint."""
 
+        await self._create(checkpoint, protected_payload=None)
+
+    async def create_protected(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        protected_payload: bytes,
+    ) -> None:
+        """Atomically create one run checkpoint and its protected ciphertext."""
+
+        await self._create(checkpoint, protected_payload=protected_payload)
+
+    async def _create(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        protected_payload: bytes | None,
+    ) -> None:
         encoded, decoded = self._prepare_checkpoint(checkpoint)
+        protected = validate_protected_payload_for_checkpoint(
+            decoded,
+            protected_payload,
+            limits=self._limits,
+        )
         if decoded.sequence.value != 1:
             raise AgentStateConflictError()
         if decoded.run_version.value != 1:
@@ -102,6 +127,7 @@ class InMemoryDurableRunStore(DurableRunStore):
                 payloads=(encoded,),
                 checkpoint_ids=frozenset({decoded.checkpoint_id}),
                 total_bytes=len(encoded),
+                protected_payloads=(protected,),
             )
 
     async def get_current(
@@ -172,13 +198,54 @@ class InMemoryDurableRunStore(DurableRunStore):
         lease: DurableLease,
         now: datetime,
     ) -> CheckpointEnvelope:
-        """Append one checkpoint under current fenced lease authority."""
+        """Append one metadata-only checkpoint under current fenced lease authority."""
 
+        return await self._append(
+            checkpoint,
+            expected_version=expected_version,
+            lease=lease,
+            now=now,
+            protected_payload=None,
+        )
+
+    async def append_protected(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+        protected_payload: bytes,
+    ) -> CheckpointEnvelope:
+        """Atomically append one checkpoint and its protected ciphertext."""
+
+        return await self._append(
+            checkpoint,
+            expected_version=expected_version,
+            lease=lease,
+            now=now,
+            protected_payload=protected_payload,
+        )
+
+    async def _append(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+        protected_payload: bytes | None,
+    ) -> CheckpointEnvelope:
         if not isinstance(expected_version, DurableRunVersion):
             raise TypeError("expected_version must be DurableRunVersion")
         if not isinstance(lease, DurableLease):
             raise TypeError("lease must be DurableLease")
         encoded, decoded = self._prepare_checkpoint(checkpoint)
+        protected = validate_protected_payload_for_checkpoint(
+            decoded,
+            protected_payload,
+            limits=self._limits,
+        )
         if lease.run_id != decoded.durable_run_id:
             raise AgentStateConflictError()
 
@@ -208,8 +275,44 @@ class InMemoryDurableRunStore(DurableRunStore):
                     payloads=(*stored.payloads, encoded),
                     checkpoint_ids=stored.checkpoint_ids | {decoded.checkpoint_id},
                     total_bytes=next_total_bytes,
+                    protected_payloads=(*stored.protected_payloads, protected),
                 )
                 return decoded
+
+    async def get_protected_payload(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        lease: DurableLease,
+        now: datetime,
+    ) -> bytes:
+        """Read current ciphertext only under the exact current fenced lease."""
+
+        _, decoded = self._prepare_checkpoint(checkpoint)
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+        if lease.run_id != decoded.durable_run_id:
+            raise AgentStateConflictError()
+
+        async with self._lease_manager.guard_current(lease, now=now):
+            async with self._lock:
+                self._ensure_open()
+                stored = self._runs.get(decoded.durable_run_id)
+                if stored is None:
+                    raise AgentStateConflictError()
+                if len(stored.protected_payloads) != len(stored.payloads):
+                    raise AgentCodecError("stored protected payload history is inconsistent")
+                current = self._decode_stored(stored.payloads[-1])
+                if current != decoded:
+                    raise AgentStateConflictError()
+                protected = validate_protected_payload_for_checkpoint(
+                    decoded,
+                    stored.protected_payloads[-1],
+                    limits=self._limits,
+                )
+                if protected is None:
+                    raise AgentStateConflictError()
+                return protected
 
     async def close(self) -> None:
         """Close the adapter without mutating retained in-memory history."""

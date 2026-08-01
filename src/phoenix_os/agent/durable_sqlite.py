@@ -17,6 +17,7 @@ from phoenix_os.agent.durable_contracts import (
     MAX_RECOVERY_CANDIDATE_PAGE,
     CheckpointCodec,
     CheckpointEnvelope,
+    CheckpointPayloadProfile,
     DurableAgentRunId,
     DurableLease,
     DurableLeaseId,
@@ -26,6 +27,7 @@ from phoenix_os.agent.durable_contracts import (
     FencingGeneration,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
+from phoenix_os.agent.durable_payload import validate_protected_payload_for_checkpoint
 from phoenix_os.agent.errors import (
     AgentCodecError,
     AgentLimitExceededError,
@@ -36,7 +38,7 @@ from phoenix_os.agent.errors import (
 if TYPE_CHECKING:
     from sqlite3 import Connection, Row
 
-DURABLE_SQLITE_SCHEMA_VERSION: Final = 1
+DURABLE_SQLITE_SCHEMA_VERSION: Final = 2
 DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS: Final = 5_000
 
 _RUN_COLUMNS: Final = """
@@ -71,6 +73,21 @@ _LEASE_COLUMNS: Final = """
     owner_id,
     acquired_at,
     expires_at
+"""
+
+_PROTECTED_PAYLOAD_COLUMNS: Final = """
+    reference,
+    run_id,
+    sequence,
+    checkpoint_id,
+    schema_version,
+    profile,
+    key_version,
+    plaintext_bytes,
+    ciphertext_bytes,
+    ciphertext_digest,
+    created_at,
+    ciphertext
 """
 
 
@@ -270,22 +287,52 @@ class _SQLiteDurableDatabase:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, DURABLE_SQLITE_SCHEMA_VERSION}:
+            if version not in {0, 1, DURABLE_SQLITE_SCHEMA_VERSION}:
                 raise AgentCodecError("unsupported durable SQLite schema version")
 
             connection.execute("BEGIN IMMEDIATE")
             self._create_schema(connection)
-            if version == 0:
-                connection.execute(f"PRAGMA user_version = {DURABLE_SQLITE_SCHEMA_VERSION}")
+            meta = connection.execute(
+                "SELECT schema_version FROM durable_meta WHERE singleton = 1"
+            ).fetchone()
             now = datetime.now(UTC).isoformat()
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO durable_meta (
-                    singleton, schema_version, created_at, updated_at
-                ) VALUES (1, ?, ?, ?)
-                """,
-                (DURABLE_SQLITE_SCHEMA_VERSION, now, now),
-            )
+
+            if version == 0:
+                if meta is None:
+                    connection.execute(
+                        """
+                        INSERT INTO durable_meta (
+                            singleton, schema_version, created_at, updated_at
+                        ) VALUES (1, ?, ?, ?)
+                        """,
+                        (DURABLE_SQLITE_SCHEMA_VERSION, now, now),
+                    )
+                elif _row_int(meta, "schema_version", positive=True) != (
+                    DURABLE_SQLITE_SCHEMA_VERSION
+                ):
+                    raise AgentCodecError(
+                        "durable SQLite metadata is incompatible with an unversioned database"
+                    )
+                connection.execute(f"PRAGMA user_version = {DURABLE_SQLITE_SCHEMA_VERSION}")
+            elif version == 1:
+                if meta is None or _row_int(meta, "schema_version", positive=True) != 1:
+                    raise AgentCodecError("durable SQLite v1 metadata is missing or incompatible")
+                cursor = connection.execute(
+                    """
+                    UPDATE durable_meta
+                    SET schema_version = ?, updated_at = ?
+                    WHERE singleton = 1 AND schema_version = 1
+                    """,
+                    (DURABLE_SQLITE_SCHEMA_VERSION, now),
+                )
+                if cursor.rowcount != 1:
+                    raise AgentCodecError("durable SQLite v1 migration did not update metadata")
+                connection.execute(f"PRAGMA user_version = {DURABLE_SQLITE_SCHEMA_VERSION}")
+            elif meta is None or _row_int(meta, "schema_version", positive=True) != (
+                DURABLE_SQLITE_SCHEMA_VERSION
+            ):
+                raise AgentCodecError("durable SQLite metadata is missing or incompatible")
+
             connection.execute("COMMIT")
             self._validate_schema(connection)
         except AgentCodecError:
@@ -350,6 +397,29 @@ class _SQLiteDurableDatabase:
                 owner_id TEXT NOT NULL,
                 acquired_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS durable_protected_payloads (
+                reference TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL CHECK (sequence > 0),
+                checkpoint_id TEXT NOT NULL,
+                schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+                profile TEXT NOT NULL,
+                key_version TEXT NOT NULL,
+                plaintext_bytes INTEGER NOT NULL CHECK (plaintext_bytes >= 0),
+                ciphertext_bytes INTEGER NOT NULL CHECK (ciphertext_bytes > 0),
+                ciphertext_digest TEXT NOT NULL CHECK (length(ciphertext_digest) = 64),
+                created_at TEXT NOT NULL,
+                ciphertext BLOB NOT NULL,
+                UNIQUE (run_id, sequence),
+                UNIQUE (run_id, checkpoint_id),
+                FOREIGN KEY (run_id, sequence)
+                    REFERENCES durable_checkpoints(run_id, sequence)
+                    ON DELETE CASCADE
             )
             """
         )
@@ -739,8 +809,33 @@ class SQLiteDurableRunStore(DurableRunStore):
         return self._closed or self._database.closed
 
     async def create(self, checkpoint: CheckpointEnvelope) -> None:
+        """Create one metadata-only durable run checkpoint."""
+
+        await self._create(checkpoint, protected_payload=None)
+
+    async def create_protected(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        protected_payload: bytes,
+    ) -> None:
+        """Atomically create one run checkpoint and its protected ciphertext."""
+
+        await self._create(checkpoint, protected_payload=protected_payload)
+
+    async def _create(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        protected_payload: bytes | None,
+    ) -> None:
         self._ensure_open()
         encoded, decoded = self._prepare_checkpoint(checkpoint)
+        protected = validate_protected_payload_for_checkpoint(
+            decoded,
+            protected_payload,
+            limits=self._limits,
+        )
         if (
             decoded.sequence.value != 1
             or decoded.run_version.value != 1
@@ -763,6 +858,8 @@ class SQLiteDurableRunStore(DurableRunStore):
 
                 self._insert_run(connection, decoded, history_bytes=len(encoded))
                 self._insert_checkpoint(connection, decoded, encoded)
+                if protected is not None:
+                    self._insert_protected_payload(connection, decoded, protected)
                 connection.execute("COMMIT")
             except sqlite3.IntegrityError as exception:
                 _rollback(connection)
@@ -918,6 +1015,44 @@ class SQLiteDurableRunStore(DurableRunStore):
         lease: DurableLease,
         now: datetime,
     ) -> CheckpointEnvelope:
+        """Append one metadata-only checkpoint under a current persisted lease."""
+
+        return await self._append(
+            checkpoint,
+            expected_version=expected_version,
+            lease=lease,
+            now=now,
+            protected_payload=None,
+        )
+
+    async def append_protected(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+        protected_payload: bytes,
+    ) -> CheckpointEnvelope:
+        """Atomically append one checkpoint and its protected ciphertext."""
+
+        return await self._append(
+            checkpoint,
+            expected_version=expected_version,
+            lease=lease,
+            now=now,
+            protected_payload=protected_payload,
+        )
+
+    async def _append(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+        protected_payload: bytes | None,
+    ) -> CheckpointEnvelope:
         self._ensure_open()
         if not isinstance(expected_version, DurableRunVersion):
             raise TypeError("expected_version must be DurableRunVersion")
@@ -925,6 +1060,11 @@ class SQLiteDurableRunStore(DurableRunStore):
             raise TypeError("lease must be DurableLease")
         _require_timezone_aware(now, label="now")
         encoded, decoded = self._prepare_checkpoint(checkpoint)
+        protected = validate_protected_payload_for_checkpoint(
+            decoded,
+            protected_payload,
+            limits=self._limits,
+        )
         if lease.run_id != decoded.durable_run_id:
             raise AgentStateConflictError()
         if self._lease_manager.closed:
@@ -954,6 +1094,8 @@ class SQLiteDurableRunStore(DurableRunStore):
                 )
 
                 self._insert_checkpoint(connection, decoded, encoded)
+                if protected is not None:
+                    self._insert_protected_payload(connection, decoded, protected)
                 cursor = connection.execute(
                     """
                     UPDATE durable_runs
@@ -986,6 +1128,63 @@ class SQLiteDurableRunStore(DurableRunStore):
             except sqlite3.IntegrityError as exception:
                 _rollback(connection)
                 raise AgentStateConflictError() from exception
+            except sqlite3.Error as exception:
+                _rollback(connection)
+                raise AgentServiceUnavailableError() from exception
+            except BaseException:
+                _rollback(connection)
+                raise
+
+    async def get_protected_payload(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        lease: DurableLease,
+        now: datetime,
+    ) -> bytes:
+        """Read current ciphertext under the exact persisted lease and envelope."""
+
+        self._ensure_open()
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+        _require_timezone_aware(now, label="now")
+        _, decoded = self._prepare_checkpoint(checkpoint)
+        if lease.run_id != decoded.durable_run_id:
+            raise AgentStateConflictError()
+        if (
+            decoded.metadata.payload_profile is not CheckpointPayloadProfile.PROTECTED_CONTENT
+            or decoded.metadata.payload_reference is None
+            or decoded.metadata.compatibility.payload_codec is None
+        ):
+            raise AgentStateConflictError()
+        if self._lease_manager.closed:
+            raise RuntimeError("durable SQLite lease manager is closed")
+
+        async with self._database.lock:
+            self._ensure_open()
+            connection = self._database.writer_connection()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _require_current_lease(connection, lease, now=now)
+                run_row = self._run_row(connection, decoded.durable_run_id)
+                if run_row is None:
+                    raise AgentStateConflictError()
+                current = self._current_checkpoint(connection, run_row)
+                if current != decoded:
+                    raise AgentStateConflictError()
+                row = connection.execute(
+                    f"""
+                    SELECT {_PROTECTED_PAYLOAD_COLUMNS}
+                    FROM durable_protected_payloads
+                    WHERE run_id = ? AND sequence = ?
+                    """,
+                    (str(decoded.durable_run_id), decoded.sequence.value),
+                ).fetchone()
+                if row is None:
+                    raise AgentCodecError("persisted protected payload is missing")
+                protected = self._decode_protected_payload_row(row, decoded)
+                connection.execute("COMMIT")
+                return protected
             except sqlite3.Error as exception:
                 _rollback(connection)
                 raise AgentServiceUnavailableError() from exception
@@ -1183,6 +1382,79 @@ class SQLiteDurableRunStore(DurableRunStore):
                 len(payload),
             ),
         )
+
+    @staticmethod
+    def _insert_protected_payload(
+        connection: Connection,
+        checkpoint: CheckpointEnvelope,
+        protected_payload: bytes,
+    ) -> None:
+        reference = checkpoint.metadata.payload_reference
+        if reference is None:
+            raise AgentStateConflictError()
+        connection.execute(
+            """
+            INSERT INTO durable_protected_payloads (
+                reference,
+                run_id,
+                sequence,
+                checkpoint_id,
+                schema_version,
+                profile,
+                key_version,
+                plaintext_bytes,
+                ciphertext_bytes,
+                ciphertext_digest,
+                created_at,
+                ciphertext
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                reference.reference,
+                str(checkpoint.durable_run_id),
+                checkpoint.sequence.value,
+                str(checkpoint.checkpoint_id),
+                checkpoint.schema_version.value,
+                checkpoint.metadata.payload_profile.value,
+                reference.key_version,
+                reference.plaintext_bytes,
+                reference.ciphertext_bytes,
+                reference.ciphertext_digest.value,
+                reference.created_at.isoformat(),
+                sqlite3.Binary(protected_payload),
+            ),
+        )
+
+    def _decode_protected_payload_row(
+        self,
+        row: Row,
+        checkpoint: CheckpointEnvelope,
+    ) -> bytes:
+        reference = checkpoint.metadata.payload_reference
+        if reference is None:
+            raise AgentStateConflictError()
+        if (
+            _row_text(row, "reference") != reference.reference
+            or _row_text(row, "run_id") != str(checkpoint.durable_run_id)
+            or _row_int(row, "sequence", positive=True) != checkpoint.sequence.value
+            or _row_text(row, "checkpoint_id") != str(checkpoint.checkpoint_id)
+            or _row_int(row, "schema_version", positive=True) != checkpoint.schema_version.value
+            or _row_text(row, "profile") != checkpoint.metadata.payload_profile.value
+            or _row_text(row, "key_version") != reference.key_version
+            or _row_int(row, "plaintext_bytes") != reference.plaintext_bytes
+            or _row_int(row, "ciphertext_bytes", positive=True) != reference.ciphertext_bytes
+            or _row_text(row, "ciphertext_digest") != reference.ciphertext_digest.value
+            or _parse_datetime(row["created_at"]) != reference.created_at
+        ):
+            raise AgentCodecError("persisted protected payload metadata is inconsistent")
+        protected = validate_protected_payload_for_checkpoint(
+            checkpoint,
+            _blob_bytes(row["ciphertext"]),
+            limits=self._limits,
+        )
+        if protected is None:
+            raise AgentCodecError("persisted protected payload binding is invalid")
+        return protected
 
     @staticmethod
     def _run_row(

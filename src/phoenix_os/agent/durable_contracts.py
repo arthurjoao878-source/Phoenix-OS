@@ -966,6 +966,8 @@ class CheckpointProtector(Protocol):
         run_id: DurableAgentRunId,
         checkpoint_id: CheckpointId,
         sequence: CheckpointSequence,
+        schema_version: CheckpointSchemaVersion | None = None,
+        profile: CheckpointPayloadProfile = CheckpointPayloadProfile.PROTECTED_CONTENT,
         plaintext: bytes,
     ) -> tuple[ProtectedPayloadReference, bytes]: ...
 
@@ -975,6 +977,8 @@ class CheckpointProtector(Protocol):
         run_id: DurableAgentRunId,
         checkpoint_id: CheckpointId,
         sequence: CheckpointSequence,
+        schema_version: CheckpointSchemaVersion | None = None,
+        profile: CheckpointPayloadProfile = CheckpointPayloadProfile.PROTECTED_CONTENT,
         reference: ProtectedPayloadReference,
         ciphertext: bytes,
     ) -> bytes: ...

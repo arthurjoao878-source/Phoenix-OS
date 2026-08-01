@@ -18,11 +18,14 @@ from phoenix_os.agent.durable_contracts import (
     MAX_PROTECTED_PAYLOAD_BYTES,
     CheckpointDigest,
     CheckpointId,
+    CheckpointPayloadProfile,
     CheckpointProtector,
+    CheckpointSchemaVersion,
     CheckpointSequence,
     DurableAgentRunId,
     ProtectedPayloadReference,
 )
+from phoenix_os.agent.durable_payload import protected_payload_associated_data
 from phoenix_os.agent.errors import AgentCodecError, AgentLimitExceededError
 
 _FAKE_MAGIC = b"PHX-DURABLE-FAKE-PROTECTOR-V1\x00"
@@ -163,6 +166,8 @@ class DeterministicCheckpointProtector(CheckpointProtector):
         run_id: DurableAgentRunId,
         checkpoint_id: CheckpointId,
         sequence: CheckpointSequence,
+        schema_version: CheckpointSchemaVersion | None = None,
+        profile: CheckpointPayloadProfile = CheckpointPayloadProfile.PROTECTED_CONTENT,
         plaintext: bytes,
     ) -> tuple[ProtectedPayloadReference, bytes]:
         _require_context(
@@ -178,6 +183,8 @@ class DeterministicCheckpointProtector(CheckpointProtector):
             run_id=run_id,
             checkpoint_id=checkpoint_id,
             sequence=sequence,
+            schema_version=schema_version,
+            profile=profile,
         )
         encrypted = self._xor_stream(
             normalized_plaintext,
@@ -198,6 +205,8 @@ class DeterministicCheckpointProtector(CheckpointProtector):
                 run_id=run_id,
                 checkpoint_id=checkpoint_id,
                 sequence=sequence,
+                schema_version=schema_version,
+                profile=profile,
                 ciphertext_digest=digest,
             ),
             key_version=self._key_version,
@@ -224,6 +233,8 @@ class DeterministicCheckpointProtector(CheckpointProtector):
         run_id: DurableAgentRunId,
         checkpoint_id: CheckpointId,
         sequence: CheckpointSequence,
+        schema_version: CheckpointSchemaVersion | None = None,
+        profile: CheckpointPayloadProfile = CheckpointPayloadProfile.PROTECTED_CONTENT,
         reference: ProtectedPayloadReference,
         ciphertext: bytes,
     ) -> bytes:
@@ -239,6 +250,8 @@ class DeterministicCheckpointProtector(CheckpointProtector):
             run_id=run_id,
             checkpoint_id=checkpoint_id,
             sequence=sequence,
+            schema_version=schema_version,
+            profile=profile,
             reference=reference,
             ciphertext=normalized_ciphertext,
         )
@@ -257,6 +270,8 @@ class DeterministicCheckpointProtector(CheckpointProtector):
             run_id=run_id,
             checkpoint_id=checkpoint_id,
             sequence=sequence,
+            schema_version=schema_version,
+            profile=profile,
         )
         expected_tag = hmac.digest(
             self._secret,
@@ -293,6 +308,8 @@ class DeterministicCheckpointProtector(CheckpointProtector):
         run_id: DurableAgentRunId,
         checkpoint_id: CheckpointId,
         sequence: CheckpointSequence,
+        schema_version: CheckpointSchemaVersion | None,
+        profile: CheckpointPayloadProfile,
         reference: ProtectedPayloadReference,
         ciphertext: bytes,
     ) -> None:
@@ -310,6 +327,8 @@ class DeterministicCheckpointProtector(CheckpointProtector):
             run_id=run_id,
             checkpoint_id=checkpoint_id,
             sequence=sequence,
+            schema_version=schema_version,
+            profile=profile,
             ciphertext_digest=actual_digest,
         )
         if not hmac.compare_digest(reference.reference, expected_reference):
@@ -321,16 +340,24 @@ class DeterministicCheckpointProtector(CheckpointProtector):
         run_id: DurableAgentRunId,
         checkpoint_id: CheckpointId,
         sequence: CheckpointSequence,
+        schema_version: CheckpointSchemaVersion | None,
+        profile: CheckpointPayloadProfile,
     ) -> bytes:
-        fields = (
-            "phoenix-durable-fake-v1",
-            self._protector_id,
-            self._key_version,
-            str(run_id),
-            str(checkpoint_id),
-            str(sequence.value),
+        context = protected_payload_associated_data(
+            run_id=run_id,
+            checkpoint_id=checkpoint_id,
+            sequence=sequence,
+            schema_version=schema_version,
+            profile=profile,
         )
-        return "\x00".join(fields).encode("ascii")
+        return b"\x00".join(
+            (
+                b"phoenix-durable-fake-protector-v2",
+                self._protector_id.encode("ascii"),
+                self._key_version.encode("ascii"),
+                context,
+            )
+        )
 
     def _reference_value(
         self,
@@ -338,12 +365,16 @@ class DeterministicCheckpointProtector(CheckpointProtector):
         run_id: DurableAgentRunId,
         checkpoint_id: CheckpointId,
         sequence: CheckpointSequence,
+        schema_version: CheckpointSchemaVersion | None,
+        profile: CheckpointPayloadProfile,
         ciphertext_digest: CheckpointDigest,
     ) -> str:
         context = self._associated_data(
             run_id=run_id,
             checkpoint_id=checkpoint_id,
             sequence=sequence,
+            schema_version=schema_version,
+            profile=profile,
         )
         token = hmac.digest(
             self._secret,
