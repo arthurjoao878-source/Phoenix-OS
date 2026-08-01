@@ -264,6 +264,12 @@ from phoenix_os.agent.durable_recovery import (
     StartupDurableRecoveryCoordinator,
     classify_recovery_checkpoint,
 )
+from phoenix_os.agent.durable_sqlite import (
+    DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS,
+    DURABLE_SQLITE_SCHEMA_VERSION,
+    SQLiteDurableLeaseManager,
+    SQLiteDurableRunStore,
+)
 from phoenix_os.agent.durable_state import (
     DurableCheckpointBoundary,
     DurableRunStateMachine,
@@ -408,7 +414,9 @@ __all__ = [
     "AGENT_TOOLS_READ_PERMISSION",
     "CURRENT_CHECKPOINT_SCHEMA_VERSION",
     "DEFAULT_DURABLE_RECONCILIATION_ATTEMPTS",
+    "DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS",
     "DURABLE_CHECKPOINT_CODEC_SCHEMA_VERSION",
+    "DURABLE_SQLITE_SCHEMA_VERSION",
     "DURABLE_STATUS_LOOKUP_DEFAULT_TIMEOUT",
     "MAX_AGENT_APPROVAL_WAIT_TIMEOUT",
     "MAX_AGENT_ARGUMENT_BYTES",
@@ -641,6 +649,8 @@ __all__ = [
     "ResumeRequest",
     "RetentionPolicy",
     "ReviewedDurableAttemptStatusLookup",
+    "SQLiteDurableLeaseManager",
+    "SQLiteDurableRunStore",
     "StartupDurableRecoveryCoordinator",
     "StaticDurableCompatibilityValidator",
     "StaticToolResourceResolver",
