@@ -250,6 +250,13 @@ from phoenix_os.agent.durable_lease import (
     InMemoryDurableLeaseManager,
 )
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
+from phoenix_os.agent.durable_reconciliation import (
+    DEFAULT_DURABLE_RECONCILIATION_ATTEMPTS,
+    DurableReconciliationDispositionApplier,
+    DurableReconciliationDispositionRecord,
+    StoreBackedDurableReconciliationDispositionApplier,
+    reconciliation_disposition_record,
+)
 from phoenix_os.agent.durable_recovery import (
     DurableIndeterminateRecoveryCoordinator,
     DurableRecoveryAssessment,
@@ -400,6 +407,7 @@ __all__ = [
     "AGENT_TOOLS_ENABLE_PERMISSION",
     "AGENT_TOOLS_READ_PERMISSION",
     "CURRENT_CHECKPOINT_SCHEMA_VERSION",
+    "DEFAULT_DURABLE_RECONCILIATION_ATTEMPTS",
     "DURABLE_CHECKPOINT_CODEC_SCHEMA_VERSION",
     "DURABLE_STATUS_LOOKUP_DEFAULT_TIMEOUT",
     "MAX_AGENT_APPROVAL_WAIT_TIMEOUT",
@@ -591,6 +599,8 @@ __all__ = [
     "DurableLeaseManager",
     "DurableModelAttemptStatusAdapter",
     "DurableReconciliationAuthorizer",
+    "DurableReconciliationDispositionApplier",
+    "DurableReconciliationDispositionRecord",
     "DurableRecoveryAssessment",
     "DurableRecoveryCoordinator",
     "DurableRecoveryWorker",
@@ -635,6 +645,7 @@ __all__ = [
     "StaticDurableCompatibilityValidator",
     "StaticToolResourceResolver",
     "StoreBackedDurableExecutionAttemptRecorder",
+    "StoreBackedDurableReconciliationDispositionApplier",
     "ToolAdapter",
     "ToolAlreadyRegisteredError",
     "ToolApprovalChallenge",
@@ -712,6 +723,7 @@ __all__ = [
     "encode_tool_invocation_result",
     "encode_tool_output_schema",
     "freeze_agent_json_object",
+    "reconciliation_disposition_record",
     "resolve_server_resource",
     "resolved_resource_category",
     "seal_checkpoint_envelope",
