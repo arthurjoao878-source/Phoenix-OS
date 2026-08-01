@@ -250,6 +250,11 @@ from phoenix_os.agent.durable_lease import (
     InMemoryDurableLeaseManager,
 )
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
+from phoenix_os.agent.durable_payload import (
+    DURABLE_PROTECTED_PAYLOAD_CONTEXT_VERSION,
+    DurableProtectedPayloadStore,
+    protected_payload_associated_data,
+)
 from phoenix_os.agent.durable_reconciliation import (
     DEFAULT_DURABLE_RECONCILIATION_ATTEMPTS,
     DurableReconciliationDispositionApplier,
@@ -416,6 +421,7 @@ __all__ = [
     "DEFAULT_DURABLE_RECONCILIATION_ATTEMPTS",
     "DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS",
     "DURABLE_CHECKPOINT_CODEC_SCHEMA_VERSION",
+    "DURABLE_PROTECTED_PAYLOAD_CONTEXT_VERSION",
     "DURABLE_SQLITE_SCHEMA_VERSION",
     "DURABLE_STATUS_LOOKUP_DEFAULT_TIMEOUT",
     "MAX_AGENT_APPROVAL_WAIT_TIMEOUT",
@@ -606,6 +612,7 @@ __all__ = [
     "DurableLeaseId",
     "DurableLeaseManager",
     "DurableModelAttemptStatusAdapter",
+    "DurableProtectedPayloadStore",
     "DurableReconciliationAuthorizer",
     "DurableReconciliationDispositionApplier",
     "DurableReconciliationDispositionRecord",
@@ -733,6 +740,7 @@ __all__ = [
     "encode_tool_invocation_result",
     "encode_tool_output_schema",
     "freeze_agent_json_object",
+    "protected_payload_associated_data",
     "reconciliation_disposition_record",
     "resolve_server_resource",
     "resolved_resource_category",
