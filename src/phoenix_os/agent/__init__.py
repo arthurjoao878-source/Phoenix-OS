@@ -269,6 +269,12 @@ from phoenix_os.agent.durable_recovery import (
     StartupDurableRecoveryCoordinator,
     classify_recovery_checkpoint,
 )
+from phoenix_os.agent.durable_runtime import (
+    DurableAgentRuntimeStack,
+    DurableRecoveryLifecycle,
+    DurableStorageLifecycle,
+    create_durable_agent_runtime_stack,
+)
 from phoenix_os.agent.durable_sqlite import (
     DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS,
     DURABLE_SQLITE_SCHEMA_VERSION,
@@ -593,6 +599,7 @@ __all__ = [
     "DeterministicToolTurn",
     "DeterministicUnprotectObservation",
     "DurableAgentRunId",
+    "DurableAgentRuntimeStack",
     "DurableApprovalRevalidation",
     "DurableApprovalRevalidator",
     "DurableApprovalState",
@@ -618,6 +625,7 @@ __all__ = [
     "DurableReconciliationDispositionRecord",
     "DurableRecoveryAssessment",
     "DurableRecoveryCoordinator",
+    "DurableRecoveryLifecycle",
     "DurableRecoveryWorker",
     "DurableRecoveryWorkerConfiguration",
     "DurableRecoveryWorkerReport",
@@ -630,6 +638,7 @@ __all__ = [
     "DurableRunStore",
     "DurableRunTombstone",
     "DurableRunVersion",
+    "DurableStorageLifecycle",
     "DurableToolAttemptStatusAdapter",
     "ExecutionAttempt",
     "ExecutionAttemptId",
@@ -715,6 +724,7 @@ __all__ = [
     "checkpoint_envelope_digest",
     "classify_recovery_checkpoint",
     "create_agent_runtime_stack",
+    "create_durable_agent_runtime_stack",
     "decode_agent_run_request",
     "decode_agent_run_result",
     "decode_agent_snapshot",
