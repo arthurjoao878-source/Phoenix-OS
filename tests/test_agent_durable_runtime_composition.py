@@ -591,13 +591,14 @@ async def test_durable_retention_lifecycle_start_is_manual_only() -> None:
 
         assert worker is not None
         assert lifecycle is not None
-        assert worker.state is DurableRetentionWorkerState.CREATED
+        initial_snapshot = await worker.snapshot()
+        assert initial_snapshot.state is DurableRetentionWorkerState.CREATED
 
         await lifecycle.start(RuntimeContext(services={}))
 
         snapshot = await worker.snapshot()
 
-        assert worker.state is DurableRetentionWorkerState.RUNNING
+        assert snapshot.state is DurableRetentionWorkerState.RUNNING
         assert snapshot.passes_started == 0
         assert snapshot.passes_completed == 0
         assert snapshot.passes_timed_out == 0
@@ -731,19 +732,20 @@ async def test_runtime_assembler_composes_opt_in_durable_retention() -> None:
     assert agent_index < recovery_index
     assert recovery_index < retention_index
 
-    assert worker.state is DurableRetentionWorkerState.CREATED
+    initial_snapshot = await worker.snapshot()
+    assert initial_snapshot.state is DurableRetentionWorkerState.CREATED
 
     await runtime.start()
 
-    assert worker.state is DurableRetentionWorkerState.RUNNING
-
     retention_snapshot = await worker.snapshot()
+    assert retention_snapshot.state is DurableRetentionWorkerState.RUNNING
     assert retention_snapshot.passes_started == 0
     assert retention_snapshot.passes_completed == 0
 
     await runtime.stop()
 
-    assert worker.state is DurableRetentionWorkerState.CLOSED
+    stopped_snapshot = await worker.snapshot()
+    assert stopped_snapshot.state is DurableRetentionWorkerState.CLOSED
     assert store.closed
     assert store.lease_manager.closed
 
@@ -889,18 +891,15 @@ async def test_durable_retention_start_failure_rolls_back_recovery_agent_and_sto
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "retention_options",
+    ("retention_policy", "retention_configuration"),
     (
-        {
-            "agent_durable_retention_policy": RetentionPolicy(),
-        },
-        {
-            "agent_durable_retention_configuration": (DurableRetentionWorkerConfiguration()),
-        },
+        (RetentionPolicy(), None),
+        (None, DurableRetentionWorkerConfiguration()),
     ),
 )
 async def test_runtime_assembler_retention_options_require_explicit_durable_enablement(
-    retention_options: dict[str, object],
+    retention_policy: RetentionPolicy | None,
+    retention_configuration: DurableRetentionWorkerConfiguration | None,
 ) -> None:
     configuration, events, kernel, capabilities = await _base()
 
@@ -917,5 +916,6 @@ async def test_runtime_assembler_retention_options_require_explicit_durable_enab
             agent_enabled=True,
             agent_configuration=_agent_configuration(),
             agent_model_adapter=_model_adapter(),
-            **retention_options,
+            agent_durable_retention_policy=retention_policy,
+            agent_durable_retention_configuration=retention_configuration,
         )

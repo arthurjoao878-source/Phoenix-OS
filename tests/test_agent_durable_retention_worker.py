@@ -2911,6 +2911,8 @@ class _CancellationGraceFailureRetentionStore(_RecordingRetentionStore):
         except asyncio.CancelledError:
             raise RuntimeError("synthetic cancellation-grace failure") from None
 
+        raise AssertionError("synthetic future completed unexpectedly")
+
 
 @pytest.mark.asyncio
 async def test_retention_worker_consumes_failure_completed_during_cancellation_grace() -> None:
