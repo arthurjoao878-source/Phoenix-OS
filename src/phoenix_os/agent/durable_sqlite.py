@@ -16,15 +16,19 @@ from phoenix_os.agent.durable_codec import CanonicalCheckpointCodec
 from phoenix_os.agent.durable_contracts import (
     MAX_RECOVERY_CANDIDATE_PAGE,
     CheckpointCodec,
+    CheckpointDigest,
     CheckpointEnvelope,
     CheckpointPayloadProfile,
     DurableAgentRunId,
     DurableLease,
     DurableLeaseId,
     DurableRunLimits,
+    DurableRunStatus,
     DurableRunStore,
+    DurableRunTombstone,
     DurableRunVersion,
     FencingGeneration,
+    RetentionPolicy,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
 from phoenix_os.agent.durable_payload import validate_protected_payload_for_checkpoint
@@ -38,7 +42,7 @@ from phoenix_os.agent.errors import (
 if TYPE_CHECKING:
     from sqlite3 import Connection, Row
 
-DURABLE_SQLITE_SCHEMA_VERSION: Final = 2
+DURABLE_SQLITE_SCHEMA_VERSION: Final = 3
 DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS: Final = 5_000
 
 _RUN_COLUMNS: Final = """
@@ -88,6 +92,17 @@ _PROTECTED_PAYLOAD_COLUMNS: Final = """
     ciphertext_digest,
     created_at,
     ciphertext
+"""
+
+
+_TOMBSTONE_COLUMNS: Final = """
+    run_id,
+    terminal_status,
+    terminal_version,
+    final_checkpoint_digest,
+    deletion_generation,
+    terminal_at,
+    retain_until
 """
 
 
@@ -185,6 +200,25 @@ def _lease_from_row(row: Row) -> tuple[DurableLease, bool]:
     except (TypeError, ValueError) as exception:
         raise AgentCodecError("persisted durable lease is invalid") from exception
     return lease, bool(active_value)
+
+
+def _tombstone_from_row(row: Row) -> DurableRunTombstone:
+    try:
+        return DurableRunTombstone(
+            run_id=DurableAgentRunId(UUID(_row_text(row, "run_id"))),
+            terminal_status=DurableRunStatus(_row_text(row, "terminal_status")),
+            terminal_version=DurableRunVersion(_row_int(row, "terminal_version", positive=True)),
+            final_checkpoint_digest=CheckpointDigest(_row_text(row, "final_checkpoint_digest")),
+            deletion_generation=FencingGeneration(
+                _row_int(row, "deletion_generation", positive=True)
+            ),
+            terminal_at=_parse_datetime(row["terminal_at"]),
+            retain_until=_parse_datetime(row["retain_until"]),
+        )
+    except AgentCodecError:
+        raise
+    except (TypeError, ValueError) as exception:
+        raise AgentCodecError("persisted durable tombstone is invalid") from exception
 
 
 def _require_current_lease(
@@ -287,7 +321,7 @@ class _SQLiteDurableDatabase:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, DURABLE_SQLITE_SCHEMA_VERSION}:
+            if version not in {0, 1, 2, DURABLE_SQLITE_SCHEMA_VERSION}:
                 raise AgentCodecError("unsupported durable SQLite schema version")
 
             connection.execute("BEGIN IMMEDIATE")
@@ -314,19 +348,21 @@ class _SQLiteDurableDatabase:
                         "durable SQLite metadata is incompatible with an unversioned database"
                     )
                 connection.execute(f"PRAGMA user_version = {DURABLE_SQLITE_SCHEMA_VERSION}")
-            elif version == 1:
-                if meta is None or _row_int(meta, "schema_version", positive=True) != 1:
-                    raise AgentCodecError("durable SQLite v1 metadata is missing or incompatible")
+            elif version in {1, 2}:
+                if meta is None or _row_int(meta, "schema_version", positive=True) != version:
+                    raise AgentCodecError(
+                        "durable SQLite migration metadata is missing or incompatible"
+                    )
                 cursor = connection.execute(
                     """
                     UPDATE durable_meta
                     SET schema_version = ?, updated_at = ?
-                    WHERE singleton = 1 AND schema_version = 1
+                    WHERE singleton = 1 AND schema_version = ?
                     """,
-                    (DURABLE_SQLITE_SCHEMA_VERSION, now),
+                    (DURABLE_SQLITE_SCHEMA_VERSION, now, version),
                 )
                 if cursor.rowcount != 1:
-                    raise AgentCodecError("durable SQLite v1 migration did not update metadata")
+                    raise AgentCodecError("durable SQLite migration did not update metadata")
                 connection.execute(f"PRAGMA user_version = {DURABLE_SQLITE_SCHEMA_VERSION}")
             elif meta is None or _row_int(meta, "schema_version", positive=True) != (
                 DURABLE_SQLITE_SCHEMA_VERSION
@@ -421,6 +457,27 @@ class _SQLiteDurableDatabase:
                     REFERENCES durable_checkpoints(run_id, sequence)
                     ON DELETE CASCADE
             )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS durable_tombstones (
+                run_id TEXT PRIMARY KEY,
+                terminal_status TEXT NOT NULL,
+                terminal_version INTEGER NOT NULL CHECK (terminal_version > 0),
+                final_checkpoint_digest TEXT NOT NULL
+                    CHECK (length(final_checkpoint_digest) = 64),
+                deletion_generation INTEGER NOT NULL
+                    CHECK (deletion_generation > 0),
+                terminal_at TEXT NOT NULL,
+                retain_until TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS durable_tombstones_retention
+            ON durable_tombstones(retain_until, run_id)
             """
         )
         connection.execute(
@@ -853,7 +910,17 @@ class SQLiteDurableRunStore(DurableRunStore):
                     "SELECT 1 FROM durable_runs WHERE run_id = ?",
                     (str(decoded.durable_run_id),),
                 ).fetchone()
-                if existing is not None:
+
+                tombstone = connection.execute(
+                    """
+                    SELECT 1
+                    FROM durable_tombstones
+                    WHERE run_id = ?
+                    """,
+                    (str(decoded.durable_run_id),),
+                ).fetchone()
+
+                if existing is not None or tombstone is not None:
                     raise AgentStateConflictError()
 
                 self._insert_run(connection, decoded, history_bytes=len(encoded))
@@ -1188,6 +1255,548 @@ class SQLiteDurableRunStore(DurableRunStore):
             except sqlite3.Error as exception:
                 _rollback(connection)
                 raise AgentServiceUnavailableError() from exception
+            except BaseException:
+                _rollback(connection)
+                raise
+
+    async def get_tombstone(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> DurableRunTombstone | None:
+        """Return persisted content-free anti-resurrection metadata."""
+
+        self._ensure_open()
+        self._require_run_id(run_id)
+
+        async with self._database.lock:
+            self._ensure_open()
+            connection = self._database.writer_connection()
+            try:
+                connection.execute("BEGIN")
+
+                run_row = self._run_row(connection, run_id)
+                row = connection.execute(
+                    f"""
+                    SELECT {_TOMBSTONE_COLUMNS}
+                    FROM durable_tombstones
+                    WHERE run_id = ?
+                    """,
+                    (str(run_id),),
+                ).fetchone()
+
+                if run_row is not None and row is not None:
+                    raise AgentCodecError("durable run exists alongside its tombstone")
+
+                tombstone = None if row is None else _tombstone_from_row(row)
+
+                connection.execute("COMMIT")
+                return tombstone
+            except sqlite3.Error as exception:
+                _rollback(connection)
+                raise AgentServiceUnavailableError() from exception
+            except BaseException:
+                _rollback(connection)
+                raise
+
+    async def tombstone_terminal_run(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        policy: RetentionPolicy,
+        lease: DurableLease,
+        now: datetime,
+    ) -> DurableRunTombstone:
+        """Atomically replace retained terminal history with a tombstone."""
+
+        self._ensure_open()
+        self._require_run_id(run_id)
+
+        if not isinstance(policy, RetentionPolicy):
+            raise TypeError("policy must be RetentionPolicy")
+
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+
+        _require_timezone_aware(now, label="now")
+
+        if lease.run_id != run_id:
+            raise AgentStateConflictError()
+
+        if self._lease_manager.closed:
+            raise RuntimeError("durable SQLite lease manager is closed")
+
+        async with self._database.lock:
+            self._ensure_open()
+            connection = self._database.writer_connection()
+
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+
+                _require_current_lease(
+                    connection,
+                    lease,
+                    now=now,
+                )
+
+                run_row = self._run_row(connection, run_id)
+
+                tombstone_row = connection.execute(
+                    f"""
+                    SELECT {_TOMBSTONE_COLUMNS}
+                    FROM durable_tombstones
+                    WHERE run_id = ?
+                    """,
+                    (str(run_id),),
+                ).fetchone()
+
+                if run_row is not None and tombstone_row is not None:
+                    raise AgentCodecError("durable run exists alongside its tombstone")
+
+                if tombstone_row is not None:
+                    tombstone = _tombstone_from_row(tombstone_row)
+                    connection.execute("COMMIT")
+                    return tombstone
+
+                if run_row is None:
+                    raise AgentStateConflictError()
+
+                current = self._current_checkpoint(
+                    connection,
+                    run_row,
+                )
+
+                self._validate_history_aggregate(
+                    connection,
+                    run_row,
+                )
+
+                if not current.status.terminal:
+                    raise AgentStateConflictError()
+
+                if now < current.created_at:
+                    raise AgentStateConflictError()
+
+                if now < current.created_at + policy.metadata_retention:
+                    raise AgentStateConflictError()
+
+                tombstone = DurableRunTombstone(
+                    run_id=run_id,
+                    terminal_status=current.status,
+                    terminal_version=current.run_version,
+                    final_checkpoint_digest=current.digest,
+                    deletion_generation=lease.generation,
+                    terminal_at=current.created_at,
+                    retain_until=(current.created_at + policy.tombstone_retention),
+                )
+
+                connection.execute(
+                    """
+                    INSERT INTO durable_tombstones (
+                        run_id,
+                        terminal_status,
+                        terminal_version,
+                        final_checkpoint_digest,
+                        deletion_generation,
+                        terminal_at,
+                        retain_until
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(tombstone.run_id),
+                        tombstone.terminal_status.value,
+                        tombstone.terminal_version.value,
+                        tombstone.final_checkpoint_digest.value,
+                        tombstone.deletion_generation.value,
+                        tombstone.terminal_at.isoformat(),
+                        tombstone.retain_until.isoformat(),
+                    ),
+                )
+
+                cursor = connection.execute(
+                    """
+                    DELETE FROM durable_runs
+                    WHERE run_id = ?
+                    """,
+                    (str(run_id),),
+                )
+
+                if cursor.rowcount != 1:
+                    raise AgentStateConflictError()
+
+                connection.execute("COMMIT")
+                return tombstone
+
+            except sqlite3.IntegrityError as exception:
+                _rollback(connection)
+                raise AgentStateConflictError() from exception
+
+            except sqlite3.Error as exception:
+                _rollback(connection)
+                raise AgentServiceUnavailableError() from exception
+
+            except BaseException:
+                _rollback(connection)
+                raise
+
+    @staticmethod
+    def _cleanup_lease_is_active(
+        connection: Connection,
+        run_id: DurableAgentRunId,
+        *,
+        now: datetime,
+    ) -> bool:
+        row = connection.execute(
+            f"""
+            SELECT {_LEASE_COLUMNS}
+            FROM durable_leases
+            WHERE run_id = ?
+            """,
+            (str(run_id),),
+        ).fetchone()
+
+        if row is None:
+            return False
+
+        lease, active = _lease_from_row(row)
+
+        if lease.run_id != run_id:
+            raise AgentCodecError("persisted durable lease changed run identity")
+
+        if not active:
+            return False
+
+        if now < lease.acquired_at:
+            raise AgentStateConflictError()
+
+        return now < lease.expires_at
+
+    async def list_cleanup_candidates(
+        self,
+        *,
+        policy: RetentionPolicy,
+        now: datetime,
+        limit: int,
+        after: DurableAgentRunId | None = None,
+    ) -> tuple[DurableAgentRunId, ...]:
+        """List due terminal runs and tombstones without active leases."""
+
+        self._ensure_open()
+
+        if not isinstance(policy, RetentionPolicy):
+            raise TypeError("policy must be RetentionPolicy")
+
+        _require_timezone_aware(now, label="now")
+        self._require_recovery_limit(limit)
+
+        if after is not None:
+            self._require_run_id(after)
+
+        if self._lease_manager.closed:
+            raise RuntimeError("durable SQLite lease manager is closed")
+
+        async with self._database.lock:
+            self._ensure_open()
+            connection = self._database.writer_connection()
+
+            try:
+                connection.execute("BEGIN")
+
+                if after is None:
+                    run_rows = connection.execute(
+                        f"""
+                        SELECT {_RUN_COLUMNS}
+                        FROM durable_runs
+                        WHERE terminal = 1
+                        ORDER BY run_id ASC
+                        """
+                    ).fetchall()
+
+                    tombstone_rows = connection.execute(
+                        f"""
+                        SELECT {_TOMBSTONE_COLUMNS}
+                        FROM durable_tombstones
+                        ORDER BY run_id ASC
+                        """
+                    ).fetchall()
+                else:
+                    run_rows = connection.execute(
+                        f"""
+                        SELECT {_RUN_COLUMNS}
+                        FROM durable_runs
+                        WHERE terminal = 1
+                          AND run_id > ?
+                        ORDER BY run_id ASC
+                        """,
+                        (str(after),),
+                    ).fetchall()
+
+                    tombstone_rows = connection.execute(
+                        f"""
+                        SELECT {_TOMBSTONE_COLUMNS}
+                        FROM durable_tombstones
+                        WHERE run_id > ?
+                        ORDER BY run_id ASC
+                        """,
+                        (str(after),),
+                    ).fetchall()
+
+                live: dict[
+                    DurableAgentRunId,
+                    Row,
+                ] = {}
+
+                for row in run_rows:
+                    try:
+                        run_id = DurableAgentRunId(UUID(_row_text(row, "run_id")))
+                    except (TypeError, ValueError) as exception:
+                        raise AgentCodecError(
+                            "persisted durable run identity is invalid"
+                        ) from exception
+
+                    if run_id in live:
+                        raise AgentCodecError("persisted durable run identity is duplicated")
+
+                    live[run_id] = row
+
+                tombstones: dict[
+                    DurableAgentRunId,
+                    DurableRunTombstone,
+                ] = {}
+
+                for row in tombstone_rows:
+                    tombstone = _tombstone_from_row(row)
+
+                    if tombstone.run_id in tombstones:
+                        raise AgentCodecError("persisted durable tombstone identity is duplicated")
+
+                    tombstones[tombstone.run_id] = tombstone
+
+                overlap = live.keys() & tombstones.keys()
+
+                if overlap:
+                    raise AgentCodecError("durable run exists alongside its tombstone")
+
+                ordered_ids = sorted(
+                    (*live.keys(), *tombstones.keys()),
+                    key=str,
+                )
+
+                candidates: list[DurableAgentRunId] = []
+
+                for run_id in ordered_ids:
+                    if run_id in live:
+                        checkpoint = self._current_checkpoint(
+                            connection,
+                            live[run_id],
+                        )
+
+                        if not checkpoint.status.terminal:
+                            raise AgentCodecError("persisted durable cleanup index is inconsistent")
+
+                        due = checkpoint.created_at + policy.payload_retention
+
+                        if now < due:
+                            continue
+                    else:
+                        tombstone = tombstones[run_id]
+
+                        if now < tombstone.retain_until:
+                            continue
+
+                    if self._cleanup_lease_is_active(
+                        connection,
+                        run_id,
+                        now=now,
+                    ):
+                        continue
+
+                    candidates.append(run_id)
+
+                    if len(candidates) >= limit:
+                        break
+
+                connection.execute("COMMIT")
+                return tuple(candidates)
+
+            except sqlite3.Error as exception:
+                _rollback(connection)
+                raise AgentServiceUnavailableError() from exception
+
+            except BaseException:
+                _rollback(connection)
+                raise
+
+    async def delete_expired_protected_payloads(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        policy: RetentionPolicy,
+        lease: DurableLease,
+        now: datetime,
+    ) -> bool:
+        """Delete protected ciphertext after terminal payload retention."""
+
+        self._ensure_open()
+        self._require_run_id(run_id)
+
+        if not isinstance(policy, RetentionPolicy):
+            raise TypeError("policy must be RetentionPolicy")
+
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+
+        _require_timezone_aware(now, label="now")
+
+        if lease.run_id != run_id:
+            raise AgentStateConflictError()
+
+        if self._lease_manager.closed:
+            raise RuntimeError("durable SQLite lease manager is closed")
+
+        async with self._database.lock:
+            self._ensure_open()
+            connection = self._database.writer_connection()
+
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+
+                _require_current_lease(
+                    connection,
+                    lease,
+                    now=now,
+                )
+
+                run_row = self._run_row(
+                    connection,
+                    run_id,
+                )
+
+                if run_row is None:
+                    raise AgentStateConflictError()
+
+                current = self._current_checkpoint(
+                    connection,
+                    run_row,
+                )
+
+                self._validate_history_aggregate(
+                    connection,
+                    run_row,
+                )
+
+                if not current.status.terminal:
+                    raise AgentStateConflictError()
+
+                if now < current.created_at:
+                    raise AgentStateConflictError()
+
+                if now < current.created_at + policy.payload_retention:
+                    raise AgentStateConflictError()
+
+                cursor = connection.execute(
+                    """
+                    DELETE FROM durable_protected_payloads
+                    WHERE run_id = ?
+                    """,
+                    (str(run_id),),
+                )
+
+                removed = cursor.rowcount > 0
+
+                connection.execute("COMMIT")
+                return removed
+
+            except sqlite3.Error as exception:
+                _rollback(connection)
+                raise AgentServiceUnavailableError() from exception
+
+            except BaseException:
+                _rollback(connection)
+                raise
+
+    async def purge_expired_tombstone(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        lease: DurableLease,
+        now: datetime,
+    ) -> bool:
+        """Purge one tombstone only after its retention boundary."""
+
+        self._ensure_open()
+        self._require_run_id(run_id)
+
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+
+        _require_timezone_aware(now, label="now")
+
+        if lease.run_id != run_id:
+            raise AgentStateConflictError()
+
+        if self._lease_manager.closed:
+            raise RuntimeError("durable SQLite lease manager is closed")
+
+        async with self._database.lock:
+            self._ensure_open()
+            connection = self._database.writer_connection()
+
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+
+                _require_current_lease(
+                    connection,
+                    lease,
+                    now=now,
+                )
+
+                run_row = self._run_row(
+                    connection,
+                    run_id,
+                )
+
+                row = connection.execute(
+                    f"""
+                    SELECT {_TOMBSTONE_COLUMNS}
+                    FROM durable_tombstones
+                    WHERE run_id = ?
+                    """,
+                    (str(run_id),),
+                ).fetchone()
+
+                if run_row is not None and row is not None:
+                    raise AgentCodecError("durable run exists alongside its tombstone")
+
+                if row is None:
+                    connection.execute("COMMIT")
+                    return False
+
+                tombstone = _tombstone_from_row(row)
+
+                if tombstone.run_id != run_id:
+                    raise AgentCodecError("persisted durable tombstone changed run identity")
+
+                if now < tombstone.retain_until:
+                    raise AgentStateConflictError()
+
+                cursor = connection.execute(
+                    """
+                    DELETE FROM durable_tombstones
+                    WHERE run_id = ?
+                    """,
+                    (str(run_id),),
+                )
+
+                if cursor.rowcount != 1:
+                    raise AgentStateConflictError()
+
+                connection.execute("COMMIT")
+                return True
+
+            except sqlite3.Error as exception:
+                _rollback(connection)
+                raise AgentServiceUnavailableError() from exception
+
             except BaseException:
                 _rollback(connection)
                 raise

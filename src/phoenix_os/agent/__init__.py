@@ -269,9 +269,19 @@ from phoenix_os.agent.durable_recovery import (
     StartupDurableRecoveryCoordinator,
     classify_recovery_checkpoint,
 )
+from phoenix_os.agent.durable_retention import DurableRetentionStore
+from phoenix_os.agent.durable_retention_worker import (
+    BoundedDurableRetentionWorker,
+    DurableRetentionWorker,
+    DurableRetentionWorkerConfiguration,
+    DurableRetentionWorkerReport,
+    DurableRetentionWorkerSnapshot,
+    DurableRetentionWorkerState,
+)
 from phoenix_os.agent.durable_runtime import (
     DurableAgentRuntimeStack,
     DurableRecoveryLifecycle,
+    DurableRetentionLifecycle,
     DurableStorageLifecycle,
     create_durable_agent_runtime_stack,
 )
@@ -574,6 +584,7 @@ __all__ = [
     "ApprovalWaitReference",
     "BoundedAgentExecutor",
     "BoundedDurableRecoveryWorker",
+    "BoundedDurableRetentionWorker",
     "CanonicalCheckpointCodec",
     "CheckpointCodec",
     "CheckpointDigest",
@@ -632,6 +643,13 @@ __all__ = [
     "DurableRecoveryWorkerSnapshot",
     "DurableRecoveryWorkerState",
     "DurableResumeAuthorizer",
+    "DurableRetentionLifecycle",
+    "DurableRetentionStore",
+    "DurableRetentionWorker",
+    "DurableRetentionWorkerConfiguration",
+    "DurableRetentionWorkerReport",
+    "DurableRetentionWorkerSnapshot",
+    "DurableRetentionWorkerState",
     "DurableRunLimits",
     "DurableRunStateMachine",
     "DurableRunStatus",

@@ -28,6 +28,7 @@ from phoenix_os.agent.durable_contracts import (
     DurableRunStatus,
     DurableRunVersion,
     ProtectedPayloadReference,
+    RetentionPolicy,
 )
 from phoenix_os.agent.durable_fake import DeterministicCheckpointProtector
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
@@ -36,6 +37,7 @@ from phoenix_os.agent.durable_payload import (
     DurableProtectedPayloadStore,
     protected_payload_associated_data,
 )
+from phoenix_os.agent.durable_retention_worker import BoundedDurableRetentionWorker
 from phoenix_os.agent.durable_sqlite import (
     DURABLE_SQLITE_SCHEMA_VERSION,
     SQLiteDurableRunStore,
@@ -53,6 +55,11 @@ RUN_ID = DurableAgentRunId(UUID("10000000-0000-0000-0000-000000000001"))
 AGENT_RUN_ID = AgentRunId(UUID("20000000-0000-0000-0000-000000000002"))
 STEP_ID = AgentStepId(UUID("30000000-0000-0000-0000-000000000003"))
 SECRET = b"0123456789abcdef0123456789abcdef"
+RETENTION_POLICY = RetentionPolicy(
+    payload_retention=timedelta(seconds=10),
+    metadata_retention=timedelta(seconds=20),
+    tombstone_retention=timedelta(seconds=30),
+)
 
 
 def _digest(character: str) -> CheckpointDigest:
@@ -99,6 +106,8 @@ def _unsealed(
     payload_profile: CheckpointPayloadProfile = CheckpointPayloadProfile.PROTECTED_CONTENT,
     payload_codec: bool = True,
     payload_reference: ProtectedPayloadReference | None = None,
+    status: DurableRunStatus = DurableRunStatus.ACTIVE,
+    next_operation: CheckpointNextOperation = CheckpointNextOperation.MODEL_TURN,
     created_offset: int | None = None,
 ) -> CheckpointEnvelope:
     return CheckpointEnvelope(
@@ -108,13 +117,13 @@ def _unsealed(
         sequence=CheckpointSequence(sequence),
         previous_digest=previous_digest,
         run_version=DurableRunVersion(sequence),
-        status=DurableRunStatus.ACTIVE,
+        status=status,
         agent_run_id=AGENT_RUN_ID,
         step_id=STEP_ID,
         metadata=CheckpointMetadata(
             agent_id=AgentId("assistant"),
             actor_id="worker-1",
-            next_operation=CheckpointNextOperation.MODEL_TURN,
+            next_operation=next_operation,
             budget=_budget(steps=sequence - 1),
             compatibility=_compatibility(payload_codec=payload_codec),
             payload_profile=payload_profile,
@@ -134,12 +143,16 @@ def _protected_checkpoint(
     previous_digest: CheckpointDigest | None = None,
     reference_override: ProtectedPayloadReference | None = None,
     payload_codec: bool = True,
+    status: DurableRunStatus = DurableRunStatus.ACTIVE,
+    next_operation: CheckpointNextOperation = CheckpointNextOperation.MODEL_TURN,
 ) -> tuple[CheckpointEnvelope, bytes]:
     protector = _protector()
     envelope = _unsealed(
         sequence,
         previous_digest=previous_digest,
         payload_codec=payload_codec,
+        status=status,
+        next_operation=next_operation,
     )
     reference, ciphertext = protector.protect(
         run_id=envelope.durable_run_id,
@@ -445,7 +458,7 @@ def _create_v1_database(path: Path) -> None:
     connection.close()
 
 
-async def test_sqlite_schema_migrates_v1_database_to_protected_payload_schema(
+async def test_sqlite_schema_migrates_v1_database_to_current_schema(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "durable.sqlite3"
@@ -456,12 +469,12 @@ async def test_sqlite_schema_migrates_v1_database_to_protected_payload_schema(
 
     connection = _connect(path)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == DURABLE_SQLITE_SCHEMA_VERSION
-    assert DURABLE_SQLITE_SCHEMA_VERSION == 2
+    assert DURABLE_SQLITE_SCHEMA_VERSION == 3
     row = connection.execute(
         "SELECT schema_version FROM durable_meta WHERE singleton = 1"
     ).fetchone()
     assert row is not None
-    assert row["schema_version"] == 2
+    assert row["schema_version"] == 3
     table = connection.execute(
         """
         SELECT name FROM sqlite_master
@@ -699,3 +712,350 @@ async def test_sqlite_metadata_only_checkpoint_creates_no_payload_record(tmp_pat
     connection = _connect(path)
     assert connection.execute("SELECT COUNT(*) FROM durable_protected_payloads").fetchone()[0] == 0
     connection.close()
+
+
+async def _sqlite_terminal_protected_retention_run(
+    store: SQLiteDurableRunStore,
+) -> tuple[
+    CheckpointEnvelope,
+    CheckpointEnvelope,
+    DurableLease,
+    bytes,
+    bytes,
+]:
+    first, first_ciphertext = _protected_checkpoint(
+        1,
+        b"first retained secret",
+    )
+
+    terminal, terminal_ciphertext = _protected_checkpoint(
+        2,
+        b"terminal retained secret",
+        previous_digest=first.digest,
+        status=DurableRunStatus.FAILED,
+        next_operation=CheckpointNextOperation.NONE,
+    )
+
+    await store.create_protected(
+        first,
+        protected_payload=first_ciphertext,
+    )
+
+    lease = await _lease(store)
+
+    await store.append_protected(
+        terminal,
+        expected_version=first.run_version,
+        lease=lease,
+        now=WRITE_TIME,
+        protected_payload=terminal_ciphertext,
+    )
+
+    return (
+        first,
+        terminal,
+        lease,
+        first_ciphertext,
+        terminal_ciphertext,
+    )
+
+
+async def test_sqlite_retention_physically_deletes_ciphertext_but_keeps_history(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "retention-payload.sqlite3"
+    store = SQLiteDurableRunStore(path)
+
+    (
+        first,
+        terminal,
+        lease,
+        _,
+        _,
+    ) = await _sqlite_terminal_protected_retention_run(store)
+
+    connection = _connect(path)
+
+    before = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM durable_protected_payloads
+        WHERE run_id = ?
+        """,
+        (str(RUN_ID),),
+    ).fetchone()
+
+    assert before is not None
+    assert before["count"] == 2
+    connection.close()
+
+    due = terminal.created_at + RETENTION_POLICY.payload_retention
+
+    assert (
+        await store.delete_expired_protected_payloads(
+            RUN_ID,
+            policy=RETENTION_POLICY,
+            lease=lease,
+            now=due,
+        )
+        is True
+    )
+
+    assert (
+        await store.delete_expired_protected_payloads(
+            RUN_ID,
+            policy=RETENTION_POLICY,
+            lease=lease,
+            now=due,
+        )
+        is False
+    )
+
+    assert await store.get_current(RUN_ID) == terminal
+    assert await store.list_history(RUN_ID, limit=10) == (
+        first,
+        terminal,
+    )
+
+    connection = _connect(path)
+
+    payload_count = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM durable_protected_payloads
+        WHERE run_id = ?
+        """,
+        (str(RUN_ID),),
+    ).fetchone()
+
+    run_count = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM durable_runs
+        WHERE run_id = ?
+        """,
+        (str(RUN_ID),),
+    ).fetchone()
+
+    checkpoint_count = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM durable_checkpoints
+        WHERE run_id = ?
+        """,
+        (str(RUN_ID),),
+    ).fetchone()
+
+    assert payload_count is not None
+    assert run_count is not None
+    assert checkpoint_count is not None
+
+    assert payload_count["count"] == 0
+    assert run_count["count"] == 1
+    assert checkpoint_count["count"] == 2
+
+    connection.close()
+
+    with pytest.raises(
+        AgentCodecError,
+        match="missing",
+    ):
+        await store.get_protected_payload(
+            terminal,
+            lease=lease,
+            now=due,
+        )
+
+
+async def test_sqlite_tombstone_atomically_removes_run_history_and_ciphertext(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "retention-tombstone.sqlite3"
+    store = SQLiteDurableRunStore(path)
+
+    (
+        _,
+        terminal,
+        lease,
+        _,
+        _,
+    ) = await _sqlite_terminal_protected_retention_run(store)
+
+    due = terminal.created_at + RETENTION_POLICY.metadata_retention
+
+    tombstone = await store.tombstone_terminal_run(
+        RUN_ID,
+        policy=RETENTION_POLICY,
+        lease=lease,
+        now=due,
+    )
+
+    connection = _connect(path)
+
+    run_count = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM durable_runs
+        WHERE run_id = ?
+        """,
+        (str(RUN_ID),),
+    ).fetchone()
+
+    checkpoint_count = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM durable_checkpoints
+        WHERE run_id = ?
+        """,
+        (str(RUN_ID),),
+    ).fetchone()
+
+    payload_count = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM durable_protected_payloads
+        WHERE run_id = ?
+        """,
+        (str(RUN_ID),),
+    ).fetchone()
+
+    tombstone_count = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM durable_tombstones
+        WHERE run_id = ?
+        """,
+        (str(RUN_ID),),
+    ).fetchone()
+
+    assert run_count is not None
+    assert checkpoint_count is not None
+    assert payload_count is not None
+    assert tombstone_count is not None
+
+    assert run_count["count"] == 0
+    assert checkpoint_count["count"] == 0
+    assert payload_count["count"] == 0
+    assert tombstone_count["count"] == 1
+
+    connection.close()
+
+    assert await store.get_current(RUN_ID) is None
+    assert await store.list_history(RUN_ID, limit=10) == ()
+    assert await store.get_tombstone(RUN_ID) == tombstone
+
+
+async def test_retention_worker_runs_real_sqlite_cleanup_end_to_end(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "retention-worker-e2e.sqlite3"
+    store = SQLiteDurableRunStore(path)
+
+    (
+        _,
+        terminal,
+        setup_lease,
+        _,
+        _,
+    ) = await _sqlite_terminal_protected_retention_run(store)
+
+    await store.lease_manager.release(
+        setup_lease,
+        now=WRITE_TIME,
+    )
+
+    cleanup_now = terminal.created_at + RETENTION_POLICY.metadata_retention
+
+    worker = BoundedDurableRetentionWorker(
+        store=store,
+        lease_manager=store.lease_manager,
+        policy=RETENTION_POLICY,
+        clock=lambda: cleanup_now,
+    )
+
+    await worker.start()
+
+    try:
+        report = await worker.run_once()
+
+        assert report.admitted == 1
+        assert report.payloads_deleted == 1
+        assert report.tombstoned == 1
+        assert report.purged == 0
+        assert report.conflicts == 0
+        assert report.failed == 0
+        assert report.timed_out is False
+
+        tombstone = await store.get_tombstone(RUN_ID)
+
+        assert tombstone is not None
+        assert tombstone.run_id == RUN_ID
+        assert tombstone.terminal_status is DurableRunStatus.FAILED
+        assert tombstone.terminal_version == terminal.run_version
+        assert tombstone.final_checkpoint_digest == terminal.digest
+        assert tombstone.terminal_at == terminal.created_at
+        assert tombstone.retain_until == (
+            terminal.created_at + RETENTION_POLICY.tombstone_retention
+        )
+
+        assert await store.get_current(RUN_ID) is None
+
+        assert (
+            await store.list_history(
+                RUN_ID,
+                limit=10,
+            )
+            == ()
+        )
+
+        assert (
+            await store.lease_manager.get_current(
+                RUN_ID,
+                now=cleanup_now,
+            )
+            is None
+        )
+
+        connection = _connect(path)
+
+        try:
+            payload_count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM durable_protected_payloads
+                WHERE run_id = ?
+                """,
+                (str(RUN_ID),),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+
+        assert payload_count == 0
+    finally:
+        await worker.close()
+        await store.close()
+
+    reopened = SQLiteDurableRunStore(path)
+
+    try:
+        assert await reopened.get_tombstone(RUN_ID) == tombstone
+
+        assert await reopened.get_current(RUN_ID) is None
+
+        assert (
+            await reopened.list_history(
+                RUN_ID,
+                limit=10,
+            )
+            == ()
+        )
+
+        assert (
+            await reopened.lease_manager.get_current(
+                RUN_ID,
+                now=cleanup_now,
+            )
+            is None
+        )
+    finally:
+        await reopened.close()

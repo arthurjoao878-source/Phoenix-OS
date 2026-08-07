@@ -7,12 +7,22 @@ from dataclasses import dataclass
 
 from phoenix_os.agent.durable_approval import DurableApprovalRevalidator
 from phoenix_os.agent.durable_compatibility import DurableCompatibilityValidator
-from phoenix_os.agent.durable_contracts import CheckpointProtector, DurableRunStore
+from phoenix_os.agent.durable_contracts import (
+    CheckpointProtector,
+    DurableRunStore,
+    RetentionPolicy,
+)
 from phoenix_os.agent.durable_lease import DurableLeaseManager
 from phoenix_os.agent.durable_payload import DurableProtectedPayloadStore
 from phoenix_os.agent.durable_recovery import (
     DurableRecoveryCoordinator,
     StartupDurableRecoveryCoordinator,
+)
+from phoenix_os.agent.durable_retention import DurableRetentionStore
+from phoenix_os.agent.durable_retention_worker import (
+    BoundedDurableRetentionWorker,
+    DurableRetentionWorker,
+    DurableRetentionWorkerConfiguration,
 )
 from phoenix_os.agent.durable_worker import (
     BoundedDurableRecoveryWorker,
@@ -95,6 +105,30 @@ class DurableRecoveryLifecycle:
         await self._worker.close()
 
 
+class DurableRetentionLifecycle:
+    """Adapt manual durable retention to Phoenix Runtime lifecycle hooks."""
+
+    def __init__(self, worker: DurableRetentionWorker) -> None:
+        if not isinstance(worker, DurableRetentionWorker):
+            raise TypeError("worker must implement DurableRetentionWorker")
+        self._worker = worker
+
+    async def start(self, context: RuntimeContext) -> None:
+        if not isinstance(context, RuntimeContext):
+            raise TypeError("context must be RuntimeContext")
+        await self._worker.start()
+
+    async def stop(self, context: RuntimeContext) -> None:
+        if not isinstance(context, RuntimeContext):
+            raise TypeError("context must be RuntimeContext")
+        await self.close()
+
+    async def close(self) -> None:
+        """Close retention admission without requiring a RuntimeContext."""
+
+        await self._worker.close()
+
+
 @dataclass(frozen=True, slots=True)
 class DurableAgentRuntimeStack:
     """Reviewed Runtime-owned durable services for one enabled agent."""
@@ -107,15 +141,26 @@ class DurableAgentRuntimeStack:
     storage_lifecycle: DurableStorageLifecycle
     recovery_lifecycle: DurableRecoveryLifecycle
     protector: CheckpointProtector | None = None
+    retention_policy: RetentionPolicy | None = None
+    retention_worker: DurableRetentionWorker | None = None
+    retention_lifecycle: DurableRetentionLifecycle | None = None
 
     async def close(self) -> None:
         """Rollback composed durable resources in reverse lifecycle order."""
 
         failure: BaseException | None = None
+
+        if self.retention_lifecycle is not None:
+            try:
+                await self.retention_lifecycle.close()
+            except (Exception, asyncio.CancelledError) as exception:
+                failure = exception
+
         try:
             await self.recovery_lifecycle.close()
         except (Exception, asyncio.CancelledError) as exception:
-            failure = exception
+            if failure is None:
+                failure = exception
 
         try:
             await self.storage_lifecycle.close()
@@ -135,6 +180,8 @@ def create_durable_agent_runtime_stack(
     recovery_configuration: DurableRecoveryWorkerConfiguration | None = None,
     approval_revalidator: DurableApprovalRevalidator | None = None,
     protector: CheckpointProtector | None = None,
+    retention_policy: RetentionPolicy | None = None,
+    retention_configuration: DurableRetentionWorkerConfiguration | None = None,
 ) -> DurableAgentRuntimeStack:
     """Compose bounded durable recovery without creating or scheduling agent work."""
 
@@ -159,6 +206,23 @@ def create_durable_agent_runtime_stack(
         DurableRecoveryWorkerConfiguration,
     ):
         raise TypeError("recovery_configuration must be DurableRecoveryWorkerConfiguration")
+    if retention_policy is not None and not isinstance(
+        retention_policy,
+        RetentionPolicy,
+    ):
+        raise TypeError("retention_policy must be RetentionPolicy")
+    if retention_configuration is not None and not isinstance(
+        retention_configuration,
+        DurableRetentionWorkerConfiguration,
+    ):
+        raise TypeError("retention_configuration must be DurableRetentionWorkerConfiguration")
+    if retention_configuration is not None and retention_policy is None:
+        raise ValueError("retention_configuration requires retention_policy")
+    if retention_policy is not None and not isinstance(
+        store,
+        DurableRetentionStore,
+    ):
+        raise TypeError("store must implement DurableRetentionStore when retention is enabled")
 
     bound_lease_manager = getattr(store, "lease_manager", None)
     if bound_lease_manager is not None and bound_lease_manager is not lease_manager:
@@ -180,6 +244,20 @@ def create_durable_agent_runtime_stack(
         configuration=recovery_configuration,
     )
 
+    retention_worker: DurableRetentionWorker | None = None
+    retention_lifecycle: DurableRetentionLifecycle | None = None
+
+    if retention_policy is not None:
+        retention_store = store
+        assert isinstance(retention_store, DurableRetentionStore)
+        retention_worker = BoundedDurableRetentionWorker(
+            store=retention_store,
+            lease_manager=lease_manager,
+            policy=retention_policy,
+            configuration=retention_configuration,
+        )
+        retention_lifecycle = DurableRetentionLifecycle(retention_worker)
+
     return DurableAgentRuntimeStack(
         store=store,
         lease_manager=lease_manager,
@@ -192,4 +270,7 @@ def create_durable_agent_runtime_stack(
         ),
         recovery_lifecycle=DurableRecoveryLifecycle(worker),
         protector=protector,
+        retention_policy=retention_policy,
+        retention_worker=retention_worker,
+        retention_lifecycle=retention_lifecycle,
     )
