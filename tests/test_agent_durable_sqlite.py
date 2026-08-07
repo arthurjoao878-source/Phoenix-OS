@@ -29,8 +29,10 @@ from phoenix_os.agent.durable_contracts import (
     DurableRunStore,
     DurableRunVersion,
     FencingGeneration,
+    RetentionPolicy,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
+from phoenix_os.agent.durable_retention import DurableRetentionStore
 from phoenix_os.agent.durable_sqlite import (
     DURABLE_SQLITE_SCHEMA_VERSION,
     SQLiteDurableLeaseManager,
@@ -48,6 +50,11 @@ WRITE_TIME = NOW + timedelta(seconds=10)
 DURABLE_RUN_ID = DurableAgentRunId(UUID("10000000-0000-0000-0000-000000000001"))
 AGENT_RUN_ID = AgentRunId(UUID("20000000-0000-0000-0000-000000000002"))
 STEP_ID = AgentStepId(UUID("30000000-0000-0000-0000-000000000003"))
+RETENTION_POLICY = RetentionPolicy(
+    payload_retention=timedelta(seconds=10),
+    metadata_retention=timedelta(seconds=20),
+    tombstone_retention=timedelta(seconds=30),
+)
 
 
 def _path(tmp_path: Path, name: str = "durable.sqlite3") -> Path:
@@ -184,6 +191,7 @@ def test_reference_adapter_matches_public_protocols_and_rejects_memory_path(
     store = SQLiteDurableRunStore(_path(tmp_path))
 
     assert isinstance(store, DurableRunStore)
+    assert isinstance(store, DurableRetentionStore)
     assert isinstance(store.lease_manager, DurableLeaseManager)
     assert store.path == _path(tmp_path).resolve()
     assert store.limits == DurableRunLimits()
@@ -891,3 +899,332 @@ async def test_closed_store_and_manager_fail_closed(tmp_path: Path) -> None:
         await store.list_recovery_candidates(limit=1)
     with pytest.raises(RuntimeError, match="closed"):
         await manager.acquire(DURABLE_RUN_ID, owner_id="worker-1", now=NOW)
+
+
+async def _sqlite_terminal_retention_run(
+    store: SQLiteDurableRunStore,
+) -> tuple[CheckpointEnvelope, CheckpointEnvelope, DurableLease]:
+    first = _checkpoint(1)
+    await store.create(first)
+    lease = await _lease(store)
+    terminal = _next(
+        first,
+        status=DurableRunStatus.FAILED,
+        next_operation=CheckpointNextOperation.NONE,
+    )
+    await store.append(
+        terminal,
+        expected_version=first.run_version,
+        lease=lease,
+        now=WRITE_TIME,
+    )
+    return first, terminal, lease
+
+
+async def test_sqlite_terminal_tombstone_persists_across_reopen(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    store = SQLiteDurableRunStore(path)
+    _, terminal, lease = await _sqlite_terminal_retention_run(store)
+    due = terminal.created_at + RETENTION_POLICY.metadata_retention
+
+    tombstone = await store.tombstone_terminal_run(
+        DURABLE_RUN_ID,
+        policy=RETENTION_POLICY,
+        lease=lease,
+        now=due,
+    )
+
+    assert tombstone.run_id == DURABLE_RUN_ID
+    assert tombstone.terminal_status == terminal.status
+    assert tombstone.terminal_version == terminal.run_version
+    assert tombstone.final_checkpoint_digest == terminal.digest
+    assert tombstone.deletion_generation == lease.generation
+    assert tombstone.terminal_at == terminal.created_at
+    assert tombstone.retain_until == terminal.created_at + RETENTION_POLICY.tombstone_retention
+
+    assert await store.get_current(DURABLE_RUN_ID) is None
+    assert await store.list_history(DURABLE_RUN_ID, limit=10) == ()
+    await store.close()
+
+    reopened = SQLiteDurableRunStore(path)
+    assert await reopened.get_tombstone(DURABLE_RUN_ID) == tombstone
+    assert await reopened.get_current(DURABLE_RUN_ID) is None
+    assert await reopened.list_history(DURABLE_RUN_ID, limit=10) == ()
+    await reopened.close()
+
+
+async def test_sqlite_retained_tombstone_blocks_run_recreation_after_reopen(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    store = SQLiteDurableRunStore(path)
+    first, terminal, lease = await _sqlite_terminal_retention_run(store)
+
+    await store.tombstone_terminal_run(
+        DURABLE_RUN_ID,
+        policy=RETENTION_POLICY,
+        lease=lease,
+        now=terminal.created_at + RETENTION_POLICY.metadata_retention,
+    )
+    await store.close()
+
+    reopened = SQLiteDurableRunStore(path)
+
+    with pytest.raises(AgentStateConflictError):
+        await reopened.create(first)
+
+    assert await reopened.get_current(DURABLE_RUN_ID) is None
+    assert await reopened.get_tombstone(DURABLE_RUN_ID) is not None
+    await reopened.close()
+
+
+async def test_sqlite_cleanup_candidates_require_terminal_due_and_unleased(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteDurableRunStore(_path(tmp_path))
+    first = _checkpoint(1)
+
+    await store.create(first)
+
+    assert (
+        await store.list_cleanup_candidates(
+            policy=RETENTION_POLICY,
+            now=NOW + timedelta(minutes=1),
+            limit=10,
+        )
+        == ()
+    )
+
+    lease = await _lease(store)
+
+    terminal = _next(
+        first,
+        status=DurableRunStatus.FAILED,
+        next_operation=CheckpointNextOperation.NONE,
+    )
+
+    await store.append(
+        terminal,
+        expected_version=first.run_version,
+        lease=lease,
+        now=WRITE_TIME,
+    )
+
+    payload_due = terminal.created_at + RETENTION_POLICY.payload_retention
+
+    assert (
+        await store.list_cleanup_candidates(
+            policy=RETENTION_POLICY,
+            now=payload_due,
+            limit=10,
+        )
+        == ()
+    )
+
+    await store.lease_manager.release(
+        lease,
+        now=WRITE_TIME,
+    )
+
+    assert await store.list_cleanup_candidates(
+        policy=RETENTION_POLICY,
+        now=payload_due,
+        limit=10,
+    ) == (DURABLE_RUN_ID,)
+
+
+async def test_sqlite_metadata_only_payload_cleanup_is_idempotent_noop(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteDurableRunStore(_path(tmp_path))
+
+    _, terminal, lease = await _sqlite_terminal_retention_run(store)
+
+    payload_due = terminal.created_at + RETENTION_POLICY.payload_retention
+
+    assert (
+        await store.delete_expired_protected_payloads(
+            DURABLE_RUN_ID,
+            policy=RETENTION_POLICY,
+            lease=lease,
+            now=payload_due,
+        )
+        is False
+    )
+
+    assert (
+        await store.delete_expired_protected_payloads(
+            DURABLE_RUN_ID,
+            policy=RETENTION_POLICY,
+            lease=lease,
+            now=payload_due,
+        )
+        is False
+    )
+
+    assert await store.get_current(DURABLE_RUN_ID) == terminal
+
+
+async def test_sqlite_tombstone_purge_boundary_is_idempotent_and_releases_id(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteDurableRunStore(_path(tmp_path))
+
+    first, terminal, lease = await _sqlite_terminal_retention_run(store)
+
+    tombstone = await store.tombstone_terminal_run(
+        DURABLE_RUN_ID,
+        policy=RETENTION_POLICY,
+        lease=lease,
+        now=(terminal.created_at + RETENTION_POLICY.metadata_retention),
+    )
+
+    await store.lease_manager.release(
+        lease,
+        now=(terminal.created_at + RETENTION_POLICY.metadata_retention),
+    )
+
+    purge_lease = await _lease(
+        store,
+        now=(tombstone.retain_until - timedelta(seconds=1)),
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await store.purge_expired_tombstone(
+            DURABLE_RUN_ID,
+            lease=purge_lease,
+            now=(tombstone.retain_until - timedelta(microseconds=1)),
+        )
+
+    assert (
+        await store.purge_expired_tombstone(
+            DURABLE_RUN_ID,
+            lease=purge_lease,
+            now=tombstone.retain_until,
+        )
+        is True
+    )
+
+    assert (
+        await store.purge_expired_tombstone(
+            DURABLE_RUN_ID,
+            lease=purge_lease,
+            now=tombstone.retain_until,
+        )
+        is False
+    )
+
+    assert await store.get_tombstone(DURABLE_RUN_ID) is None
+
+    await store.create(first)
+
+    assert await store.get_current(DURABLE_RUN_ID) == first
+
+
+async def test_sqlite_stale_cleanup_lease_cannot_tombstone_terminal_run(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteDurableRunStore(_path(tmp_path))
+
+    _, terminal, stale_lease = await _sqlite_terminal_retention_run(store)
+
+    await store.lease_manager.release(
+        stale_lease,
+        now=WRITE_TIME + timedelta(seconds=1),
+    )
+
+    current_lease = await _lease(
+        store,
+        now=WRITE_TIME + timedelta(seconds=2),
+    )
+
+    due = terminal.created_at + RETENTION_POLICY.metadata_retention
+
+    with pytest.raises(AgentStateConflictError):
+        await store.tombstone_terminal_run(
+            DURABLE_RUN_ID,
+            policy=RETENTION_POLICY,
+            lease=stale_lease,
+            now=due,
+        )
+
+    assert await store.get_current(DURABLE_RUN_ID) == terminal
+    assert await store.get_tombstone(DURABLE_RUN_ID) is None
+
+    tombstone = await store.tombstone_terminal_run(
+        DURABLE_RUN_ID,
+        policy=RETENTION_POLICY,
+        lease=current_lease,
+        now=due,
+    )
+
+    assert tombstone.deletion_generation == current_lease.generation
+    assert await store.get_current(DURABLE_RUN_ID) is None
+    assert await store.get_tombstone(DURABLE_RUN_ID) == tombstone
+
+
+async def test_sqlite_cleanup_candidate_pagination_is_deterministic_and_bounded(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteDurableRunStore(_path(tmp_path))
+
+    run_ids = (
+        DurableAgentRunId(UUID(int=3)),
+        DurableAgentRunId(UUID(int=1)),
+        DurableAgentRunId(UUID(int=2)),
+    )
+
+    for index, run_id in enumerate(run_ids, start=1):
+        first = _checkpoint(
+            1,
+            durable_run_id=run_id,
+            agent_run_id=AgentRunId(UUID(int=1_000 + index)),
+        )
+
+        await store.create(first)
+
+        lease = await _lease(
+            store,
+            run_id=run_id,
+            now=NOW,
+        )
+
+        terminal = _next(
+            first,
+            status=DurableRunStatus.FAILED,
+            next_operation=CheckpointNextOperation.NONE,
+        )
+
+        await store.append(
+            terminal,
+            expected_version=first.run_version,
+            lease=lease,
+            now=WRITE_TIME,
+        )
+
+        await store.lease_manager.release(
+            lease,
+            now=WRITE_TIME + timedelta(seconds=1),
+        )
+
+    expected = tuple(sorted(run_ids, key=str))
+    cleanup_time = NOW + timedelta(minutes=1)
+
+    first_page = await store.list_cleanup_candidates(
+        policy=RETENTION_POLICY,
+        now=cleanup_time,
+        limit=2,
+    )
+
+    second_page = await store.list_cleanup_candidates(
+        policy=RETENTION_POLICY,
+        now=cleanup_time,
+        limit=2,
+        after=first_page[-1],
+    )
+
+    assert first_page == expected[:2]
+    assert second_page == expected[2:]
+    assert first_page + second_page == expected

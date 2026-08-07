@@ -16,14 +16,16 @@ from phoenix_os.agent.durable_contracts import (
     DurableAgentRunId,
     DurableLease,
     DurableRunLimits,
-    DurableRunStore,
+    DurableRunTombstone,
     DurableRunVersion,
+    RetentionPolicy,
 )
 from phoenix_os.agent.durable_lease import (
     DurableLeaseManager,
     InMemoryDurableLeaseManager,
 )
 from phoenix_os.agent.durable_payload import validate_protected_payload_for_checkpoint
+from phoenix_os.agent.durable_retention import DurableRetentionStore
 from phoenix_os.agent.errors import (
     AgentCodecError,
     AgentLimitExceededError,
@@ -39,7 +41,7 @@ class _StoredRun:
     protected_payloads: tuple[bytes | None, ...]
 
 
-class InMemoryDurableRunStore(DurableRunStore):
+class InMemoryDurableRunStore(DurableRetentionStore):
     """Atomic per-run checkpoint history backed by canonical encoded bytes."""
 
     def __init__(
@@ -65,6 +67,7 @@ class InMemoryDurableRunStore(DurableRunStore):
         self._lease_manager = selected_lease_manager
         self._owns_lease_manager = lease_manager is None
         self._runs: dict[DurableAgentRunId, _StoredRun] = {}
+        self._tombstones: dict[DurableAgentRunId, DurableRunTombstone] = {}
         self._closed = False
         self._lock = asyncio.Lock()
 
@@ -121,7 +124,7 @@ class InMemoryDurableRunStore(DurableRunStore):
 
         async with self._lock:
             self._ensure_open()
-            if decoded.durable_run_id in self._runs:
+            if decoded.durable_run_id in self._runs or decoded.durable_run_id in self._tombstones:
                 raise AgentStateConflictError()
             self._runs[decoded.durable_run_id] = _StoredRun(
                 payloads=(encoded,),
@@ -314,6 +317,236 @@ class InMemoryDurableRunStore(DurableRunStore):
                     raise AgentStateConflictError()
                 return protected
 
+    async def list_cleanup_candidates(
+        self,
+        *,
+        policy: RetentionPolicy,
+        now: datetime,
+        limit: int,
+        after: DurableAgentRunId | None = None,
+    ) -> tuple[DurableAgentRunId, ...]:
+        """Return one deterministic bounded page of terminal cleanup work."""
+
+        self._require_retention_policy(policy)
+        self._require_now(now)
+        self._require_cleanup_limit(limit)
+        if after is not None:
+            self._require_run_id(after)
+
+        async with self._lock:
+            self._ensure_open()
+            run_ids = tuple(sorted(set(self._runs) | set(self._tombstones)))
+
+        candidates: list[DurableAgentRunId] = []
+        for run_id in run_ids:
+            if after is not None and run_id <= after:
+                continue
+
+            current_lease = await self._lease_manager.get_current(
+                run_id,
+                now=now,
+            )
+            if current_lease is not None:
+                continue
+
+            async with self._lock:
+                self._ensure_open()
+                stored = self._runs.get(run_id)
+                tombstone = self._tombstones.get(run_id)
+
+                if stored is not None and tombstone is not None:
+                    raise AgentCodecError("durable run exists alongside its tombstone")
+
+                if tombstone is not None:
+                    due = now >= tombstone.retain_until
+                elif stored is not None:
+                    current = self._decode_stored(stored.payloads[-1])
+                    due = (
+                        current.status.terminal
+                        and now >= current.created_at + policy.payload_retention
+                    )
+                else:
+                    continue
+
+            if not due:
+                continue
+
+            candidates.append(run_id)
+            if len(candidates) == limit:
+                break
+
+        return tuple(candidates)
+
+    async def get_tombstone(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> DurableRunTombstone | None:
+        """Return retained content-free anti-resurrection metadata."""
+
+        self._require_run_id(run_id)
+        async with self._lock:
+            self._ensure_open()
+            if run_id in self._runs and run_id in self._tombstones:
+                raise AgentCodecError("durable run exists alongside its tombstone")
+            return self._tombstones.get(run_id)
+
+    async def delete_expired_protected_payloads(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        policy: RetentionPolicy,
+        lease: DurableLease,
+        now: datetime,
+    ) -> bool:
+        """Delete terminal protected ciphertext after payload retention."""
+
+        self._require_retention_policy(policy)
+        self._require_cleanup_lease(
+            run_id,
+            lease=lease,
+            now=now,
+        )
+
+        async with self._lease_manager.guard_current(
+            lease,
+            now=now,
+        ):
+            async with self._lock:
+                self._ensure_open()
+
+                stored = self._runs.get(run_id)
+                tombstone = self._tombstones.get(run_id)
+
+                if stored is not None and tombstone is not None:
+                    raise AgentCodecError("durable run exists alongside its tombstone")
+
+                if stored is None:
+                    if tombstone is not None:
+                        return False
+                    raise AgentStateConflictError()
+
+                if len(stored.protected_payloads) != len(stored.payloads):
+                    raise AgentCodecError("stored protected payload history is inconsistent")
+
+                current = self._decode_stored(stored.payloads[-1])
+                if not current.status.terminal:
+                    raise AgentStateConflictError()
+                if now < current.created_at:
+                    raise AgentStateConflictError()
+                if now < current.created_at + policy.payload_retention:
+                    raise AgentStateConflictError()
+
+                if not any(payload is not None for payload in stored.protected_payloads):
+                    return False
+
+                self._runs[run_id] = _StoredRun(
+                    payloads=stored.payloads,
+                    checkpoint_ids=stored.checkpoint_ids,
+                    total_bytes=stored.total_bytes,
+                    protected_payloads=tuple(None for _ in stored.protected_payloads),
+                )
+                return True
+
+    async def tombstone_terminal_run(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        policy: RetentionPolicy,
+        lease: DurableLease,
+        now: datetime,
+    ) -> DurableRunTombstone:
+        """Replace expired terminal metadata with a content-free tombstone."""
+
+        self._require_retention_policy(policy)
+        self._require_cleanup_lease(
+            run_id,
+            lease=lease,
+            now=now,
+        )
+
+        async with self._lease_manager.guard_current(
+            lease,
+            now=now,
+        ):
+            async with self._lock:
+                self._ensure_open()
+
+                stored = self._runs.get(run_id)
+                existing = self._tombstones.get(run_id)
+
+                if stored is not None and existing is not None:
+                    raise AgentCodecError("durable run exists alongside its tombstone")
+
+                if existing is not None:
+                    return existing
+
+                if stored is None:
+                    raise AgentStateConflictError()
+
+                if len(stored.protected_payloads) != len(stored.payloads):
+                    raise AgentCodecError("stored protected payload history is inconsistent")
+
+                current = self._decode_stored(stored.payloads[-1])
+                if not current.status.terminal:
+                    raise AgentStateConflictError()
+                if now < current.created_at:
+                    raise AgentStateConflictError()
+                if now < current.created_at + policy.metadata_retention:
+                    raise AgentStateConflictError()
+
+                tombstone = DurableRunTombstone(
+                    run_id=run_id,
+                    terminal_status=current.status,
+                    terminal_version=current.run_version,
+                    final_checkpoint_digest=current.digest,
+                    deletion_generation=lease.generation,
+                    terminal_at=current.created_at,
+                    retain_until=(current.created_at + policy.tombstone_retention),
+                )
+
+                del self._runs[run_id]
+                self._tombstones[run_id] = tombstone
+                return tombstone
+
+    async def purge_expired_tombstone(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        lease: DurableLease,
+        now: datetime,
+    ) -> bool:
+        """Delete a tombstone only after its finite retention deadline."""
+
+        self._require_cleanup_lease(
+            run_id,
+            lease=lease,
+            now=now,
+        )
+
+        async with self._lease_manager.guard_current(
+            lease,
+            now=now,
+        ):
+            async with self._lock:
+                self._ensure_open()
+
+                stored = self._runs.get(run_id)
+                tombstone = self._tombstones.get(run_id)
+
+                if stored is not None and tombstone is not None:
+                    raise AgentCodecError("durable run exists alongside its tombstone")
+
+                if tombstone is None:
+                    if stored is not None:
+                        raise AgentStateConflictError()
+                    return False
+
+                if now < tombstone.retain_until:
+                    raise AgentStateConflictError()
+
+                del self._tombstones[run_id]
+                return True
+
     async def close(self) -> None:
         """Close the adapter without mutating retained in-memory history."""
 
@@ -497,6 +730,43 @@ class InMemoryDurableRunStore(DurableRunStore):
                 raise AgentCodecError("stored checkpoint history has a version gap")
             if current.previous_digest != previous.digest:
                 raise AgentCodecError("stored checkpoint history has a broken digest chain")
+
+    @staticmethod
+    def _require_retention_policy(
+        policy: RetentionPolicy,
+    ) -> None:
+        if not isinstance(policy, RetentionPolicy):
+            raise TypeError("policy must be RetentionPolicy")
+
+    @staticmethod
+    def _require_now(now: datetime) -> None:
+        if not isinstance(now, datetime):
+            raise TypeError("now must be a datetime")
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now must be timezone-aware")
+
+    @staticmethod
+    def _require_cleanup_limit(limit: int) -> None:
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise TypeError("limit must be an integer")
+        if limit <= 0:
+            raise ValueError("limit must be greater than zero")
+        if limit > MAX_RECOVERY_CANDIDATE_PAGE:
+            raise AgentLimitExceededError()
+
+    def _require_cleanup_lease(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        lease: DurableLease,
+        now: datetime,
+    ) -> None:
+        self._require_run_id(run_id)
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+        self._require_now(now)
+        if lease.run_id != run_id:
+            raise AgentStateConflictError()
 
     def _ensure_open(self) -> None:
         if self._closed:

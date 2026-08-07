@@ -37,7 +37,9 @@ if TYPE_CHECKING:
         DurableCompatibilityValidator,
         DurableLeaseManager,
         DurableRecoveryWorkerConfiguration,
+        DurableRetentionWorkerConfiguration,
         DurableRunStore,
+        RetentionPolicy,
         ToolAdapter,
         ToolApprovalResolver,
         ToolApprovalService,
@@ -111,6 +113,8 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "agent.durable.protector",
         "agent.durable.recovery",
         "agent.durable.recovery-worker",
+        "agent.durable.retention",
+        "agent.durable.retention-worker",
         "agent.durable.storage",
         "inference",
         "inference.administration",
@@ -380,6 +384,8 @@ class RuntimeAssembler:
         agent_durable_recovery_configuration: DurableRecoveryWorkerConfiguration | None = None,
         agent_durable_approval_revalidator: DurableApprovalRevalidator | None = None,
         agent_checkpoint_protector: CheckpointProtector | None = None,
+        agent_durable_retention_policy: RetentionPolicy | None = None,
+        agent_durable_retention_configuration: DurableRetentionWorkerConfiguration | None = None,
         webhooks_enabled: bool = False,
         webhook_service_account_administration_enabled: bool = False,
         webhook_subscription_repository: WebhookSubscriptionRepository | None = None,
@@ -495,6 +501,8 @@ class RuntimeAssembler:
         self._agent_durable_recovery_configuration = agent_durable_recovery_configuration
         self._agent_durable_approval_revalidator = agent_durable_approval_revalidator
         self._agent_checkpoint_protector = agent_checkpoint_protector
+        self._agent_durable_retention_policy = agent_durable_retention_policy
+        self._agent_durable_retention_configuration = agent_durable_retention_configuration
         self._webhooks_enabled = webhooks_enabled
         self._webhook_service_account_administration_enabled = (
             webhook_service_account_administration_enabled
@@ -639,6 +647,8 @@ class RuntimeAssembler:
                 agent_durable_recovery_configuration is not None,
                 agent_durable_approval_revalidator is not None,
                 agent_checkpoint_protector is not None,
+                agent_durable_retention_policy is not None,
+                agent_durable_retention_configuration is not None,
             )
         )
         if durable_options_supplied and not agent_durable_enabled:
@@ -1628,6 +1638,8 @@ class RuntimeAssembler:
                     recovery_configuration=self._agent_durable_recovery_configuration,
                     approval_revalidator=approval_revalidator,
                     protector=self._agent_checkpoint_protector,
+                    retention_policy=self._agent_durable_retention_policy,
+                    retention_configuration=(self._agent_durable_retention_configuration),
                 )
                 custom_services["agent.durable"] = durable_agent_stack
                 custom_services["agent.durable.storage"] = durable_agent_stack.store
@@ -1639,6 +1651,14 @@ class RuntimeAssembler:
                 custom_services["agent.durable.recovery-worker"] = (
                     durable_agent_stack.recovery_worker
                 )
+                if durable_agent_stack.retention_policy is not None:
+                    custom_services["agent.durable.retention"] = (
+                        durable_agent_stack.retention_policy
+                    )
+                if durable_agent_stack.retention_worker is not None:
+                    custom_services["agent.durable.retention-worker"] = (
+                        durable_agent_stack.retention_worker
+                    )
                 if durable_agent_stack.protector is not None:
                     custom_services["agent.durable.protector"] = durable_agent_stack.protector
 
@@ -1659,6 +1679,14 @@ class RuntimeAssembler:
                         durable_agent_stack.recovery_lifecycle,
                     ),
                 )
+                if durable_agent_stack.retention_lifecycle is not None:
+                    components.insert(
+                        agent_component_index + 3,
+                        ComponentSpec(
+                            "agent.durable.retention",
+                            durable_agent_stack.retention_lifecycle,
+                        ),
+                    )
 
             runtime = PhoenixRuntime(
                 kernel=self._kernel,
