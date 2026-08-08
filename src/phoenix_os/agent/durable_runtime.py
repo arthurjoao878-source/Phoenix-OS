@@ -5,6 +5,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from phoenix_os.agent.durable_administration import (
+    DurableAdministrationConfiguration,
+    DurableMachineAdministrationGuard,
+    DurableRunAdministration,
+)
 from phoenix_os.agent.durable_approval import DurableApprovalRevalidator
 from phoenix_os.agent.durable_compatibility import DurableCompatibilityValidator
 from phoenix_os.agent.durable_contracts import (
@@ -13,6 +18,10 @@ from phoenix_os.agent.durable_contracts import (
     RetentionPolicy,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
+from phoenix_os.agent.durable_observer import (
+    DurableRunObserver,
+    NullDurableRunObserver,
+)
 from phoenix_os.agent.durable_payload import DurableProtectedPayloadStore
 from phoenix_os.agent.durable_recovery import (
     DurableRecoveryCoordinator,
@@ -140,6 +149,8 @@ class DurableAgentRuntimeStack:
     recovery_worker: DurableRecoveryWorker
     storage_lifecycle: DurableStorageLifecycle
     recovery_lifecycle: DurableRecoveryLifecycle
+    observer: DurableRunObserver
+    administration: DurableRunAdministration
     protector: CheckpointProtector | None = None
     retention_policy: RetentionPolicy | None = None
     retention_worker: DurableRetentionWorker | None = None
@@ -179,6 +190,9 @@ def create_durable_agent_runtime_stack(
     compatibility_validator: DurableCompatibilityValidator,
     recovery_configuration: DurableRecoveryWorkerConfiguration | None = None,
     approval_revalidator: DurableApprovalRevalidator | None = None,
+    observer: DurableRunObserver | None = None,
+    administration_configuration: DurableAdministrationConfiguration | None = None,
+    machine_guard: DurableMachineAdministrationGuard | None = None,
     protector: CheckpointProtector | None = None,
     retention_policy: RetentionPolicy | None = None,
     retention_configuration: DurableRetentionWorkerConfiguration | None = None,
@@ -196,6 +210,18 @@ def create_durable_agent_runtime_stack(
         DurableApprovalRevalidator,
     ):
         raise TypeError("approval_revalidator must implement DurableApprovalRevalidator")
+    if observer is not None and not isinstance(observer, DurableRunObserver):
+        raise TypeError("observer must implement DurableRunObserver")
+    if administration_configuration is not None and not isinstance(
+        administration_configuration,
+        DurableAdministrationConfiguration,
+    ):
+        raise TypeError("administration_configuration must be DurableAdministrationConfiguration")
+    if machine_guard is not None and not isinstance(
+        machine_guard,
+        DurableMachineAdministrationGuard,
+    ):
+        raise TypeError("machine_guard must implement DurableMachineAdministrationGuard")
     if protector is not None:
         if not isinstance(protector, CheckpointProtector):
             raise TypeError("protector must implement CheckpointProtector")
@@ -258,6 +284,18 @@ def create_durable_agent_runtime_stack(
         )
         retention_lifecycle = DurableRetentionLifecycle(retention_worker)
 
+    selected_observer = NullDurableRunObserver() if observer is None else observer
+    administration = DurableRunAdministration(
+        store=store,
+        lease_manager=lease_manager,
+        compatibility_validator=compatibility_validator,
+        configuration=administration_configuration,
+        recovery_worker=worker,
+        retention_worker=retention_worker,
+        observer=selected_observer,
+        machine_guard=machine_guard,
+    )
+
     return DurableAgentRuntimeStack(
         store=store,
         lease_manager=lease_manager,
@@ -269,6 +307,8 @@ def create_durable_agent_runtime_stack(
             lease_manager=lease_manager,
         ),
         recovery_lifecycle=DurableRecoveryLifecycle(worker),
+        observer=selected_observer,
+        administration=administration,
         protector=protector,
         retention_policy=retention_policy,
         retention_worker=retention_worker,

@@ -33,9 +33,11 @@ if TYPE_CHECKING:
         AgentModelTurnAdapter,
         AgentServiceConfiguration,
         CheckpointProtector,
+        DurableAdministrationConfiguration,
         DurableApprovalRevalidator,
         DurableCompatibilityValidator,
         DurableLeaseManager,
+        DurableMachineAdministrationGuard,
         DurableRecoveryWorkerConfiguration,
         DurableRetentionWorkerConfiguration,
         DurableRunStore,
@@ -108,8 +110,10 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "agent.registry",
         "agent.runtime",
         "agent.durable",
+        "agent.durable.administration",
         "agent.durable.compatibility",
         "agent.durable.leases",
+        "agent.durable.observer",
         "agent.durable.protector",
         "agent.durable.recovery",
         "agent.durable.recovery-worker",
@@ -383,6 +387,12 @@ class RuntimeAssembler:
         agent_durable_compatibility_validator: DurableCompatibilityValidator | None = None,
         agent_durable_recovery_configuration: DurableRecoveryWorkerConfiguration | None = None,
         agent_durable_approval_revalidator: DurableApprovalRevalidator | None = None,
+        agent_durable_administration_configuration: (
+            DurableAdministrationConfiguration | None
+        ) = None,
+        agent_durable_machine_administration_guard: (
+            DurableMachineAdministrationGuard | None
+        ) = None,
         agent_checkpoint_protector: CheckpointProtector | None = None,
         agent_durable_retention_policy: RetentionPolicy | None = None,
         agent_durable_retention_configuration: DurableRetentionWorkerConfiguration | None = None,
@@ -500,6 +510,12 @@ class RuntimeAssembler:
         self._agent_durable_compatibility_validator = agent_durable_compatibility_validator
         self._agent_durable_recovery_configuration = agent_durable_recovery_configuration
         self._agent_durable_approval_revalidator = agent_durable_approval_revalidator
+        self._agent_durable_administration_configuration = (
+            agent_durable_administration_configuration
+        )
+        self._agent_durable_machine_administration_guard = (
+            agent_durable_machine_administration_guard
+        )
         self._agent_checkpoint_protector = agent_checkpoint_protector
         self._agent_durable_retention_policy = agent_durable_retention_policy
         self._agent_durable_retention_configuration = agent_durable_retention_configuration
@@ -646,6 +662,8 @@ class RuntimeAssembler:
                 agent_durable_compatibility_validator is not None,
                 agent_durable_recovery_configuration is not None,
                 agent_durable_approval_revalidator is not None,
+                agent_durable_administration_configuration is not None,
+                agent_durable_machine_administration_guard is not None,
                 agent_checkpoint_protector is not None,
                 agent_durable_retention_policy is not None,
                 agent_durable_retention_configuration is not None,
@@ -662,6 +680,39 @@ class RuntimeAssembler:
                 raise ValueError("enabled durable agent requires a DurableLeaseManager")
             if agent_durable_compatibility_validator is None:
                 raise ValueError("enabled durable agent requires a DurableCompatibilityValidator")
+            if (
+                agent_durable_administration_configuration is not None
+                or agent_durable_machine_administration_guard is not None
+            ):
+                from phoenix_os.agent.durable_administration import (
+                    DurableAdministrationConfiguration as RuntimeDurableAdministrationConfiguration,
+                )
+                from phoenix_os.agent.durable_administration import (
+                    DurableMachineAdministrationGuard as RuntimeDurableMachineAdministrationGuard,
+                )
+
+                if agent_durable_administration_configuration is not None and not isinstance(
+                    agent_durable_administration_configuration,
+                    RuntimeDurableAdministrationConfiguration,
+                ):
+                    raise TypeError(
+                        "agent durable administration configuration has an invalid type"
+                    )
+                if agent_durable_machine_administration_guard is not None and not isinstance(
+                    agent_durable_machine_administration_guard,
+                    RuntimeDurableMachineAdministrationGuard,
+                ):
+                    raise TypeError(
+                        "agent durable machine administration guard has an invalid type"
+                    )
+                if (
+                    agent_durable_administration_configuration is not None
+                    and agent_durable_administration_configuration.machine_administration_enabled
+                    and agent_durable_machine_administration_guard is None
+                ):
+                    raise ValueError(
+                        "enabled durable machine administration requires a machine guard"
+                    )
         if not isinstance(webhooks_enabled, bool):
             raise TypeError("webhooks enabled flag must be bool")
         if not isinstance(webhook_service_account_administration_enabled, bool):
@@ -1613,11 +1664,13 @@ class RuntimeAssembler:
         try:
             if self._agent_durable_enabled:
                 from phoenix_os.agent import (
+                    ContentFreeDurableRunObserver,
                     ToolApprovalDurableRevalidator,
                     ToolApprovalStateService,
                     create_durable_agent_runtime_stack,
                 )
 
+                assert self._agent_configuration is not None
                 assert self._agent_durable_store is not None
                 assert self._agent_durable_lease_manager is not None
                 assert self._agent_durable_compatibility_validator is not None
@@ -1631,17 +1684,29 @@ class RuntimeAssembler:
                         self._agent_approval_service
                     )
 
+                durable_observer = ContentFreeDurableRunObserver(
+                    self._agent_configuration,
+                    events=self._events,
+                    audit=self._audit,
+                    observability=self._observability,
+                )
+
                 durable_agent_stack = create_durable_agent_runtime_stack(
                     store=self._agent_durable_store,
                     lease_manager=self._agent_durable_lease_manager,
                     compatibility_validator=self._agent_durable_compatibility_validator,
                     recovery_configuration=self._agent_durable_recovery_configuration,
                     approval_revalidator=approval_revalidator,
+                    observer=durable_observer,
+                    administration_configuration=(self._agent_durable_administration_configuration),
+                    machine_guard=self._agent_durable_machine_administration_guard,
                     protector=self._agent_checkpoint_protector,
                     retention_policy=self._agent_durable_retention_policy,
                     retention_configuration=(self._agent_durable_retention_configuration),
                 )
                 custom_services["agent.durable"] = durable_agent_stack
+                custom_services["agent.durable.administration"] = durable_agent_stack.administration
+                custom_services["agent.durable.observer"] = durable_agent_stack.observer
                 custom_services["agent.durable.storage"] = durable_agent_stack.store
                 custom_services["agent.durable.leases"] = durable_agent_stack.lease_manager
                 custom_services["agent.durable.compatibility"] = (

@@ -20,19 +20,24 @@ from phoenix_os import (
     RuntimeStartError,
 )
 from phoenix_os.agent import (
+    AgentAdministrationAccessDeniedError,
     AgentId,
     AgentService,
     AgentServiceConfiguration,
     AgentServiceState,
     BoundedDurableRecoveryWorker,
+    ContentFreeDurableRunObserver,
     DeterministicCheckpointProtector,
     DeterministicFinalTurn,
     DeterministicModelTurnAdapter,
+    DurableAdministrationConfiguration,
     DurableAgentRuntimeStack,
     DurableLeaseManager,
     DurableRecoveryWorkerState,
+    DurableRunAdministration,
     InMemoryDurableLeaseManager,
     InMemoryDurableRunStore,
+    NullDurableRunObserver,
     StaticDurableCompatibilityValidator,
     create_durable_agent_runtime_stack,
 )
@@ -52,7 +57,7 @@ from phoenix_os.agent.durable_retention_worker import (
 )
 from phoenix_os.configuration import Configuration
 from phoenix_os.inference import ModelId, ModelProviderId
-from phoenix_os.policy import PolicyEngine
+from phoenix_os.policy import PolicyEngine, PrincipalType, SecurityContext
 from phoenix_os.runtime import RuntimeContext
 
 
@@ -85,6 +90,41 @@ def _model_adapter() -> DeterministicModelTurnAdapter:
 
 def _compatibility() -> StaticDurableCompatibilityValidator:
     return StaticDurableCompatibilityValidator(())
+
+
+def _maintainer_context(*permissions: str) -> SecurityContext:
+    return SecurityContext(
+        principal="operator:maintainer",
+        principal_type=PrincipalType.USER,
+        authenticated=True,
+        permissions=frozenset(permissions),
+        correlation_id="durable-runtime-composition-test",
+    )
+
+
+def _service_context(*scopes: str) -> SecurityContext:
+    return SecurityContext(
+        principal="service:durable-administration",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+        scopes=frozenset(scopes),
+        correlation_id="durable-runtime-machine-test",
+    )
+
+
+class _AllowMachineAdministrationGuard:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def authorize(
+        self,
+        context: SecurityContext,
+        *,
+        action: str,
+        resource: str,
+    ) -> None:
+        del context
+        self.calls.append((action, resource))
 
 
 class _LegacyDurableRunStore:
@@ -307,6 +347,10 @@ async def test_runtime_assembler_composes_and_owns_durable_services() -> None:
     assert runtime.service("agent.durable.storage") is selected_store
     assert runtime.service("agent.durable.leases") is selected_leases
     assert runtime.service("agent.durable.compatibility") is stack.compatibility_validator
+    assert runtime.service("agent.durable.observer") is stack.observer
+    assert runtime.service("agent.durable.administration") is stack.administration
+    assert isinstance(stack.observer, ContentFreeDurableRunObserver)
+    assert isinstance(stack.administration, DurableRunAdministration)
     assert runtime.service("agent.durable.recovery") is stack.recovery_coordinator
     assert runtime.service("agent.durable.recovery-worker") is stack.recovery_worker
     assert "agent.durable.retention" not in runtime.services
@@ -317,6 +361,8 @@ async def test_runtime_assembler_composes_and_owns_durable_services() -> None:
 
     components = (await runtime.snapshot()).components
     assert "agent.durable.retention" not in components
+    assert "agent.durable.observer" not in components
+    assert "agent.durable.administration" not in components
     assert components.index("agent.durable.storage") < components.index("agent")
     assert components.index("agent") < components.index("agent.durable.recovery")
 
@@ -331,6 +377,133 @@ async def test_runtime_assembler_composes_and_owns_durable_services() -> None:
     assert selected_store.closed
     assert selected_leases.closed
     assert (await agent.snapshot()).state is AgentServiceState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_durable_stack_defaults_to_null_observer_and_read_administration() -> None:
+    store = InMemoryDurableRunStore()
+    stack = create_durable_agent_runtime_stack(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility(),
+    )
+
+    try:
+        assert isinstance(stack.observer, NullDurableRunObserver)
+        assert isinstance(stack.administration, DurableRunAdministration)
+        snapshot = await stack.administration.snapshot(
+            _maintainer_context("agent.durable.health.read")
+        )
+        assert snapshot.store_open
+        assert snapshot.lease_manager_open
+        assert snapshot.recovery is not None
+        assert snapshot.observer is not None
+        assert snapshot.observer.observations == 0
+    finally:
+        await stack.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_machine_administration_is_disabled_by_default() -> None:
+    runtime, _store, _leases = await _durable_runtime()
+    administration = runtime.service("agent.durable.administration")
+    assert isinstance(administration, DurableRunAdministration)
+
+    with pytest.raises(AgentAdministrationAccessDeniedError):
+        await administration.snapshot(_service_context("agent.durable.health.read"))
+
+    await runtime.start()
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_wires_explicit_machine_administration_guard() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    guard = _AllowMachineAdministrationGuard()
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_administration_configuration=DurableAdministrationConfiguration(
+            machine_administration_enabled=True
+        ),
+        agent_durable_machine_administration_guard=guard,
+    ).assemble()
+
+    administration = runtime.service("agent.durable.administration")
+    assert isinstance(administration, DurableRunAdministration)
+    snapshot = await administration.snapshot(_service_context("agent.durable.health.read"))
+    assert snapshot.store_open
+    assert guard.calls == [("agent.durable.health.read", "durable-agent-runs:health")]
+
+    await runtime.start()
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_enabled_machine_administration_requires_guard() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+
+    with pytest.raises(ValueError, match="requires a machine guard"):
+        RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            policy=PolicyEngine(),
+            agent_enabled=True,
+            agent_configuration=_agent_configuration(),
+            agent_model_adapter=_model_adapter(),
+            agent_durable_enabled=True,
+            agent_durable_store=store,
+            agent_durable_lease_manager=lease_manager,
+            agent_durable_compatibility_validator=_compatibility(),
+            agent_durable_administration_configuration=DurableAdministrationConfiguration(
+                machine_administration_enabled=True
+            ),
+        )
+
+    assert not store.closed
+    assert not lease_manager.closed
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_administration_options_require_explicit_durable_enablement() -> (
+    None
+):
+    configuration, events, kernel, capabilities = await _base()
+
+    with pytest.raises(ValueError, match="require agent_durable_enabled"):
+        RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            agent_durable_administration_configuration=(DurableAdministrationConfiguration()),
+        )
+
+    with pytest.raises(ValueError, match="require agent_durable_enabled"):
+        RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            agent_durable_machine_administration_guard=_AllowMachineAdministrationGuard(),
+        )
 
 
 @pytest.mark.asyncio
