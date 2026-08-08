@@ -72,6 +72,7 @@ CONTROL_PLANE_SERVICE_ACCOUNTS_REVOKE_PERMISSION = "control-plane.service-accoun
 CONTROL_PLANE_API_TOKENS_ISSUE_PERMISSION = "control-plane.api-tokens.issue"
 CONTROL_PLANE_API_TOKENS_ROTATE_PERMISSION = "control-plane.api-tokens.rotate"
 CONTROL_PLANE_API_TOKENS_REVOKE_PERMISSION = "control-plane.api-tokens.revoke"
+CONTROL_PLANE_DURABLE_RECONCILE_PERMISSION = "agent.reconcile"
 
 _USERNAME_PATTERN = re.compile(r"[a-z][a-z0-9_.-]{2,63}\Z")
 _PERMISSION_PATTERN = re.compile(r"[a-z][a-z0-9._-]{2,127}\Z")
@@ -112,6 +113,7 @@ class ControlPlaneOperatorRole(StrEnum):
                 CONTROL_PLANE_API_TOKENS_ISSUE_PERMISSION,
                 CONTROL_PLANE_API_TOKENS_ROTATE_PERMISSION,
                 CONTROL_PLANE_API_TOKENS_REVOKE_PERMISSION,
+                CONTROL_PLANE_DURABLE_RECONCILE_PERMISSION,
                 INBOUND_EVENTS_READ_PERMISSION,
                 INBOUND_HEALTH_READ_PERMISSION,
                 INBOUND_RECEIPTS_READ_PERMISSION,
