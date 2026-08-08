@@ -77,6 +77,9 @@ from phoenix_os.control_plane.csrf import (
     ControlPlaneNonceSource,
     ControlPlaneProtectionClock,
 )
+from phoenix_os.control_plane.durable_machine_administration import (
+    ControlPlaneDurableMachineAdministrationGuard,
+)
 from phoenix_os.control_plane.durable_operator_http import (
     ControlPlaneDurableOperatorHttpAdapter,
 )
@@ -938,6 +941,7 @@ __all__ = [
     "ControlPlaneCsrfToken",
     "ControlPlaneCsrfVerification",
     "ControlPlaneDurableCsrfSecret",
+    "ControlPlaneDurableMachineAdministrationGuard",
     "ControlPlaneDurableOperatorHttpAdapter",
     "ControlPlaneDurableSessionAccessClosedError",
     "ControlPlaneDurableSessionAccessService",
