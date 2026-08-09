@@ -13,7 +13,6 @@ from phoenix_os.agent import (
     DurableRunVersion,
     ExecutionAttemptId,
     ReconciliationDecision,
-    ReconciliationEvidence,
 )
 from phoenix_os.agent.durable_authorization import (
     AGENT_RECONCILE_ACTION,
@@ -26,6 +25,7 @@ from phoenix_os.control_plane import (
     ControlPlaneConfirmationStoreClosedError,
     ControlPlaneDurableAdministrationConfirmationProof,
     ControlPlaneDurableAdministrationProtection,
+    ControlPlaneDurableReconciliationEvidenceBinding,
     ControlPlaneDurableReconciliationIntent,
     ControlPlaneDurableSessionAuthentication,
     ControlPlaneOperatorRole,
@@ -40,7 +40,6 @@ _ATTEMPT_ID = ExecutionAttemptId(UUID("20000000-0000-4000-8000-000000000028"))
 _SESSION_ID = UUID("30000000-0000-4000-8000-000000000028")
 _OPERATOR_ID = UUID("40000000-0000-4000-8000-000000000028")
 _INTENT_ID = UUID("50000000-0000-4000-8000-000000000028")
-_EVIDENCE_SECRET = "RAW-EVIDENCE-MUST-NOT-LEAK"
 
 
 class _Clock:
@@ -84,12 +83,18 @@ def _authentication(
     )
 
 
-def _evidence() -> ReconciliationEvidence:
-    return ReconciliationEvidence(
-        evidence_type="provider_receipt",
-        evidence_digest=CheckpointDigest("a" * 64),
-        observed_at=_NOW - timedelta(seconds=10),
-        metadata={"receipt": _EVIDENCE_SECRET},
+def _evidence_binding(
+    *,
+    evidence_type: str = "provider_receipt",
+    evidence_digest: CheckpointDigest | None = None,
+    evidence_observed_at: datetime | None = None,
+) -> ControlPlaneDurableReconciliationEvidenceBinding:
+    return ControlPlaneDurableReconciliationEvidenceBinding(
+        evidence_type=evidence_type,
+        evidence_digest=CheckpointDigest("a" * 64) if evidence_digest is None else evidence_digest,
+        evidence_observed_at=(
+            _NOW - timedelta(seconds=10) if evidence_observed_at is None else evidence_observed_at
+        ),
     )
 
 
@@ -102,7 +107,7 @@ def _intent(
         "expected_version": DurableRunVersion(7),
         "decision": ReconciliationDecision.CONFIRM_FAILED,
         "requested_at": _NOW,
-        "evidence": _evidence(),
+        "evidence_binding": _evidence_binding(),
         "id": _INTENT_ID,
     }
     values.update(overrides)
@@ -143,12 +148,13 @@ def test_reconciliation_intent_binds_exact_safe_mutation_fields() -> None:
     assert intent.action == AGENT_RECONCILE_ACTION
     assert intent.resource == durable_reconciliation_resource(_RUN_ID, _ATTEMPT_ID)
     assert len(intent.fingerprint) == 64
-    assert _EVIDENCE_SECRET not in repr(intent)
+    assert not hasattr(intent, "evidence")
+    assert intent.evidence_binding == _evidence_binding()
     assert (
         intent.fingerprint
         != replace(
             intent,
-            decision=ReconciliationDecision.FAIL_RUN,
+            decision=ReconciliationDecision.CONFIRM_SUCCEEDED,
         ).fingerprint
     )
     assert (
@@ -162,11 +168,8 @@ def test_reconciliation_intent_binds_exact_safe_mutation_fields() -> None:
         intent.fingerprint
         != replace(
             intent,
-            evidence=ReconciliationEvidence(
-                evidence_type="provider_receipt",
+            evidence_binding=_evidence_binding(
                 evidence_digest=CheckpointDigest("b" * 64),
-                observed_at=_NOW - timedelta(seconds=10),
-                metadata={"receipt": _EVIDENCE_SECRET},
             ),
         ).fingerprint
     )
@@ -181,14 +184,74 @@ def test_reconciliation_intent_binds_exact_safe_mutation_fields() -> None:
         intent.fingerprint
         != replace(
             intent,
-            evidence=ReconciliationEvidence(
-                evidence_type="provider_receipt",
-                evidence_digest=CheckpointDigest("a" * 64),
-                observed_at=_NOW - timedelta(seconds=10),
-                metadata={"receipt": "different-evidence-metadata"},
+            evidence_binding=_evidence_binding(
+                evidence_type="provider_status",
             ),
         ).fingerprint
     )
+    assert (
+        intent.fingerprint
+        != replace(
+            intent,
+            evidence_binding=_evidence_binding(
+                evidence_observed_at=_NOW - timedelta(seconds=11),
+            ),
+        ).fingerprint
+    )
+
+
+def test_reconciliation_evidence_binding_is_content_free_and_canonical() -> None:
+    binding = _evidence_binding()
+
+    assert binding.evidence_type == "provider_receipt"
+    assert binding.evidence_digest == CheckpointDigest("a" * 64)
+    assert binding.evidence_observed_at == _NOW - timedelta(seconds=10)
+    assert not hasattr(binding, "metadata")
+
+    with pytest.raises(ValueError):
+        replace(binding, evidence_type="Provider Receipt")
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        ReconciliationDecision.CONFIRM_SUCCEEDED,
+        ReconciliationDecision.CONFIRM_FAILED,
+        ReconciliationDecision.CONFIRM_NOT_STARTED,
+    ],
+)
+def test_confirm_reconciliation_intent_requires_safe_evidence_binding(
+    decision: ReconciliationDecision,
+) -> None:
+    with pytest.raises(ValueError, match="requires evidence binding"):
+        _intent(
+            decision=decision,
+            evidence_binding=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        ReconciliationDecision.REMAIN_INDETERMINATE,
+        ReconciliationDecision.CANCEL_RUN,
+        ReconciliationDecision.FAIL_RUN,
+    ],
+)
+def test_non_confirm_reconciliation_intent_rejects_evidence_binding(
+    decision: ReconciliationDecision,
+) -> None:
+    with pytest.raises(ValueError, match="cannot carry evidence binding"):
+        _intent(decision=decision)
+
+
+def test_reconciliation_intent_rejects_evidence_after_requested_at() -> None:
+    with pytest.raises(ValueError, match="cannot follow the request"):
+        _intent(
+            evidence_binding=_evidence_binding(
+                evidence_observed_at=_NOW + timedelta(seconds=1),
+            )
+        )
 
 
 def test_confirmation_proof_is_redacted() -> None:
@@ -284,22 +347,21 @@ async def test_invalid_step_up_never_issues_confirmation() -> None:
         {"id": UUID("50000000-0000-4000-8000-000000000029")},
         {"attempt_id": ExecutionAttemptId(UUID("20000000-0000-4000-8000-000000000029"))},
         {"expected_version": DurableRunVersion(8)},
-        {"decision": ReconciliationDecision.FAIL_RUN},
+        {"decision": ReconciliationDecision.CONFIRM_SUCCEEDED},
         {"requested_at": _NOW + timedelta(seconds=1)},
         {
-            "evidence": ReconciliationEvidence(
-                evidence_type="provider_receipt",
+            "evidence_binding": _evidence_binding(
                 evidence_digest=CheckpointDigest("b" * 64),
-                observed_at=_NOW - timedelta(seconds=10),
-                metadata={"receipt": _EVIDENCE_SECRET},
             )
         },
         {
-            "evidence": ReconciliationEvidence(
-                evidence_type="provider_receipt",
-                evidence_digest=CheckpointDigest("a" * 64),
-                observed_at=_NOW - timedelta(seconds=10),
-                metadata={"receipt": "different-evidence-metadata"},
+            "evidence_binding": _evidence_binding(
+                evidence_type="provider_status",
+            )
+        },
+        {
+            "evidence_binding": _evidence_binding(
+                evidence_observed_at=_NOW - timedelta(seconds=11),
             )
         },
     ],

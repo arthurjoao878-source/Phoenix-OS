@@ -19,11 +19,11 @@ from phoenix_os.agent.durable_authorization import (
     durable_reconciliation_resource,
 )
 from phoenix_os.agent.durable_contracts import (
+    CheckpointDigest,
     DurableAgentRunId,
     DurableRunVersion,
     ExecutionAttemptId,
     ReconciliationDecision,
-    ReconciliationEvidence,
 )
 from phoenix_os.control_plane.durable_session_access import (
     ControlPlaneDurableSessionAuthentication,
@@ -46,6 +46,14 @@ DEFAULT_CONTROL_PLANE_DURABLE_CONFIRMATION_TTL = timedelta(minutes=2)
 MAX_CONTROL_PLANE_DURABLE_CONFIRMATION_TTL = timedelta(minutes=10)
 
 _PROOF_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
+_IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
+_CONFIRM_DECISIONS = frozenset(
+    {
+        ReconciliationDecision.CONFIRM_SUCCEEDED,
+        ReconciliationDecision.CONFIRM_FAILED,
+        ReconciliationDecision.CONFIRM_NOT_STARTED,
+    }
+)
 
 type ControlPlaneDurableAdministrationClock = Callable[[], datetime]
 type ControlPlaneDurableAdministrationNonceSource = Callable[[int], bytes]
@@ -61,6 +69,28 @@ class _ControlPlaneDurableStepUpVerifier(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ControlPlaneDurableReconciliationEvidenceBinding:
+    """Content-free confirmation binding for trusted reconciliation evidence."""
+
+    evidence_type: str
+    evidence_digest: CheckpointDigest
+    evidence_observed_at: datetime
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.evidence_type, str)
+            or _IDENTIFIER_PATTERN.fullmatch(self.evidence_type) is None
+        ):
+            raise ValueError("durable reconciliation evidence type is invalid")
+        if not isinstance(self.evidence_digest, CheckpointDigest):
+            raise TypeError("evidence_digest must be CheckpointDigest")
+        _require_aware(self.evidence_observed_at, "evidence_observed_at")
+        if self.schema_version != 1:
+            raise ValueError("unsupported durable reconciliation evidence binding version")
+
+
+@dataclass(frozen=True, slots=True)
 class ControlPlaneDurableReconciliationIntent:
     """Content-free exact operator intent for one durable reconciliation."""
 
@@ -69,7 +99,7 @@ class ControlPlaneDurableReconciliationIntent:
     expected_version: DurableRunVersion
     decision: ReconciliationDecision
     requested_at: datetime
-    evidence: ReconciliationEvidence | None = field(default=None, repr=False)
+    evidence_binding: ControlPlaneDurableReconciliationEvidenceBinding | None = None
     id: UUID = field(default_factory=uuid4)
     schema_version: int = 1
 
@@ -84,16 +114,20 @@ class ControlPlaneDurableReconciliationIntent:
             raise TypeError("decision must be ReconciliationDecision")
         if not isinstance(self.id, UUID):
             raise TypeError("durable reconciliation intent id must be UUID")
-        if not isinstance(self.requested_at, datetime):
-            raise TypeError("requested_at must be datetime")
-        if self.requested_at.tzinfo is None or self.requested_at.utcoffset() is None:
-            raise ValueError("requested_at must be timezone-aware")
-        if self.evidence is not None and not isinstance(
-            self.evidence,
-            ReconciliationEvidence,
+        _require_aware(self.requested_at, "requested_at")
+        binding = self.evidence_binding
+        if binding is not None and not isinstance(
+            binding,
+            ControlPlaneDurableReconciliationEvidenceBinding,
         ):
-            raise TypeError("evidence must be ReconciliationEvidence or None")
-        if self.evidence is not None and self.evidence.observed_at > self.requested_at:
+            raise TypeError(
+                "evidence_binding must be ControlPlaneDurableReconciliationEvidenceBinding or None"
+            )
+        if self.decision in _CONFIRM_DECISIONS and binding is None:
+            raise ValueError("confirmed reconciliation requires evidence binding")
+        if self.decision not in _CONFIRM_DECISIONS and binding is not None:
+            raise ValueError("selected reconciliation decision cannot carry evidence binding")
+        if binding is not None and binding.evidence_observed_at > self.requested_at:
             raise ValueError("reconciliation evidence cannot follow the request")
         if self.schema_version != 1:
             raise ValueError("unsupported durable reconciliation intent version")
@@ -108,17 +142,19 @@ class ControlPlaneDurableReconciliationIntent:
 
     @property
     def fingerprint(self) -> str:
-        evidence = self.evidence
+        binding = self.evidence_binding
         document = {
             "action": self.action,
             "attempt_id": str(self.attempt_id),
             "decision": self.decision.value,
-            "evidence_digest": None if evidence is None else str(evidence.evidence_digest),
-            "evidence_metadata": None if evidence is None else dict(evidence.metadata),
-            "evidence_observed_at": (
-                None if evidence is None else evidence.observed_at.isoformat()
+            "evidence_binding_schema_version": (
+                None if binding is None else binding.schema_version
             ),
-            "evidence_type": None if evidence is None else evidence.evidence_type,
+            "evidence_digest": (None if binding is None else str(binding.evidence_digest)),
+            "evidence_observed_at": (
+                None if binding is None else binding.evidence_observed_at.isoformat()
+            ),
+            "evidence_type": None if binding is None else binding.evidence_type,
             "expected_version": self.expected_version.value,
             "requested_at": self.requested_at.isoformat(),
             "resource": self.resource,
