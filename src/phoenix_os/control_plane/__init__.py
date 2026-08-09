@@ -96,6 +96,10 @@ from phoenix_os.control_plane.durable_machine_administration import (
 from phoenix_os.control_plane.durable_operator_http import (
     ControlPlaneDurableOperatorHttpAdapter,
 )
+from phoenix_os.control_plane.durable_reconciliation_administration import (
+    ControlPlaneDurableReconciliationAdministration,
+    ControlPlaneDurableReconciliationConfirmation,
+)
 from phoenix_os.control_plane.durable_session_access import (
     ControlPlaneDurableSessionAccessService,
     ControlPlaneDurableSessionAccessSnapshot,
@@ -967,6 +971,8 @@ __all__ = [
     "ControlPlaneDurableCsrfSecret",
     "ControlPlaneDurableMachineAdministrationGuard",
     "ControlPlaneDurableOperatorHttpAdapter",
+    "ControlPlaneDurableReconciliationAdministration",
+    "ControlPlaneDurableReconciliationConfirmation",
     "ControlPlaneDurableReconciliationEvidenceBinding",
     "ControlPlaneDurableReconciliationIntent",
     "ControlPlaneDurableSessionAccessClosedError",
