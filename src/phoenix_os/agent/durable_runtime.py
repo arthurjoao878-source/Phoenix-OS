@@ -11,6 +11,7 @@ from phoenix_os.agent.durable_administration import (
     DurableRunAdministration,
 )
 from phoenix_os.agent.durable_approval import DurableApprovalRevalidator
+from phoenix_os.agent.durable_authorization import DurableReconciliationAuthorizer
 from phoenix_os.agent.durable_compatibility import DurableCompatibilityValidator
 from phoenix_os.agent.durable_contracts import (
     CheckpointProtector,
@@ -23,6 +24,13 @@ from phoenix_os.agent.durable_observer import (
     NullDurableRunObserver,
 )
 from phoenix_os.agent.durable_payload import DurableProtectedPayloadStore
+from phoenix_os.agent.durable_reconciliation import (
+    StoreBackedDurableReconciliationDispositionApplier,
+)
+from phoenix_os.agent.durable_reconciliation_administration import (
+    DurableReconciliationAdministration,
+    DurableReconciliationStatusLookup,
+)
 from phoenix_os.agent.durable_recovery import (
     DurableRecoveryCoordinator,
     StartupDurableRecoveryCoordinator,
@@ -38,6 +46,7 @@ from phoenix_os.agent.durable_worker import (
     DurableRecoveryWorker,
     DurableRecoveryWorkerConfiguration,
 )
+from phoenix_os.audit import AuditLedger
 from phoenix_os.runtime import RuntimeContext
 
 
@@ -151,6 +160,7 @@ class DurableAgentRuntimeStack:
     recovery_lifecycle: DurableRecoveryLifecycle
     observer: DurableRunObserver
     administration: DurableRunAdministration
+    reconciliation_administration: DurableReconciliationAdministration | None = None
     protector: CheckpointProtector | None = None
     retention_policy: RetentionPolicy | None = None
     retention_worker: DurableRetentionWorker | None = None
@@ -160,6 +170,12 @@ class DurableAgentRuntimeStack:
         """Rollback composed durable resources in reverse lifecycle order."""
 
         failure: BaseException | None = None
+
+        if self.reconciliation_administration is not None:
+            try:
+                await self.reconciliation_administration.close()
+            except (Exception, asyncio.CancelledError) as exception:
+                failure = exception
 
         if self.retention_lifecycle is not None:
             try:
@@ -193,6 +209,9 @@ def create_durable_agent_runtime_stack(
     observer: DurableRunObserver | None = None,
     administration_configuration: DurableAdministrationConfiguration | None = None,
     machine_guard: DurableMachineAdministrationGuard | None = None,
+    reconciliation_authorizer: DurableReconciliationAuthorizer | None = None,
+    reconciliation_audit: AuditLedger | None = None,
+    reconciliation_status_lookup: DurableReconciliationStatusLookup | None = None,
     protector: CheckpointProtector | None = None,
     retention_policy: RetentionPolicy | None = None,
     retention_configuration: DurableRetentionWorkerConfiguration | None = None,
@@ -222,6 +241,24 @@ def create_durable_agent_runtime_stack(
         DurableMachineAdministrationGuard,
     ):
         raise TypeError("machine_guard must implement DurableMachineAdministrationGuard")
+    if reconciliation_authorizer is not None and not isinstance(
+        reconciliation_authorizer,
+        DurableReconciliationAuthorizer,
+    ):
+        raise TypeError("reconciliation_authorizer must implement DurableReconciliationAuthorizer")
+    if reconciliation_audit is not None and not isinstance(reconciliation_audit, AuditLedger):
+        raise TypeError("reconciliation_audit must be AuditLedger")
+    if reconciliation_status_lookup is not None and not isinstance(
+        reconciliation_status_lookup,
+        DurableReconciliationStatusLookup,
+    ):
+        raise TypeError(
+            "reconciliation_status_lookup must implement DurableReconciliationStatusLookup"
+        )
+    if (reconciliation_authorizer is None) != (reconciliation_audit is None):
+        raise ValueError("reconciliation administration requires authorizer and audit")
+    if reconciliation_status_lookup is not None and reconciliation_authorizer is None:
+        raise ValueError("reconciliation status lookup requires reconciliation administration")
     if protector is not None:
         if not isinstance(protector, CheckpointProtector):
             raise TypeError("protector must implement CheckpointProtector")
@@ -296,6 +333,21 @@ def create_durable_agent_runtime_stack(
         machine_guard=machine_guard,
     )
 
+    reconciliation_administration: DurableReconciliationAdministration | None = None
+    if reconciliation_authorizer is not None and reconciliation_audit is not None:
+        reconciliation_applier = StoreBackedDurableReconciliationDispositionApplier(
+            store=store,
+            authorizer=reconciliation_authorizer,
+        )
+        reconciliation_administration = DurableReconciliationAdministration(
+            store=store,
+            lease_manager=lease_manager,
+            applier=reconciliation_applier,
+            audit=reconciliation_audit,
+            status_lookup=reconciliation_status_lookup,
+            observer=selected_observer,
+        )
+
     return DurableAgentRuntimeStack(
         store=store,
         lease_manager=lease_manager,
@@ -309,6 +361,7 @@ def create_durable_agent_runtime_stack(
         recovery_lifecycle=DurableRecoveryLifecycle(worker),
         observer=selected_observer,
         administration=administration,
+        reconciliation_administration=reconciliation_administration,
         protector=protector,
         retention_policy=retention_policy,
         retention_worker=retention_worker,
