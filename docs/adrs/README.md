@@ -41,6 +41,11 @@ the decision requires a new ADR that explicitly supersedes the previous one.
 | [ADR-0018](ADR-0018-bounded-serial-agent-loop-and-no-transparent-retry.md) | Accepted | Execute a finite serial agent state machine and never retry model or tool work transparently. |
 | [ADR-0019](ADR-0019-untrusted-tool-results-and-content-free-agent-observability.md) | Accepted | Treat tool results as untrusted and keep audit, health, administration, logs, metrics, and events content-free. |
 | [ADR-0020](ADR-0020-opt-in-agent-runtime-and-bounded-lifecycle.md) | Accepted | Keep agent execution opt-in, Runtime-owned, deterministically rolled back, and bounded during cancellation and shutdown. |
+| [ADR-0021](ADR-0021-untrusted-canonical-chained-durable-checkpoints.md) | Accepted | Treat checkpoints as untrusted canonical chained data that grant no authority and fail closed under corruption, rollback, substitution, or incompatibility. |
+| [ADR-0022](ADR-0022-fenced-leases-and-conditional-durable-mutation.md) | Accepted | Require monotonic fencing generations and store-enforced conditional mutation so stale workers cannot commit durable progress. |
+| [ADR-0023](ADR-0023-controlled-recovery-and-explicit-indeterminate-reconciliation.md) | Accepted | Resume only from reviewed safe boundaries with fresh authority and reconcile indeterminate external attempts explicitly without transparent retry. |
+| [ADR-0024](ADR-0024-opt-in-protected-payloads-and-content-free-durable-operations.md) | Accepted | Keep metadata-only persistence as the default and make bounded authenticated protected content explicit while operational surfaces remain content-free. |
+| [ADR-0025](ADR-0025-opt-in-runtime-owned-durable-lifecycle-retention-and-administration.md) | Accepted | Keep durability opt-in and Runtime-owned with bounded recovery, retention, cleanup, shutdown, and separated exact administration authority. |
 
 ## Related specifications
 
@@ -53,3 +58,5 @@ the decision requires a new ADR that explicitly supersedes the previous one.
 
 - ADR-0016 through ADR-0020 record the principal durable choices implemented by
   [RFC-0027 — Secure Agent Loop and Tool Calling Runtime](../rfcs/RFC-0027-secure-agent-loop-and-tool-calling.md).
+- ADR-0021 through ADR-0025 record the principal durable choices implemented by
+  [RFC-0028 — Durable Agent Runs, Checkpoints, and Controlled Resumption](../rfcs/RFC-0028-durable-agent-runs-and-controlled-resumption.md).

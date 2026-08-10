@@ -1081,6 +1081,19 @@ Rollback documentation must distinguish:
 The staged upgrade and disable-first rollback procedure is recorded in
 [`v0.27.0-to-v0.28.0-durable-agent.md`](../migrations/v0.27.0-to-v0.28.0-durable-agent.md).
 
+The principal durable architecture decisions are recorded in five accepted ADRs:
+
+- [`ADR-0021`](../adrs/ADR-0021-untrusted-canonical-chained-durable-checkpoints.md)
+  — checkpoints remain untrusted canonical chained data and never authority.
+- [`ADR-0022`](../adrs/ADR-0022-fenced-leases-and-conditional-durable-mutation.md)
+  — monotonic fencing plus conditional store mutation rejects stale workers.
+- [`ADR-0023`](../adrs/ADR-0023-controlled-recovery-and-explicit-indeterminate-reconciliation.md)
+  — safe-boundary recovery uses fresh authority and explicit indeterminate reconciliation.
+- [`ADR-0024`](../adrs/ADR-0024-opt-in-protected-payloads-and-content-free-durable-operations.md)
+  — metadata-only is default; protected continuation content is explicit and bounded.
+- [`ADR-0025`](../adrs/ADR-0025-opt-in-runtime-owned-durable-lifecycle-retention-and-administration.md)
+  — durability remains opt-in and Runtime-owned with bounded retention and administration.
+
 ## Slice plan
 
 ### Slice 1 - Contracts, codecs, checkpoint store, and deterministic fakes
@@ -1128,7 +1141,7 @@ The staged upgrade and disable-first rollback procedure is recorded in
 ### Slice 5 - Migration, architecture decisions, and v0.28.0
 
 - [x] Migration guidance and rollback procedure
-- [ ] Architecture Decision Records
+- [x] Architecture Decision Records
 - [ ] Threat-model and security-invariant review
 - [ ] Durable-agent release gate
 - [ ] Wheel and sdist isolated offline installation tests

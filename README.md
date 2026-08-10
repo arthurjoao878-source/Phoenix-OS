@@ -241,6 +241,10 @@ records cover server-owned strict tool registration, independent run/model/tool
 authorization and exact approvals, bounded serial execution without transparent
 retry, untrusted result isolation with content-free observability, and opt-in
 Runtime ownership with bounded lifecycle cleanup.
+The RFC-0028 durable-agent records cover untrusted chained checkpoints, fenced
+conditional mutation, controlled recovery with explicit indeterminate
+reconciliation, opt-in protected payloads with content-free operations, and
+opt-in Runtime-owned durability with bounded retention and administration.
 
 ## Local dashboard example
 
