@@ -184,6 +184,11 @@ from phoenix_os.agent.durable_authorization import (
     durable_agent_run_resource,
     durable_reconciliation_resource,
 )
+from phoenix_os.agent.durable_cleanup_administration import (
+    DurableCleanupAdministration,
+    DurableCleanupAdministrationBounds,
+    DurableCleanupAdministrationWorker,
+)
 from phoenix_os.agent.durable_codec import (
     DURABLE_CHECKPOINT_CODEC_SCHEMA_VERSION,
     MAX_DURABLE_CHECKPOINT_JSON_DEPTH,
@@ -670,6 +675,9 @@ __all__ = [
     "DurableAttemptStatusObservation",
     "DurableAttemptStatusQuery",
     "DurableCheckpointBoundary",
+    "DurableCleanupAdministration",
+    "DurableCleanupAdministrationBounds",
+    "DurableCleanupAdministrationWorker",
     "DurableCompatibilityAssessment",
     "DurableCompatibilityCategory",
     "DurableCompatibilityPolicy",
