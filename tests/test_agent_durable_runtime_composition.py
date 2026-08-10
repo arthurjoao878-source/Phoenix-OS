@@ -33,6 +33,7 @@ from phoenix_os.agent import (
     DurableAdministrationConfiguration,
     DurableAgentRuntimeStack,
     DurableLeaseManager,
+    DurableReconciliationAdministration,
     DurableRecoveryWorkerState,
     DurableRunAdministration,
     InMemoryDurableLeaseManager,
@@ -55,7 +56,12 @@ from phoenix_os.agent.durable_retention_worker import (
     DurableRetentionWorkerConfiguration,
     DurableRetentionWorkerState,
 )
+from phoenix_os.audit import AuditLedger
 from phoenix_os.configuration import Configuration
+from phoenix_os.control_plane import (
+    ControlPlaneDurableReconciliationAdministration,
+    ControlPlaneOperatorToken,
+)
 from phoenix_os.inference import ModelId, ModelProviderId
 from phoenix_os.policy import PolicyEngine, PrincipalType, SecurityContext
 from phoenix_os.runtime import RuntimeContext
@@ -1092,3 +1098,334 @@ async def test_runtime_assembler_retention_options_require_explicit_durable_enab
             agent_durable_retention_policy=retention_policy,
             agent_durable_retention_configuration=retention_configuration,
         )
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_durable_reconciliation_is_explicit_opt_in() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=store.lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+
+    stack = runtime.service("agent.durable")
+    assert isinstance(stack, DurableAgentRuntimeStack)
+    assert stack.reconciliation_administration is None
+    assert "agent.durable.reconciliation-administration" not in runtime.services
+    assert "control_plane.durable-reconciliation" not in runtime.services
+    assert "control_plane.durable-reconciliation" not in (await runtime.snapshot()).components
+
+    await runtime.start()
+    await runtime.stop()
+    assert store.closed
+    assert audit.closed
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_reconciliation_requires_audit_and_operator_mode() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit_without_runtime = AuditLedger()
+    try:
+        with pytest.raises(
+            ValueError,
+            match="requires durable operator mode",
+        ):
+            RuntimeAssembler(
+                kernel=kernel,
+                events=events,
+                capabilities=capabilities,
+                configuration=configuration,
+                policy=PolicyEngine(),
+                audit=audit_without_runtime,
+                agent_enabled=True,
+                agent_configuration=_agent_configuration(),
+                agent_model_adapter=_model_adapter(),
+                agent_durable_enabled=True,
+                agent_durable_store=store,
+                agent_durable_lease_manager=store.lease_manager,
+                agent_durable_compatibility_validator=_compatibility(),
+                agent_durable_reconciliation_administration_enabled=True,
+            )
+
+        with pytest.raises(
+            ValueError,
+            match="requires AuditLedger",
+        ):
+            RuntimeAssembler(
+                kernel=kernel,
+                events=events,
+                capabilities=capabilities,
+                configuration=configuration,
+                policy=PolicyEngine(),
+                agent_enabled=True,
+                agent_configuration=_agent_configuration(),
+                agent_model_adapter=_model_adapter(),
+                agent_durable_enabled=True,
+                agent_durable_store=store,
+                agent_durable_lease_manager=store.lease_manager,
+                agent_durable_compatibility_validator=_compatibility(),
+                agent_durable_reconciliation_administration_enabled=True,
+                control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+            )
+    finally:
+        await audit_without_runtime.close()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_composes_and_orders_durable_reconciliation() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    audit = AuditLedger()
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_reconciliation_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+
+    stack = runtime.service("agent.durable")
+    assert isinstance(stack, DurableAgentRuntimeStack)
+    coordinator = runtime.service("agent.durable.reconciliation-administration")
+    administration = runtime.service("control_plane.durable-reconciliation")
+    assert isinstance(coordinator, DurableReconciliationAdministration)
+    assert coordinator is stack.reconciliation_administration
+    assert isinstance(
+        administration,
+        ControlPlaneDurableReconciliationAdministration,
+    )
+
+    components = (await runtime.snapshot()).components
+    assert "control_plane.durable-reconciliation" in components
+    assert components.index("control_plane.durable-reconciliation") < components.index(
+        "control_plane.http"
+    )
+    assert components.index("agent.durable.storage") < components.index(
+        "control_plane.durable-reconciliation"
+    )
+
+    await runtime.start()
+    await runtime.stop()
+
+    assert coordinator.closed
+    assert store.closed
+    assert lease_manager.closed
+    assert audit.closed
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_reconciliation_rollback_closes_confirmation_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    def fail_runtime(*args: object, **kwargs: object) -> PhoenixRuntime:
+        del args, kwargs
+        raise RuntimeError("private reconciliation runtime construction detail")
+
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+    monkeypatch.setattr(dependencies_module, "PhoenixRuntime", fail_runtime)
+
+    with pytest.raises(
+        RuntimeError,
+        match="private reconciliation runtime construction detail",
+    ):
+        await RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            policy=PolicyEngine(),
+            audit=audit,
+            agent_enabled=True,
+            agent_configuration=_agent_configuration(),
+            agent_model_adapter=_model_adapter(),
+            agent_durable_enabled=True,
+            agent_durable_store=store,
+            agent_durable_lease_manager=lease_manager,
+            agent_durable_compatibility_validator=_compatibility(),
+            agent_durable_reconciliation_administration_enabled=True,
+            control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+        ).assemble()
+
+    assert close_calls == 1
+    assert store.closed
+    assert lease_manager.closed
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_storage_start_failure_closes_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_reconciliation_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+    coordinator = runtime.service("agent.durable.reconciliation-administration")
+    assert isinstance(coordinator, DurableReconciliationAdministration)
+
+    await store.close()
+
+    with pytest.raises(RuntimeStartError) as captured:
+        await runtime.start()
+
+    assert captured.value.failure.component == "agent.durable.storage"
+    assert captured.value.failure.phase is RuntimePhase.START
+    assert close_calls == 1
+    assert coordinator.closed
+    assert store.closed
+    assert lease_manager.closed
+    assert audit.closed
+
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_recovery_start_failure_rolls_back_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    async def fail_start(self: BoundedDurableRecoveryWorker) -> None:
+        del self
+        raise RuntimeError("private reconciliation recovery startup detail")
+
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    monkeypatch.setattr(BoundedDurableRecoveryWorker, "start", fail_start)
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_reconciliation_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+    coordinator = runtime.service("agent.durable.reconciliation-administration")
+    assert isinstance(coordinator, DurableReconciliationAdministration)
+
+    with pytest.raises(RuntimeStartError) as captured:
+        await runtime.start()
+
+    assert captured.value.failure.component == "agent.durable.recovery"
+    assert captured.value.failure.phase is RuntimePhase.START
+    assert close_calls == 1
+    assert coordinator.closed
+    assert store.closed
+    assert lease_manager.closed
+    assert audit.closed
+
+    await runtime.stop()
