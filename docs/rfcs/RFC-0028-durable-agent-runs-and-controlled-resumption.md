@@ -1,6 +1,6 @@
 # RFC-0028: Durable Agent Runs, Checkpoints, and Controlled Resumption
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.28.0
 - Owners: Phoenix OS maintainers
 - Depends on: RFC-0004, RFC-0005, RFC-0007, RFC-0009, RFC-0012,
@@ -1127,53 +1127,55 @@ compatibility rule above, implementation slices remain on v0.27.0 and the
 package changes to v0.28.0 only in the final release slice.
 
 Release metadata is recorded in
-[`docs/releases/v0.28.0.md`](../releases/v0.28.0.md), and the package version is
-`0.28.0`. This preparation does not claim the final `v0.28.0` tag, published
-wheel/sdist assets, or `SHA256SUMS`; those remain the final checklist item.
+[`docs/releases/v0.28.0.md`](../releases/v0.28.0.md). The package version is
+`0.28.0`; the release publishes tag `v0.28.0`, wheel and sdist artifacts, and
+`SHA256SUMS`.
+
+RFC-0028 is accepted for Phoenix OS 0.28.0.
 
 ## Slice plan
 
 ### Slice 1 - Contracts, codecs, checkpoint store, and deterministic fakes
 
-- [ ] Immutable durable-run, checkpoint, attempt, lease, and error contracts
-- [ ] Strict canonical checkpoint envelope codec
-- [ ] Metadata-only and protected-content payload profiles
-- [ ] In-memory deterministic durable store
-- [ ] Atomic version and sequence enforcement
-- [ ] Deterministic checkpoint protector fake
-- [ ] Contract, codec, corruption, rollback, and bound tests
+- [x] Immutable durable-run, checkpoint, attempt, lease, and error contracts
+- [x] Strict canonical checkpoint envelope codec
+- [x] Metadata-only and protected-content payload profiles
+- [x] In-memory deterministic durable store
+- [x] Atomic version and sequence enforcement
+- [x] Deterministic checkpoint protector fake
+- [x] Contract, codec, corruption, rollback, and bound tests
 
 ### Slice 2 - Leases, fencing, state machine, and recovery
 
-- [ ] Durable state machine and reviewed transitions
-- [ ] Lease acquisition, renewal, expiry, and fenced mutation
-- [ ] Safe checkpoint-boundary enforcement
-- [ ] Startup recovery coordinator
-- [ ] Configuration compatibility validation
-- [ ] Stale-worker, split-brain, rollback, and race tests
-- [ ] Bounded recovery admission and worker lifecycle
+- [x] Durable state machine and reviewed transitions
+- [x] Lease acquisition, renewal, expiry, and fenced mutation
+- [x] Safe checkpoint-boundary enforcement
+- [x] Startup recovery coordinator
+- [x] Configuration compatibility validation
+- [x] Stale-worker, split-brain, rollback, and race tests
+- [x] Bounded recovery admission and worker lifecycle
 
 ### Slice 3 - Pause, approval, attempts, and reconciliation
 
-- [ ] Approval-wait checkpoints and current-state revalidation
-- [ ] Model and tool execution attempt records
-- [ ] Indeterminate model and tool recovery semantics
-- [ ] Exact `agent.resume` and `agent.reconcile` authorization
-- [ ] Reviewed adapter status lookup boundary
-- [ ] Operator reconciliation dispositions
-- [ ] No-transparent-retry and duplicate-side-effect tests
-- [ ] Cancellation and controlled-shutdown tests
+- [x] Approval-wait checkpoints and current-state revalidation
+- [x] Model and tool execution attempt records
+- [x] Indeterminate model and tool recovery semantics
+- [x] Exact `agent.resume` and `agent.reconcile` authorization
+- [x] Reviewed adapter status lookup boundary
+- [x] Operator reconciliation dispositions
+- [x] No-transparent-retry and duplicate-side-effect tests
+- [x] Cancellation and controlled-shutdown tests
 
 ### Slice 4 - Persistence, Runtime, observability, and administration
 
-- [ ] Durable reference storage adapter
-- [ ] Optional authenticated protected-payload persistence
-- [ ] RuntimeAssembler composition and deterministic rollback
-- [ ] Retention, cleanup, and tombstones
-- [ ] Content-free audit, metrics, logs, health, and Event Bus events
-- [ ] Maintainer durable-run administration
-- [ ] Compatibility tests with durable configuration omitted
-- [ ] Bounded startup and shutdown ordering
+- [x] Durable reference storage adapter
+- [x] Optional authenticated protected-payload persistence
+- [x] RuntimeAssembler composition and deterministic rollback
+- [x] Retention, cleanup, and tombstones
+- [x] Content-free audit, metrics, logs, health, and Event Bus events
+- [x] Maintainer durable-run administration
+- [x] Compatibility tests with durable configuration omitted
+- [x] Bounded startup and shutdown ordering
 
 ### Slice 5 - Migration, architecture decisions, and v0.28.0
 
@@ -1183,7 +1185,7 @@ wheel/sdist assets, or `SHA256SUMS`; those remain the final checklist item.
 - [x] Durable-agent release gate
 - [x] Wheel and sdist isolated offline installation tests
 - [x] Release notes and package version 0.28.0
-- [ ] Tag, artifacts, and checksums
+- [x] Tag, artifacts, and checksums
 
 ## Acceptance
 

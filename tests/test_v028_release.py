@@ -26,7 +26,7 @@ def test_readme_lists_v028_release_notes_before_v027() -> None:
     assert readme.index(current) < readme.index(previous)
 
 
-def test_changelog_starts_with_v0280_release_candidate() -> None:
+def test_changelog_starts_with_v0280_release() -> None:
     changelog = _CHANGELOG.read_text(encoding="utf-8")
     current = "## [0.28.0] - 2026-08-10"
     previous = "## [0.27.0] - 2026-07-29"
@@ -47,7 +47,7 @@ def test_v028_release_notes_are_complete() -> None:
     notes = _RELEASE_NOTES.read_text(encoding="utf-8")
     required = (
         "# Phoenix OS 0.28.0",
-        "**Prepared:** 2026-08-10",
+        "**Released:** 2026-08-10",
         "## Highlights",
         "## Security",
         "## Compatibility and migration",
@@ -87,14 +87,15 @@ def test_v028_release_notes_preserve_security_boundaries() -> None:
         assert phrase in notes
 
 
-def test_rfc_marks_release_metadata_ready_but_publication_pending() -> None:
+def test_rfc_is_fully_accepted_for_v0280() -> None:
     rfc = " ".join(_RFC.read_text(encoding="utf-8").split())
-    assert "- Status: Draft" in rfc
+    assert "- Status: Accepted" in rfc
+    assert "- [ ]" not in rfc
     assert "- [x] Release notes and package version 0.28.0" in rfc
-    assert "- [ ] Tag, artifacts, and checksums" in rfc
+    assert "- [x] Tag, artifacts, and checksums" in rfc
     assert "docs/releases/v0.28.0.md" in rfc
     assert "package version is `0.28.0`" in rfc
-    assert "RFC-0028 is accepted for Phoenix OS 0.28.0." not in rfc
+    assert "RFC-0028 is accepted for Phoenix OS 0.28.0." in rfc
 
 
 def test_durable_release_gate_includes_v028_release_metadata() -> None:
@@ -112,3 +113,20 @@ def test_previous_release_notes_remain_available() -> None:
     previous = _PREVIOUS_RELEASE_NOTES.read_text(encoding="utf-8")
     assert "# Phoenix OS 0.27.0" in previous
     assert "RFC-0027" in previous
+
+
+def test_readme_announces_twenty_eight_accepted_specifications() -> None:
+    readme = _README.read_text(encoding="utf-8")
+    assert "Version `0.28.0` implements twenty-eight accepted specifications:" in readme
+    assert "**RFC-0028 — Durable Agent Runs, Checkpoints, and Controlled Resumption:**" in readme
+    assert "[Phoenix OS 0.28.0](docs/releases/v0.28.0.md)" in readme
+
+
+def test_release_records_acceptance_and_publication_names() -> None:
+    changelog = _CHANGELOG.read_text(encoding="utf-8")
+    notes = _RELEASE_NOTES.read_text(encoding="utf-8")
+    assert "Accepted RFC-0028" in changelog
+    assert "Git tag `v0.28.0`" in notes
+    assert "phoenix_os-0.28.0-py3-none-any.whl" in notes
+    assert "phoenix_os-0.28.0.tar.gz" in notes
+    assert "SHA256SUMS" in notes

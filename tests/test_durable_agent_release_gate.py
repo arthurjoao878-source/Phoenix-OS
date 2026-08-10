@@ -179,7 +179,7 @@ def test_rfc_marks_durable_gate_and_offline_install_complete_only() -> None:
     assert "- [x] Durable-agent release gate" in rfc
     assert "- [x] Wheel and sdist isolated offline installation tests" in rfc
     assert "- [x] Release notes and package version 0.28.0" in rfc
-    assert "- [ ] Tag, artifacts, and checksums" in rfc
+    assert "- [x] Tag, artifacts, and checksums" in rfc
     assert "python scripts/check_durable_agent_release.py" in rfc
 
 

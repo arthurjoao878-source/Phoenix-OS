@@ -3,7 +3,7 @@
 ## [0.28.0] - 2026-08-10
 
 ### Added
-- Prepared RFC-0028 durable agent runs, checkpoints, controlled recovery, and the five durable-agent architecture records for release.
+- Accepted RFC-0028 durable agent runs, checkpoints, controlled recovery, and the five durable-agent architecture records.
 - Canonical chained checkpoints, atomic reference stores, fenced leases, deterministic recovery, and bounded workers.
 - Explicit execution-attempt and reconciliation records for indeterminate external work without transparent retry or exactly-once claims.
 - Optional protected payload persistence, bounded retention, cleanup, tombstones, content-free observation, safe administration, and Runtime composition.
@@ -19,7 +19,7 @@
 ### Compatibility
 - Phoenix OS 0.27.0 behavior is preserved when durable-agent configuration is omitted.
 - Ordinary RFC-0027 agent execution and RFC-0026 inference remain independently configurable.
-- Final Git tag, wheel/sdist publication, and SHA256SUMS remain pending the final release-publication step.
+- Release publication uses Git tag `v0.28.0`, wheel and sdist artifacts, and `SHA256SUMS`.
 
 
 ## [0.27.0] - 2026-07-29

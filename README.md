@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.27.0` implements twenty-seven accepted specifications:
+Version `0.28.0` implements twenty-eight accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -73,6 +73,10 @@ Version `0.27.0` implements twenty-seven accepted specifications:
   model/tool orchestration, server-owned strict tool registration, independent
   run/model/tool authorization, exact single-use approvals, untrusted result
   isolation, content-free observability, and Runtime-owned lifecycle.
+- **RFC-0028 — Durable Agent Runs, Checkpoints, and Controlled Resumption:** opt-in
+  restart-resumable agent execution with canonical chained checkpoints, fenced
+  leases, fresh authority on recovery, explicit indeterminate reconciliation,
+  metadata-only persistence by default, bounded retention, and Runtime-owned lifecycle.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
