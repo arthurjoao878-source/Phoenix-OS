@@ -245,6 +245,8 @@ The RFC-0028 durable-agent records cover untrusted chained checkpoints, fenced
 conditional mutation, controlled recovery with explicit indeterminate
 reconciliation, opt-in protected payloads with content-free operations, and
 opt-in Runtime-owned durability with bounded retention and administration.
+The [RFC-0028 durable-agent threat-model and security-invariant review](docs/security/RFC-0028-durable-agent-threat-model-review.md)
+records release evidence, residual risks, and the mapping of all forty-five security invariants.
 
 ## Local dashboard example
 

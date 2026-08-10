@@ -1094,6 +1094,13 @@ The principal durable architecture decisions are recorded in five accepted ADRs:
 - [`ADR-0025`](../adrs/ADR-0025-opt-in-runtime-owned-durable-lifecycle-retention-and-administration.md)
   — durability remains opt-in and Runtime-owned with bounded retention and administration.
 
+The formal threat-model and security-invariant review is recorded in
+[`RFC-0028-durable-agent-threat-model-review.md`](../security/RFC-0028-durable-agent-threat-model-review.md). It maps checkpoint
+corruption, rollback, substitution, stale authority, approval replay, fencing
+races, indeterminate external work, protected-payload disclosure, retention and
+cleanup races, safe operational output, and v0.27.0 compatibility to executable
+regression suites and residual risks.
+
 ## Slice plan
 
 ### Slice 1 - Contracts, codecs, checkpoint store, and deterministic fakes
@@ -1142,7 +1149,7 @@ The principal durable architecture decisions are recorded in five accepted ADRs:
 
 - [x] Migration guidance and rollback procedure
 - [x] Architecture Decision Records
-- [ ] Threat-model and security-invariant review
+- [x] Threat-model and security-invariant review
 - [ ] Durable-agent release gate
 - [ ] Wheel and sdist isolated offline installation tests
 - [ ] Release notes and package version 0.28.0
