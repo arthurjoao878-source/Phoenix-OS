@@ -52,6 +52,9 @@ if TYPE_CHECKING:
         ToolApprovalService,
         ToolResourceResolver,
     )
+    from phoenix_os.agent.durable_cleanup_administration import (
+        DurableCleanupAdministration,
+    )
     from phoenix_os.agent.durable_reconciliation_administration import (
         DurableReconciliationAdministration,
         DurableReconciliationStatusLookup,
@@ -145,6 +148,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "control_plane",
         "control_plane.events",
         "control_plane.commands",
+        "control_plane.durable-cleanup",
         "control_plane.durable-reconciliation",
         "control_plane.durable-reconciliation-http",
         "control_plane.command-journal",
@@ -397,7 +401,7 @@ class _DurableReconciliationAdministrationLifecycle:
         await self.close()
 
     async def close(self) -> None:
-        await _await_durable_reconciliation_close(self._close_owned())
+        await _await_durable_administration_close(self._close_owned())
 
     async def _close_owned(self) -> None:
         failure: BaseException | None = None
@@ -423,7 +427,7 @@ class _DurableReconciliationAdministrationLifecycle:
             raise failure
 
 
-async def _await_durable_reconciliation_close(operation: Awaitable[None]) -> None:
+async def _await_durable_administration_close(operation: Awaitable[None]) -> None:
     task = asyncio.ensure_future(operation)
     cancelled = False
     while True:
@@ -469,12 +473,106 @@ class _DurableReconciliationStorageLifecycle:
         await self.close()
 
     async def close(self) -> None:
-        await _await_durable_reconciliation_close(self._close_owned())
+        await _await_durable_administration_close(self._close_owned())
 
     async def _close_owned(self) -> None:
         failure: BaseException | None = None
         try:
             await self._reconciliation.close()
+        except (Exception, asyncio.CancelledError) as exception:
+            failure = exception
+
+        try:
+            await self._storage.close()
+        except (Exception, asyncio.CancelledError) as exception:
+            if failure is None:
+                failure = exception
+
+        if failure is not None:
+            raise failure
+
+
+class _DurableCleanupAdministrationLifecycle:
+    """Own cleanup confirmation admission above the bounded cleanup coordinator."""
+
+    def __init__(
+        self,
+        *,
+        protection: ControlPlaneDurableAdministrationProtection,
+        coordinator: DurableCleanupAdministration,
+    ) -> None:
+        self._protection = protection
+        self._coordinator = coordinator
+
+    async def start(self, context: RuntimeContext) -> None:
+        if not isinstance(context, RuntimeContext):
+            raise TypeError("context must be RuntimeContext")
+        if self._coordinator.closed:
+            raise RuntimeError("durable cleanup coordinator is closed")
+        if (await self._protection.snapshot()).closed:
+            raise RuntimeError("durable cleanup confirmation protection is closed")
+
+    async def stop(self, context: RuntimeContext) -> None:
+        if not isinstance(context, RuntimeContext):
+            raise TypeError("context must be RuntimeContext")
+        await self.close()
+
+    async def close(self) -> None:
+        await _await_durable_administration_close(self._close_owned())
+
+    async def _close_owned(self) -> None:
+        failure: BaseException | None = None
+        try:
+            await self._protection.close()
+        except (Exception, asyncio.CancelledError) as exception:
+            failure = exception
+
+        try:
+            await self._coordinator.close()
+        except (Exception, asyncio.CancelledError) as exception:
+            if failure is None:
+                failure = exception
+
+        if failure is not None:
+            raise failure
+
+
+class _DurableCleanupStorageLifecycle:
+    """Guarantee cleanup confirmation and coordinator close before durable storage."""
+
+    def __init__(
+        self,
+        *,
+        storage: DurableStorageLifecycle | _DurableReconciliationStorageLifecycle,
+        cleanup: _DurableCleanupAdministrationLifecycle,
+    ) -> None:
+        self._storage = storage
+        self._cleanup = cleanup
+
+    async def start(self, context: RuntimeContext) -> None:
+        if not isinstance(context, RuntimeContext):
+            raise TypeError("context must be RuntimeContext")
+        try:
+            await self._storage.start(context)
+        except (Exception, asyncio.CancelledError):
+            try:
+                await self.close()
+            except (Exception, asyncio.CancelledError):
+                pass
+            raise
+
+    async def stop(self, context: RuntimeContext) -> None:
+        if not isinstance(context, RuntimeContext):
+            raise TypeError("context must be RuntimeContext")
+        await self.close()
+
+    async def close(self) -> None:
+        await _await_durable_administration_close(self._close_owned())
+
+    async def _close_owned(self) -> None:
+        failure: BaseException | None = None
+        try:
+            await self._cleanup.close()
         except (Exception, asyncio.CancelledError) as exception:
             failure = exception
 
@@ -913,6 +1011,10 @@ class RuntimeAssembler:
                 if agent_durable_retention_policy is None:
                     raise ValueError(
                         "enabled durable cleanup administration requires retention policy"
+                    )
+                if control_plane_operator_registry is None and control_plane_operator_token is None:
+                    raise ValueError(
+                        "enabled durable cleanup administration requires durable operator mode"
                     )
         if not isinstance(webhooks_enabled, bool):
             raise TypeError("webhooks enabled flag must be bool")
@@ -1864,6 +1966,8 @@ class RuntimeAssembler:
         durable_agent_stack = None
         durable_reconciliation_lifecycle = None
         durable_reconciliation_storage_lifecycle = None
+        durable_cleanup_lifecycle = None
+        durable_cleanup_storage_lifecycle = None
         try:
             if self._agent_durable_enabled:
                 from phoenix_os.agent import (
@@ -2005,6 +2109,38 @@ class RuntimeAssembler:
                         control_plane_reconciliation_http
                     )
 
+                cleanup_coordinator = durable_agent_stack.cleanup_administration
+                if cleanup_coordinator is not None:
+                    if control_plane_stack is None or control_plane_stack.operator_step_up is None:
+                        raise AssertionError("durable cleanup composition lost operator step-up")
+                    from phoenix_os.control_plane.durable_administration_protection import (
+                        ControlPlaneDurableAdministrationProtection,
+                    )
+                    from phoenix_os.control_plane.durable_cleanup_administration import (
+                        ControlPlaneDurableCleanupAdministration,
+                    )
+
+                    cleanup_protection = ControlPlaneDurableAdministrationProtection(
+                        step_up=control_plane_stack.operator_step_up,
+                    )
+                    control_plane_cleanup = ControlPlaneDurableCleanupAdministration(
+                        coordinator=cleanup_coordinator,
+                        protection=cleanup_protection,
+                    )
+                    durable_cleanup_lifecycle = _DurableCleanupAdministrationLifecycle(
+                        protection=cleanup_protection,
+                        coordinator=cleanup_coordinator,
+                    )
+                    durable_cleanup_storage_lifecycle = _DurableCleanupStorageLifecycle(
+                        storage=(
+                            durable_agent_stack.storage_lifecycle
+                            if durable_reconciliation_storage_lifecycle is None
+                            else durable_reconciliation_storage_lifecycle
+                        ),
+                        cleanup=durable_cleanup_lifecycle,
+                    )
+                    custom_services["control_plane.durable-cleanup"] = control_plane_cleanup
+
                 agent_component_index = next(
                     index for index, component in enumerate(components) if component.name == "agent"
                 )
@@ -2013,9 +2149,13 @@ class RuntimeAssembler:
                     ComponentSpec(
                         "agent.durable.storage",
                         (
-                            durable_agent_stack.storage_lifecycle
-                            if durable_reconciliation_storage_lifecycle is None
-                            else durable_reconciliation_storage_lifecycle
+                            durable_cleanup_storage_lifecycle
+                            if durable_cleanup_storage_lifecycle is not None
+                            else (
+                                durable_agent_stack.storage_lifecycle
+                                if durable_reconciliation_storage_lifecycle is None
+                                else durable_reconciliation_storage_lifecycle
+                            )
                         ),
                     ),
                 )
@@ -2049,6 +2189,20 @@ class RuntimeAssembler:
                         ),
                     )
 
+                if durable_cleanup_lifecycle is not None:
+                    control_plane_http_index = next(
+                        index
+                        for index, component in enumerate(components)
+                        if component.name == "control_plane.http"
+                    )
+                    components.insert(
+                        control_plane_http_index,
+                        ComponentSpec(
+                            "control_plane.durable-cleanup",
+                            durable_cleanup_lifecycle,
+                        ),
+                    )
+
             runtime = PhoenixRuntime(
                 kernel=self._kernel,
                 events=self._events,
@@ -2063,11 +2217,18 @@ class RuntimeAssembler:
             return runtime
         except (Exception, asyncio.CancelledError) as exception:
             rollback_failure: BaseException | None = None
+            if durable_cleanup_lifecycle is not None:
+                try:
+                    await durable_cleanup_lifecycle.close()
+                except (Exception, asyncio.CancelledError) as rollback_exception:
+                    rollback_failure = rollback_exception
+
             if durable_reconciliation_lifecycle is not None:
                 try:
                     await durable_reconciliation_lifecycle.close()
                 except (Exception, asyncio.CancelledError) as rollback_exception:
-                    rollback_failure = rollback_exception
+                    if rollback_failure is None:
+                        rollback_failure = rollback_exception
 
             if durable_agent_stack is not None:
                 try:

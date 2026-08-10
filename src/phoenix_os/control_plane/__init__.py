@@ -92,6 +92,10 @@ from phoenix_os.control_plane.durable_administration_protection import (
     ControlPlaneDurableReconciliationEvidenceBinding,
     ControlPlaneDurableReconciliationIntent,
 )
+from phoenix_os.control_plane.durable_cleanup_administration import (
+    ControlPlaneDurableCleanupAdministration,
+    ControlPlaneDurableCleanupConfirmation,
+)
 from phoenix_os.control_plane.durable_machine_administration import (
     ControlPlaneDurableMachineAdministrationGuard,
 )
@@ -972,7 +976,9 @@ __all__ = [
     "ControlPlaneDurableAdministrationConfirmationVerification",
     "ControlPlaneDurableAdministrationProtection",
     "ControlPlaneDurableAdministrationProtectionSnapshot",
+    "ControlPlaneDurableCleanupAdministration",
     "ControlPlaneDurableCleanupBounds",
+    "ControlPlaneDurableCleanupConfirmation",
     "ControlPlaneDurableCleanupIntent",
     "ControlPlaneDurableCsrfSecret",
     "ControlPlaneDurableMachineAdministrationGuard",
