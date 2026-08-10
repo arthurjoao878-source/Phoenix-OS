@@ -46,7 +46,9 @@ from phoenix_os.policy import PrincipalType, SecurityContext
 
 AGENT_DURABLE_READ_ACTION = "agent.durable.read"
 AGENT_DURABLE_HEALTH_READ_ACTION = "agent.durable.health.read"
+AGENT_DURABLE_CLEANUP_ACTION = "agent.durable.cleanup"
 DURABLE_ADMINISTRATION_HEALTH_RESOURCE = "durable-agent-runs:health"
+DURABLE_ADMINISTRATION_CLEANUP_RESOURCE = "durable-agent-runs:cleanup"
 
 MAX_DURABLE_ADMINISTRATION_AGE_SECONDS = int(MAX_DURABLE_LIFETIME.total_seconds())
 MAX_DURABLE_ADMINISTRATION_COUNT = 2_147_483_647

@@ -1,4 +1,4 @@
-"""Recent-authentication and one-time confirmation for durable reconciliation."""
+"""Recent-authentication and one-time confirmation for durable destructive administration."""
 
 from __future__ import annotations
 
@@ -14,16 +14,28 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from phoenix_os.agent.durable_administration import (
+    AGENT_DURABLE_CLEANUP_ACTION,
+    DURABLE_ADMINISTRATION_CLEANUP_RESOURCE,
+)
 from phoenix_os.agent.durable_authorization import (
     AGENT_RECONCILE_ACTION,
     durable_reconciliation_resource,
 )
 from phoenix_os.agent.durable_contracts import (
+    MAX_METADATA_RETENTION,
+    MAX_PAYLOAD_RETENTION,
+    MAX_TOMBSTONE_RETENTION,
     CheckpointDigest,
     DurableAgentRunId,
     DurableRunVersion,
     ExecutionAttemptId,
     ReconciliationDecision,
+)
+from phoenix_os.agent.durable_retention_worker import (
+    MAX_RETENTION_WORKER_CANDIDATES,
+    MAX_RETENTION_WORKER_PAGE_SIZE,
+    MAX_RETENTION_WORKER_PASS_DURATION,
 )
 from phoenix_os.control_plane.durable_session_access import (
     ControlPlaneDurableSessionAuthentication,
@@ -36,6 +48,7 @@ from phoenix_os.control_plane.errors import (
     ControlPlaneStepUpRejectedError,
 )
 from phoenix_os.control_plane.operator_contracts import (
+    CONTROL_PLANE_DURABLE_CLEANUP_PERMISSION,
     CONTROL_PLANE_DURABLE_RECONCILE_PERMISSION,
 )
 from phoenix_os.control_plane.step_up import ControlPlaneStepUpAction
@@ -54,6 +67,19 @@ _CONFIRM_DECISIONS = frozenset(
         ReconciliationDecision.CONFIRM_NOT_STARTED,
     }
 )
+
+
+def _timedelta_microseconds(value: timedelta) -> int:
+    return value.days * 86_400_000_000 + value.seconds * 1_000_000 + value.microseconds
+
+
+_MAX_RETENTION_WORKER_PASS_MICROSECONDS = _timedelta_microseconds(
+    MAX_RETENTION_WORKER_PASS_DURATION
+)
+_MAX_PAYLOAD_RETENTION_MICROSECONDS = _timedelta_microseconds(MAX_PAYLOAD_RETENTION)
+_MAX_METADATA_RETENTION_MICROSECONDS = _timedelta_microseconds(MAX_METADATA_RETENTION)
+_MAX_TOMBSTONE_RETENTION_MICROSECONDS = _timedelta_microseconds(MAX_TOMBSTONE_RETENTION)
+
 
 type ControlPlaneDurableAdministrationClock = Callable[[], datetime]
 type ControlPlaneDurableAdministrationNonceSource = Callable[[int], bytes]
@@ -88,6 +114,107 @@ class ControlPlaneDurableReconciliationEvidenceBinding:
         _require_aware(self.evidence_observed_at, "evidence_observed_at")
         if self.schema_version != 1:
             raise ValueError("unsupported durable reconciliation evidence binding version")
+
+
+@dataclass(frozen=True, slots=True)
+class ControlPlaneDurableCleanupBounds:
+    """Safe immutable retention policy and pass bounds bound into confirmation."""
+
+    page_size: int
+    max_candidates: int
+    pass_timeout_microseconds: int
+    payload_retention_microseconds: int
+    metadata_retention_microseconds: int
+    tombstone_retention_microseconds: int
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        for label, value, maximum in (
+            ("page_size", self.page_size, MAX_RETENTION_WORKER_PAGE_SIZE),
+            ("max_candidates", self.max_candidates, MAX_RETENTION_WORKER_CANDIDATES),
+            (
+                "pass_timeout_microseconds",
+                self.pass_timeout_microseconds,
+                _MAX_RETENTION_WORKER_PASS_MICROSECONDS,
+            ),
+            (
+                "payload_retention_microseconds",
+                self.payload_retention_microseconds,
+                _MAX_PAYLOAD_RETENTION_MICROSECONDS,
+            ),
+            (
+                "metadata_retention_microseconds",
+                self.metadata_retention_microseconds,
+                _MAX_METADATA_RETENTION_MICROSECONDS,
+            ),
+            (
+                "tombstone_retention_microseconds",
+                self.tombstone_retention_microseconds,
+                _MAX_TOMBSTONE_RETENTION_MICROSECONDS,
+            ),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{label} must be an integer")
+            if value <= 0:
+                raise ValueError(f"{label} must be positive")
+            if value > maximum:
+                raise ValueError(f"{label} exceeds the global maximum")
+        if self.payload_retention_microseconds > self.metadata_retention_microseconds:
+            raise ValueError("payload retention cannot exceed metadata retention")
+        if self.metadata_retention_microseconds > self.tombstone_retention_microseconds:
+            raise ValueError("metadata retention cannot exceed tombstone retention")
+        if self.schema_version != 1:
+            raise ValueError("unsupported durable cleanup bounds version")
+
+
+@dataclass(frozen=True, slots=True)
+class ControlPlaneDurableCleanupIntent:
+    """Content-free exact operator intent for one bounded retention cleanup pass."""
+
+    bounds: ControlPlaneDurableCleanupBounds
+    requested_at: datetime
+    id: UUID = field(default_factory=uuid4)
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.bounds, ControlPlaneDurableCleanupBounds):
+            raise TypeError("bounds must be ControlPlaneDurableCleanupBounds")
+        if not isinstance(self.id, UUID):
+            raise TypeError("durable cleanup intent id must be UUID")
+        _require_aware(self.requested_at, "requested_at")
+        if self.schema_version != 1:
+            raise ValueError("unsupported durable cleanup intent version")
+
+    @property
+    def action(self) -> str:
+        return AGENT_DURABLE_CLEANUP_ACTION
+
+    @property
+    def resource(self) -> str:
+        return DURABLE_ADMINISTRATION_CLEANUP_RESOURCE
+
+    @property
+    def fingerprint(self) -> str:
+        document = {
+            "action": self.action,
+            "bounds_schema_version": self.bounds.schema_version,
+            "max_candidates": self.bounds.max_candidates,
+            "metadata_retention_microseconds": self.bounds.metadata_retention_microseconds,
+            "page_size": self.bounds.page_size,
+            "pass_timeout_microseconds": self.bounds.pass_timeout_microseconds,
+            "payload_retention_microseconds": self.bounds.payload_retention_microseconds,
+            "requested_at": self.requested_at.isoformat(),
+            "resource": self.resource,
+            "schema_version": self.schema_version,
+            "tombstone_retention_microseconds": self.bounds.tombstone_retention_microseconds,
+        }
+        encoded = json.dumps(
+            document,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +297,19 @@ class ControlPlaneDurableReconciliationIntent:
         return hashlib.sha256(encoded).hexdigest()
 
 
+type ControlPlaneDurableAdministrationIntent = (
+    ControlPlaneDurableCleanupIntent | ControlPlaneDurableReconciliationIntent
+)
+
+
+_SUPPORTED_DURABLE_ADMINISTRATION_ACTIONS = frozenset(
+    {
+        AGENT_DURABLE_CLEANUP_ACTION,
+        AGENT_RECONCILE_ACTION,
+    }
+)
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class ControlPlaneDurableAdministrationConfirmationProof:
     """Opaque one-time confirmation secret that is always redacted."""
@@ -209,7 +349,7 @@ class ControlPlaneDurableAdministrationConfirmationChallenge:
     def __post_init__(self) -> None:
         if not isinstance(self.intent_id, UUID):
             raise TypeError("intent_id must be UUID")
-        if self.action != AGENT_RECONCILE_ACTION:
+        if self.action not in _SUPPORTED_DURABLE_ADMINISTRATION_ACTIONS:
             raise ValueError("unsupported durable administration action")
         if not isinstance(self.resource, str) or not self.resource:
             raise ValueError("durable administration resource must not be blank")
@@ -244,7 +384,7 @@ class ControlPlaneDurableAdministrationConfirmationVerification:
     def __post_init__(self) -> None:
         if not isinstance(self.intent_id, UUID):
             raise TypeError("intent_id must be UUID")
-        if self.action != AGENT_RECONCILE_ACTION:
+        if self.action not in _SUPPORTED_DURABLE_ADMINISTRATION_ACTIONS:
             raise ValueError("unsupported durable administration action")
         if not isinstance(self.resource, str) or not self.resource:
             raise ValueError("durable administration resource must not be blank")
@@ -355,7 +495,7 @@ class ControlPlaneDurableAdministrationProtection:
     async def issue_confirmation(
         self,
         authentication: ControlPlaneDurableSessionAuthentication,
-        intent: ControlPlaneDurableReconciliationIntent,
+        intent: ControlPlaneDurableAdministrationIntent,
         *,
         step_up_token: str | None,
     ) -> ControlPlaneDurableAdministrationConfirmationChallenge:
@@ -363,13 +503,13 @@ class ControlPlaneDurableAdministrationProtection:
 
         self._require_authentication(authentication)
         self._require_intent(intent)
-        self._require_permission(authentication)
+        self._require_permission(authentication, intent)
 
         try:
             await self._step_up.verify(
                 step_up_token,
                 authentication,
-                ControlPlaneStepUpAction.RECONCILE_DURABLE_RUN,
+                self._step_up_action(intent),
             )
             now = self._now()
             raw = self._nonce_source(32)
@@ -411,7 +551,7 @@ class ControlPlaneDurableAdministrationProtection:
     async def verify_and_consume(
         self,
         authentication: ControlPlaneDurableSessionAuthentication,
-        intent: ControlPlaneDurableReconciliationIntent,
+        intent: ControlPlaneDurableAdministrationIntent,
         *,
         step_up_token: str | None,
         confirmation: ControlPlaneDurableAdministrationConfirmationProof,
@@ -420,7 +560,7 @@ class ControlPlaneDurableAdministrationProtection:
 
         self._require_authentication(authentication)
         self._require_intent(intent)
-        self._require_permission(authentication)
+        self._require_permission(authentication, intent)
         if not isinstance(
             confirmation,
             ControlPlaneDurableAdministrationConfirmationProof,
@@ -433,7 +573,7 @@ class ControlPlaneDurableAdministrationProtection:
             await self._step_up.verify(
                 step_up_token,
                 authentication,
-                ControlPlaneStepUpAction.RECONCILE_DURABLE_RUN,
+                self._step_up_action(intent),
             )
             now = self._now()
             expected_binding = _binding_digest(authentication, intent)
@@ -507,18 +647,37 @@ class ControlPlaneDurableAdministrationProtection:
             )
 
     @staticmethod
-    def _require_intent(intent: ControlPlaneDurableReconciliationIntent) -> None:
-        if not isinstance(intent, ControlPlaneDurableReconciliationIntent):
-            raise TypeError("durable administration protection requires reconciliation intent")
+    def _require_intent(intent: ControlPlaneDurableAdministrationIntent) -> None:
+        if not isinstance(
+            intent,
+            (ControlPlaneDurableCleanupIntent, ControlPlaneDurableReconciliationIntent),
+        ):
+            raise TypeError("durable administration protection requires a supported intent")
+        if intent.action not in _SUPPORTED_DURABLE_ADMINISTRATION_ACTIONS:
+            raise TypeError("durable administration protection requires a supported intent")
 
     @staticmethod
     def _require_permission(
         authentication: ControlPlaneDurableSessionAuthentication,
+        intent: ControlPlaneDurableAdministrationIntent,
     ) -> None:
-        if CONTROL_PLANE_DURABLE_RECONCILE_PERMISSION not in authentication.principal.permissions:
+        permission = (
+            CONTROL_PLANE_DURABLE_CLEANUP_PERMISSION
+            if isinstance(intent, ControlPlaneDurableCleanupIntent)
+            else CONTROL_PLANE_DURABLE_RECONCILE_PERMISSION
+        )
+        if permission not in authentication.principal.permissions:
             raise ControlPlaneCommandPermissionDeniedError(
                 "durable administration permission denied"
             )
+
+    @staticmethod
+    def _step_up_action(
+        intent: ControlPlaneDurableAdministrationIntent,
+    ) -> ControlPlaneStepUpAction:
+        if isinstance(intent, ControlPlaneDurableCleanupIntent):
+            return ControlPlaneStepUpAction.CLEANUP_DURABLE_RUNS
+        return ControlPlaneStepUpAction.RECONCILE_DURABLE_RUN
 
     def _now(self) -> datetime:
         value = self._clock()
@@ -549,7 +708,7 @@ class ControlPlaneDurableAdministrationProtection:
 
 def _binding_digest(
     authentication: ControlPlaneDurableSessionAuthentication,
-    intent: ControlPlaneDurableReconciliationIntent,
+    intent: ControlPlaneDurableAdministrationIntent,
 ) -> bytes:
     document = {
         "action": intent.action,
