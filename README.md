@@ -214,6 +214,15 @@ Existing v0.26.0 behavior remains unchanged when agent configuration is omitted.
 The [RFC-0027 threat-model and security-invariant review](docs/security/RFC-0027-agent-threat-model-review.md)
 records the release evidence and residual risks.
 
+The planned opt-in v0.28.0 durable-agent subsystem has staged storage, codec,
+metadata-only canary, fencing, recovery, protected-payload, retention, cleanup,
+administration, and disable-first rollback guidance:
+
+- [Migrate v0.27.0 deployments to v0.28.0 durable agent runs](docs/migrations/v0.27.0-to-v0.28.0-durable-agent.md)
+
+Existing v0.27.0 behavior remains unchanged when durable-agent configuration is
+omitted.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in

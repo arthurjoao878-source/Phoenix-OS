@@ -1078,6 +1078,9 @@ Rollback documentation must distinguish:
 - explicitly cancelling or failing retained runs;
 - deleting protected payloads under confirmed retention procedures.
 
+The staged upgrade and disable-first rollback procedure is recorded in
+[`v0.27.0-to-v0.28.0-durable-agent.md`](../migrations/v0.27.0-to-v0.28.0-durable-agent.md).
+
 ## Slice plan
 
 ### Slice 1 - Contracts, codecs, checkpoint store, and deterministic fakes
@@ -1124,7 +1127,7 @@ Rollback documentation must distinguish:
 
 ### Slice 5 - Migration, architecture decisions, and v0.28.0
 
-- [ ] Migration guidance and rollback procedure
+- [x] Migration guidance and rollback procedure
 - [ ] Architecture Decision Records
 - [ ] Threat-model and security-invariant review
 - [ ] Durable-agent release gate
