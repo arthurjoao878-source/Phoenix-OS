@@ -64,6 +64,9 @@ from phoenix_os.control_plane import (
     ControlPlaneDurableReconciliationAdministration,
     ControlPlaneOperatorToken,
 )
+from phoenix_os.control_plane.durable_cleanup_http import (
+    ControlPlaneDurableCleanupHttpAdapter,
+)
 from phoenix_os.control_plane.durable_reconciliation_http import (
     ControlPlaneDurableReconciliationHttpAdapter,
 )
@@ -1286,15 +1289,21 @@ async def test_runtime_assembler_composes_opt_in_durable_cleanup_administration(
     stack = runtime.service("agent.durable")
     cleanup = runtime.service("agent.durable.cleanup-administration")
     control_plane_cleanup = runtime.service("control_plane.durable-cleanup")
+    cleanup_http = runtime.service("control_plane.durable-cleanup-http")
     worker = runtime.service("agent.durable.retention-worker")
+    http = runtime.service("control_plane.http")
 
     assert isinstance(stack, DurableAgentRuntimeStack)
     assert isinstance(cleanup, DurableCleanupAdministration)
     assert isinstance(control_plane_cleanup, ControlPlaneDurableCleanupAdministration)
+    assert isinstance(cleanup_http, ControlPlaneDurableCleanupHttpAdapter)
     assert isinstance(worker, BoundedDurableRetentionWorker)
+    assert isinstance(http, ControlPlaneHttpServer)
     assert cleanup is stack.cleanup_administration
     assert worker is stack.retention_worker
-    assert "control_plane.durable-cleanup-http" not in runtime.services
+    assert http.durable_cleanup_http is cleanup_http
+    assert http.durable_reconciliation_http is None
+    assert cleanup_http.administration is control_plane_cleanup
     assert not cleanup.closed
 
     components = (await runtime.snapshot()).components
@@ -1313,8 +1322,76 @@ async def test_runtime_assembler_composes_opt_in_durable_cleanup_administration(
     assert not cleanup.closed
 
     await runtime.stop()
+    assert cleanup_http.closed
     assert cleanup.closed
     assert worker.state is DurableRetentionWorkerState.CLOSED
+    assert store.closed
+    assert store.lease_manager.closed
+
+
+@pytest.mark.asyncio
+async def test_cleanup_http_bind_failure_rolls_back_confirmation_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    def fail_bind(
+        self: ControlPlaneHttpServer,
+        administration: ControlPlaneDurableCleanupAdministration,
+    ) -> ControlPlaneDurableCleanupHttpAdapter:
+        del self, administration
+        raise RuntimeError("private durable cleanup HTTP binding detail")
+
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+    monkeypatch.setattr(
+        ControlPlaneHttpServer,
+        "bind_durable_cleanup_http",
+        fail_bind,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="private durable cleanup HTTP binding detail",
+    ):
+        await RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            policy=PolicyEngine(),
+            audit=audit,
+            agent_enabled=True,
+            agent_configuration=_agent_configuration(),
+            agent_model_adapter=_model_adapter(),
+            agent_durable_enabled=True,
+            agent_durable_store=store,
+            agent_durable_lease_manager=store.lease_manager,
+            agent_durable_compatibility_validator=_compatibility(),
+            agent_durable_retention_policy=RetentionPolicy(),
+            agent_durable_cleanup_administration_enabled=True,
+            control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+        ).assemble()
+
+    assert close_calls == 1
     assert store.closed
     assert store.lease_manager.closed
 
@@ -1365,7 +1442,9 @@ async def test_cleanup_storage_start_failure_rolls_back_control_plane_owner(
         control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
     ).assemble()
     cleanup = runtime.service("agent.durable.cleanup-administration")
+    cleanup_http = runtime.service("control_plane.durable-cleanup-http")
     assert isinstance(cleanup, DurableCleanupAdministration)
+    assert isinstance(cleanup_http, ControlPlaneDurableCleanupHttpAdapter)
 
     await store.close()
 
@@ -1375,6 +1454,7 @@ async def test_cleanup_storage_start_failure_rolls_back_control_plane_owner(
     assert captured.value.failure.component == "agent.durable.storage"
     assert captured.value.failure.phase is RuntimePhase.START
     assert close_calls >= 1
+    assert cleanup_http.closed
     assert cleanup.closed
     assert store.closed
     assert store.lease_manager.closed
@@ -1613,6 +1693,7 @@ async def test_runtime_assembler_composes_and_orders_durable_reconciliation() ->
         ControlPlaneDurableReconciliationHttpAdapter,
     )
     assert http.durable_reconciliation_http is reconciliation_http
+    assert http.durable_cleanup_http is None
     assert reconciliation_http.administration is administration
 
     components = (await runtime.snapshot()).components
@@ -1631,6 +1712,60 @@ async def test_runtime_assembler_composes_and_orders_durable_reconciliation() ->
     assert coordinator.closed
     assert store.closed
     assert lease_manager.closed
+    assert audit.closed
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_composes_cleanup_and_reconciliation_http_together() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=store.lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_reconciliation_administration_enabled=True,
+        agent_durable_retention_policy=RetentionPolicy(),
+        agent_durable_cleanup_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+
+    http = runtime.service("control_plane.http")
+    cleanup_http = runtime.service("control_plane.durable-cleanup-http")
+    reconciliation_http = runtime.service("control_plane.durable-reconciliation-http")
+
+    assert isinstance(http, ControlPlaneHttpServer)
+    assert isinstance(cleanup_http, ControlPlaneDurableCleanupHttpAdapter)
+    assert isinstance(reconciliation_http, ControlPlaneDurableReconciliationHttpAdapter)
+    assert http.durable_cleanup_http is cleanup_http
+    assert http.durable_reconciliation_http is reconciliation_http
+
+    components = (await runtime.snapshot()).components
+    assert components.index("control_plane.durable-reconciliation") < components.index(
+        "control_plane.durable-cleanup"
+    )
+    assert components.index("control_plane.durable-cleanup") < components.index(
+        "control_plane.http"
+    )
+
+    await runtime.start()
+    await runtime.stop()
+
+    assert cleanup_http.closed
+    assert reconciliation_http.closed
+    assert store.closed
+    assert store.lease_manager.closed
     assert audit.closed
 
 

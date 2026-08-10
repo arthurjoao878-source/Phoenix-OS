@@ -149,6 +149,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "control_plane.events",
         "control_plane.commands",
         "control_plane.durable-cleanup",
+        "control_plane.durable-cleanup-http",
         "control_plane.durable-reconciliation",
         "control_plane.durable-reconciliation-http",
         "control_plane.command-journal",
@@ -503,10 +504,22 @@ class _DurableCleanupAdministrationLifecycle:
     ) -> None:
         self._protection = protection
         self._coordinator = coordinator
+        self._http_close: Callable[[], Awaitable[None]] | None = None
+
+    def bind_http_close(self, close: Callable[[], Awaitable[None]]) -> None:
+        """Bind server-owned HTTP pending-confirmation cleanup exactly once."""
+
+        if not callable(close):
+            raise TypeError("durable cleanup HTTP close must be callable")
+        if self._http_close is not None:
+            raise RuntimeError("durable cleanup HTTP close is already bound")
+        self._http_close = close
 
     async def start(self, context: RuntimeContext) -> None:
         if not isinstance(context, RuntimeContext):
             raise TypeError("context must be RuntimeContext")
+        if self._http_close is None:
+            raise RuntimeError("durable cleanup HTTP cleanup is not bound")
         if self._coordinator.closed:
             raise RuntimeError("durable cleanup coordinator is closed")
         if (await self._protection.snapshot()).closed:
@@ -522,10 +535,17 @@ class _DurableCleanupAdministrationLifecycle:
 
     async def _close_owned(self) -> None:
         failure: BaseException | None = None
+        if self._http_close is not None:
+            try:
+                await self._http_close()
+            except (Exception, asyncio.CancelledError) as exception:
+                failure = exception
+
         try:
             await self._protection.close()
         except (Exception, asyncio.CancelledError) as exception:
-            failure = exception
+            if failure is None:
+                failure = exception
 
         try:
             await self._coordinator.close()
@@ -2131,6 +2151,10 @@ class RuntimeAssembler:
                         protection=cleanup_protection,
                         coordinator=cleanup_coordinator,
                     )
+                    control_plane_cleanup_http = control_plane_stack.http.bind_durable_cleanup_http(
+                        control_plane_cleanup
+                    )
+                    durable_cleanup_lifecycle.bind_http_close(control_plane_cleanup_http.close)
                     durable_cleanup_storage_lifecycle = _DurableCleanupStorageLifecycle(
                         storage=(
                             durable_agent_stack.storage_lifecycle
@@ -2140,6 +2164,9 @@ class RuntimeAssembler:
                         cleanup=durable_cleanup_lifecycle,
                     )
                     custom_services["control_plane.durable-cleanup"] = control_plane_cleanup
+                    custom_services["control_plane.durable-cleanup-http"] = (
+                        control_plane_cleanup_http
+                    )
 
                 agent_component_index = next(
                     index for index, component in enumerate(components) if component.name == "agent"
