@@ -167,6 +167,28 @@ and installs both wheels in isolated offline environments before exercising a
 packaged deterministic final run and strict tool cycle without source-tree
 imports.
 
+
+## Durable-agent release gate
+
+RFC-0028 adds a named release gate for restart-resumable durable agent execution:
+
+```bash
+python scripts/check_durable_agent_release.py
+```
+
+The gate reruns the durable-agent regression and security suites; validates the
+migration guide, ADRs, threat review, RFC, package metadata, and every shipped
+`durable_*.py` module; rejects unsafe archive paths and sensitive file types;
+rebuilds a wheel from the validated sdist; and installs both wheel forms with
+`--no-deps --no-index` in isolated offline environments.
+
+The packaged smoke runs with isolated Python mode, without source-tree imports,
+and exercises canonical metadata-only checkpoints, a chained append, stale
+lease/fencing rejection, and the exact `agent.resume` and `agent.reconcile`
+action/resource surface. The gate derives the package version from
+`pyproject.toml`, so the implementation slices can remain on v0.27.0 until the
+final v0.28.0 release slice.
+
 ## Release notes
 
 - [Phoenix OS 0.27.0](docs/releases/v0.27.0.md)

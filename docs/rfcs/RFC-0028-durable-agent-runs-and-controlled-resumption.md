@@ -1101,6 +1101,30 @@ races, indeterminate external work, protected-payload disclosure, retention and
 cleanup races, safe operational output, and v0.27.0 compatibility to executable
 regression suites and residual risks.
 
+## Durable-agent release validation
+
+The RFC-0028 release candidate must pass the named durable-agent package gate:
+
+```text
+python scripts/check_durable_agent_release.py
+```
+
+The gate discovers the complete `test_agent_durable_*.py` regression surface
+and the RFC-0028 migration, ADR, security-review, and release-gate suites. It
+builds and inspects wheel and sdist artifacts, rejects unsafe archive paths and
+sensitive file types, verifies that every `durable_*.py` module is shipped,
+rebuilds a wheel from the validated sdist, and installs both wheel forms with
+`--no-deps --no-index` in isolated offline environments.
+
+Packaged smoke execution runs with isolated Python mode and no source-tree
+imports. It validates canonical metadata-only checkpoint encoding, chained
+durable-store mutation, stale-worker rejection after fencing generation changes,
+and the exact `agent.resume` and `agent.reconcile` action/resource names.
+
+The gate reads the current package version from `pyproject.toml`. Per the
+compatibility rule above, implementation slices remain on v0.27.0 and the
+package changes to v0.28.0 only in the final release slice.
+
 ## Slice plan
 
 ### Slice 1 - Contracts, codecs, checkpoint store, and deterministic fakes
@@ -1150,8 +1174,8 @@ regression suites and residual risks.
 - [x] Migration guidance and rollback procedure
 - [x] Architecture Decision Records
 - [x] Threat-model and security-invariant review
-- [ ] Durable-agent release gate
-- [ ] Wheel and sdist isolated offline installation tests
+- [x] Durable-agent release gate
+- [x] Wheel and sdist isolated offline installation tests
 - [ ] Release notes and package version 0.28.0
 - [ ] Tag, artifacts, and checksums
 

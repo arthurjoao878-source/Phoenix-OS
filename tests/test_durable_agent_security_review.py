@@ -120,7 +120,6 @@ def test_durable_security_review_records_residual_risks() -> None:
 def test_rfc_0028_marks_security_review_complete() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
     assert "- [x] Threat-model and security-invariant review" in rfc
-    assert "- [ ] Durable-agent release gate" in rfc
 
 
 def test_durable_security_review_contains_no_unsafe_advice() -> None:
