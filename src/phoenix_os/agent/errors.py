@@ -22,6 +22,10 @@ class AgentErrorCode(StrEnum):
     STATE_CONFLICT = "state_conflict"
     ADMINISTRATION_DENIED = "administration_denied"
     ADMINISTRATION_CONFLICT = "administration_conflict"
+    COORDINATION_REJECTED = "coordination_rejected"
+    COORDINATION_REGISTRY_CLOSED = "coordination_registry_closed"
+    DELEGABLE_AGENT_ALREADY_REGISTERED = "delegable_agent_already_registered"
+    DELEGABLE_AGENT_NOT_FOUND = "delegable_agent_not_found"
 
 
 class AgentError(Exception):
@@ -140,3 +144,31 @@ class AgentAdministrationConflictError(AgentError):
 
     def __init__(self) -> None:
         super().__init__("agent administration revision conflict")
+
+
+class AgentCoordinationError(AgentError):
+    code = AgentErrorCode.COORDINATION_REJECTED
+
+    def __init__(self, message: str = "agent coordination failed") -> None:
+        super().__init__(message)
+
+
+class AgentDelegationRegistryClosedError(AgentCoordinationError):
+    code = AgentErrorCode.COORDINATION_REGISTRY_CLOSED
+
+    def __init__(self) -> None:
+        super().__init__("agent delegation registry is closed")
+
+
+class DelegableAgentAlreadyRegisteredError(AgentCoordinationError):
+    code = AgentErrorCode.DELEGABLE_AGENT_ALREADY_REGISTERED
+
+    def __init__(self) -> None:
+        super().__init__("delegable agent is already registered")
+
+
+class DelegableAgentNotFoundError(AgentCoordinationError):
+    code = AgentErrorCode.DELEGABLE_AGENT_NOT_FOUND
+
+    def __init__(self) -> None:
+        super().__init__("delegable agent was not found")

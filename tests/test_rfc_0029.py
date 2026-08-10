@@ -27,6 +27,7 @@ def test_delegation_creates_work_never_authority() -> None:
 def test_exact_authorization_is_separate() -> None:
     text = _text()
     assert "`agent.delegate`" in text
+    assert "agent-delegation:<namespace>/parent:<parent-agent-id>/child:<child-agent-id>" in text
     assert "Every delegation requires a fresh exact `agent.delegate` authorization." in text
     assert "Delegation authorization is separate from `agent.run`, `model.infer`" in text
 
@@ -68,5 +69,10 @@ def test_slice_plan_starts_pending() -> None:
     assert "- [x] Add RFC structure and regression tests" in text
     assert "- [x] Establish exact action/resource naming" in text
     assert "- [x] Confirm compatibility-by-omission contract" in text
-    assert "- [ ] Immutable delegation contracts" in text
+    assert "- [x] Immutable delegation contracts" in text
+    assert "- [x] Bounded identifiers, statuses, lineage, limits, and budgets" in text
+    assert "- [x] Server-owned child-agent registry" in text
+    assert "- [x] Exact `agent.delegate` authorization boundary" in text
+    assert "- [x] Deterministic contract and authorization tests" in text
+    assert "- [ ] Delegation coordinator" in text
     assert "- [ ] Tag, artifacts, and checksums" in text

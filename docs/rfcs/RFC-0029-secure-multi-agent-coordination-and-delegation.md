@@ -154,11 +154,16 @@ executable objects.
 
 ## Authorization boundary
 
-The exact initial action is:
+The exact initial action and policy resource shape are:
 
 ```text
 agent.delegate
+agent-delegation:<namespace>/parent:<parent-agent-id>/child:<child-agent-id>
 ```
+
+The policy resource is derived only from the server-owned coordination namespace
+and trusted parent/child `AgentId` values. It contains no model text, child input,
+credential, approval, endpoint, provider body, or other caller-controlled content.
 
 A successful decision permits only admission of the specified child delegation.
 It does not imply model, tool, approval, credential, resume, reconciliation, or
@@ -218,11 +223,11 @@ queue, or worker is created, and RFC-0027/RFC-0028 behavior remains unchanged.
 
 ### Slice 1 - Contracts, registry, and authorization
 
-- [ ] Immutable delegation contracts
-- [ ] Bounded identifiers, statuses, lineage, limits, and budgets
-- [ ] Server-owned child-agent registry
-- [ ] Exact `agent.delegate` authorization boundary
-- [ ] Deterministic contract and authorization tests
+- [x] Immutable delegation contracts
+- [x] Bounded identifiers, statuses, lineage, limits, and budgets
+- [x] Server-owned child-agent registry
+- [x] Exact `agent.delegate` authorization boundary
+- [x] Deterministic contract and authorization tests
 
 ### Slice 2 - Coordinator and bounded lifecycle
 
