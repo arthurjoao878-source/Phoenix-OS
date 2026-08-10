@@ -251,6 +251,19 @@ class ControlPlaneDurableReconciliationAdministration:
             await self._discard_without_masking(confirmation.preparation.id)
             raise
 
+    async def discard_confirmation(
+        self,
+        confirmation: ControlPlaneDurableReconciliationConfirmation,
+    ) -> None:
+        """Discard one server-owned unused confirmation reservation."""
+
+        if not isinstance(
+            confirmation,
+            ControlPlaneDurableReconciliationConfirmation,
+        ):
+            raise TypeError("confirmation must be ControlPlaneDurableReconciliationConfirmation")
+        await self._discard_without_masking(confirmation.preparation.id)
+
     async def _discard_without_masking(self, preparation_id: UUID) -> None:
         try:
             await _await_drain(self._coordinator.discard(preparation_id))

@@ -29,6 +29,12 @@ from phoenix_os.control_plane.csrf import ControlPlaneBrowserOrigin
 from phoenix_os.control_plane.durable_operator_http import (
     ControlPlaneDurableOperatorHttpAdapter,
 )
+from phoenix_os.control_plane.durable_reconciliation_administration import (
+    ControlPlaneDurableReconciliationAdministration,
+)
+from phoenix_os.control_plane.durable_reconciliation_http import (
+    ControlPlaneDurableReconciliationHttpAdapter,
+)
 from phoenix_os.control_plane.durable_session_access import (
     ControlPlaneDurableSessionAuthentication,
 )
@@ -228,6 +234,9 @@ class ControlPlaneHttpServer:
         self._operator_http = operator_http
         self._durable_session_http = durable_session_http
         self._durable_operator_http = durable_operator_http
+        self._durable_reconciliation_http: ControlPlaneDurableReconciliationHttpAdapter | None = (
+            None
+        )
         self._service_account_http = service_account_http
         self._inference_http = inference_http
         self._webhook_http = webhook_http
@@ -256,6 +265,41 @@ class ControlPlaneHttpServer:
     @property
     def state(self) -> ControlPlaneHttpState:
         return self._state
+
+    @property
+    def durable_reconciliation_http(
+        self,
+    ) -> ControlPlaneDurableReconciliationHttpAdapter | None:
+        """Return the optional human durable-reconciliation boundary."""
+
+        return self._durable_reconciliation_http
+
+    def bind_durable_reconciliation_http(
+        self,
+        administration: ControlPlaneDurableReconciliationAdministration,
+    ) -> ControlPlaneDurableReconciliationHttpAdapter:
+        """Bind human durable reconciliation exactly once before socket startup."""
+
+        if not isinstance(
+            administration,
+            ControlPlaneDurableReconciliationAdministration,
+        ):
+            raise TypeError("durable reconciliation HTTP requires reconciliation administration")
+        if self._state is not ControlPlaneHttpState.CREATED:
+            raise ControlPlaneServerStateError(
+                "durable reconciliation HTTP must be bound before server startup"
+            )
+        if self._durable_session_http is None:
+            raise ValueError("durable reconciliation HTTP requires durable session authentication")
+        if self._durable_reconciliation_http is not None:
+            raise ControlPlaneServerStateError("durable reconciliation HTTP is already bound")
+
+        adapter = ControlPlaneDurableReconciliationHttpAdapter(
+            administration=administration,
+            boundary=self._durable_session_http,
+        )
+        self._durable_reconciliation_http = adapter
+        return adapter
 
     @property
     def host(self) -> str:
@@ -597,6 +641,20 @@ class ControlPlaneHttpServer:
             and self._durable_operator_http.handles(request.path)
         ):
             return await self._durable_operator_http.dispatch(
+                authentication=durable_authentication,
+                method=request.method,
+                path=request.path,
+                query=request.query,
+                headers=request.headers,
+                body=request.body,
+                server_origin=server_origin,
+            )
+        if (
+            durable_authentication is not None
+            and self._durable_reconciliation_http is not None
+            and self._durable_reconciliation_http.handles(request.path)
+        ):
+            return await self._durable_reconciliation_http.dispatch(
                 authentication=durable_authentication,
                 method=request.method,
                 path=request.path,

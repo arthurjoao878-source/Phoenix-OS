@@ -62,6 +62,10 @@ from phoenix_os.control_plane import (
     ControlPlaneDurableReconciliationAdministration,
     ControlPlaneOperatorToken,
 )
+from phoenix_os.control_plane.durable_reconciliation_http import (
+    ControlPlaneDurableReconciliationHttpAdapter,
+)
+from phoenix_os.control_plane.http import ControlPlaneHttpServer
 from phoenix_os.inference import ModelId, ModelProviderId
 from phoenix_os.policy import PolicyEngine, PrincipalType, SecurityContext
 from phoenix_os.runtime import RuntimeContext
@@ -1127,6 +1131,10 @@ async def test_runtime_assembler_durable_reconciliation_is_explicit_opt_in() -> 
     assert stack.reconciliation_administration is None
     assert "agent.durable.reconciliation-administration" not in runtime.services
     assert "control_plane.durable-reconciliation" not in runtime.services
+    assert "control_plane.durable-reconciliation-http" not in runtime.services
+    http = runtime.service("control_plane.http")
+    assert isinstance(http, ControlPlaneHttpServer)
+    assert http.durable_reconciliation_http is None
     assert "control_plane.durable-reconciliation" not in (await runtime.snapshot()).components
 
     await runtime.start()
@@ -1215,12 +1223,21 @@ async def test_runtime_assembler_composes_and_orders_durable_reconciliation() ->
     assert isinstance(stack, DurableAgentRuntimeStack)
     coordinator = runtime.service("agent.durable.reconciliation-administration")
     administration = runtime.service("control_plane.durable-reconciliation")
+    reconciliation_http = runtime.service("control_plane.durable-reconciliation-http")
+    http = runtime.service("control_plane.http")
+    assert isinstance(http, ControlPlaneHttpServer)
     assert isinstance(coordinator, DurableReconciliationAdministration)
     assert coordinator is stack.reconciliation_administration
     assert isinstance(
         administration,
         ControlPlaneDurableReconciliationAdministration,
     )
+    assert isinstance(
+        reconciliation_http,
+        ControlPlaneDurableReconciliationHttpAdapter,
+    )
+    assert http.durable_reconciliation_http is reconciliation_http
+    assert reconciliation_http.administration is administration
 
     components = (await runtime.snapshot()).components
     assert "control_plane.durable-reconciliation" in components
@@ -1234,6 +1251,7 @@ async def test_runtime_assembler_composes_and_orders_durable_reconciliation() ->
     await runtime.start()
     await runtime.stop()
 
+    assert reconciliation_http.closed
     assert coordinator.closed
     assert store.closed
     assert lease_manager.closed
@@ -1276,6 +1294,73 @@ async def test_runtime_assembler_reconciliation_rollback_closes_confirmation_own
     with pytest.raises(
         RuntimeError,
         match="private reconciliation runtime construction detail",
+    ):
+        await RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            policy=PolicyEngine(),
+            audit=audit,
+            agent_enabled=True,
+            agent_configuration=_agent_configuration(),
+            agent_model_adapter=_model_adapter(),
+            agent_durable_enabled=True,
+            agent_durable_store=store,
+            agent_durable_lease_manager=lease_manager,
+            agent_durable_compatibility_validator=_compatibility(),
+            agent_durable_reconciliation_administration_enabled=True,
+            control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+        ).assemble()
+
+    assert close_calls == 1
+    assert store.closed
+    assert lease_manager.closed
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_http_bind_failure_rolls_back_confirmation_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    def fail_bind(
+        self: ControlPlaneHttpServer,
+        administration: ControlPlaneDurableReconciliationAdministration,
+    ) -> ControlPlaneDurableReconciliationHttpAdapter:
+        del self, administration
+        raise RuntimeError("private durable reconciliation HTTP binding detail")
+
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+    monkeypatch.setattr(
+        ControlPlaneHttpServer,
+        "bind_durable_reconciliation_http",
+        fail_bind,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="private durable reconciliation HTTP binding detail",
     ):
         await RuntimeAssembler(
             kernel=kernel,
