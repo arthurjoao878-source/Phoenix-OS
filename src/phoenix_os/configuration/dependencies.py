@@ -122,6 +122,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "agent.runtime",
         "agent.durable",
         "agent.durable.administration",
+        "agent.durable.cleanup-administration",
         "agent.durable.compatibility",
         "agent.durable.leases",
         "agent.durable.observer",
@@ -537,6 +538,7 @@ class RuntimeAssembler:
             DurableMachineAdministrationGuard | None
         ) = None,
         agent_durable_reconciliation_administration_enabled: bool = False,
+        agent_durable_cleanup_administration_enabled: bool = False,
         agent_durable_reconciliation_status_lookup: (
             DurableReconciliationStatusLookup | None
         ) = None,
@@ -665,6 +667,9 @@ class RuntimeAssembler:
         )
         self._agent_durable_reconciliation_administration_enabled = (
             agent_durable_reconciliation_administration_enabled
+        )
+        self._agent_durable_cleanup_administration_enabled = (
+            agent_durable_cleanup_administration_enabled
         )
         self._agent_durable_reconciliation_status_lookup = (
             agent_durable_reconciliation_status_lookup
@@ -810,6 +815,8 @@ class RuntimeAssembler:
             raise TypeError("agent durable enabled flag must be bool")
         if not isinstance(agent_durable_reconciliation_administration_enabled, bool):
             raise TypeError("agent durable reconciliation administration enabled flag must be bool")
+        if not isinstance(agent_durable_cleanup_administration_enabled, bool):
+            raise TypeError("agent durable cleanup administration enabled flag must be bool")
         durable_options_supplied = any(
             (
                 agent_durable_store is not None,
@@ -820,6 +827,7 @@ class RuntimeAssembler:
                 agent_durable_administration_configuration is not None,
                 agent_durable_machine_administration_guard is not None,
                 agent_durable_reconciliation_administration_enabled,
+                agent_durable_cleanup_administration_enabled,
                 agent_durable_reconciliation_status_lookup is not None,
                 agent_checkpoint_protector is not None,
                 agent_durable_retention_policy is not None,
@@ -898,6 +906,13 @@ class RuntimeAssembler:
                     raise ValueError(
                         "enabled durable reconciliation administration requires "
                         "durable operator mode"
+                    )
+            if agent_durable_cleanup_administration_enabled:
+                if audit is None:
+                    raise ValueError("enabled durable cleanup administration requires AuditLedger")
+                if agent_durable_retention_policy is None:
+                    raise ValueError(
+                        "enabled durable cleanup administration requires retention policy"
                     )
         if not isinstance(webhooks_enabled, bool):
             raise TypeError("webhooks enabled flag must be bool")
@@ -1908,6 +1923,9 @@ class RuntimeAssembler:
                     protector=self._agent_checkpoint_protector,
                     retention_policy=self._agent_durable_retention_policy,
                     retention_configuration=(self._agent_durable_retention_configuration),
+                    cleanup_audit=(
+                        self._audit if self._agent_durable_cleanup_administration_enabled else None
+                    ),
                 )
                 custom_services["agent.durable"] = durable_agent_stack
                 custom_services["agent.durable.administration"] = durable_agent_stack.administration
@@ -1915,6 +1933,10 @@ class RuntimeAssembler:
                 if durable_agent_stack.reconciliation_administration is not None:
                     custom_services["agent.durable.reconciliation-administration"] = (
                         durable_agent_stack.reconciliation_administration
+                    )
+                if durable_agent_stack.cleanup_administration is not None:
+                    custom_services["agent.durable.cleanup-administration"] = (
+                        durable_agent_stack.cleanup_administration
                     )
                 custom_services["agent.durable.storage"] = durable_agent_stack.store
                 custom_services["agent.durable.leases"] = durable_agent_stack.lease_manager

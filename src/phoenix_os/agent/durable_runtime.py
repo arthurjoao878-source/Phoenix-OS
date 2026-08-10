@@ -12,6 +12,7 @@ from phoenix_os.agent.durable_administration import (
 )
 from phoenix_os.agent.durable_approval import DurableApprovalRevalidator
 from phoenix_os.agent.durable_authorization import DurableReconciliationAuthorizer
+from phoenix_os.agent.durable_cleanup_administration import DurableCleanupAdministration
 from phoenix_os.agent.durable_compatibility import DurableCompatibilityValidator
 from phoenix_os.agent.durable_contracts import (
     CheckpointProtector,
@@ -124,17 +125,36 @@ class DurableRecoveryLifecycle:
 
 
 class DurableRetentionLifecycle:
-    """Adapt manual durable retention to Phoenix Runtime lifecycle hooks."""
+    """Own cleanup administration admission above the bounded retention worker."""
 
-    def __init__(self, worker: DurableRetentionWorker) -> None:
+    def __init__(
+        self,
+        worker: DurableRetentionWorker,
+        *,
+        cleanup_administration: DurableCleanupAdministration | None = None,
+    ) -> None:
         if not isinstance(worker, DurableRetentionWorker):
             raise TypeError("worker must implement DurableRetentionWorker")
+        if cleanup_administration is not None and not isinstance(
+            cleanup_administration,
+            DurableCleanupAdministration,
+        ):
+            raise TypeError("cleanup_administration must be DurableCleanupAdministration")
         self._worker = worker
+        self._cleanup_administration = cleanup_administration
 
     async def start(self, context: RuntimeContext) -> None:
         if not isinstance(context, RuntimeContext):
             raise TypeError("context must be RuntimeContext")
-        await self._worker.start()
+        try:
+            await self._worker.start()
+        except (Exception, asyncio.CancelledError):
+            if self._cleanup_administration is not None:
+                try:
+                    await self._cleanup_administration.close()
+                except (Exception, asyncio.CancelledError):
+                    pass
+            raise
 
     async def stop(self, context: RuntimeContext) -> None:
         if not isinstance(context, RuntimeContext):
@@ -142,9 +162,24 @@ class DurableRetentionLifecycle:
         await self.close()
 
     async def close(self) -> None:
-        """Close retention admission without requiring a RuntimeContext."""
+        """Close cleanup admission before closing the retention worker."""
 
-        await self._worker.close()
+        failure: BaseException | None = None
+
+        if self._cleanup_administration is not None:
+            try:
+                await self._cleanup_administration.close()
+            except (Exception, asyncio.CancelledError) as exception:
+                failure = exception
+
+        try:
+            await self._worker.close()
+        except (Exception, asyncio.CancelledError) as exception:
+            if failure is None:
+                failure = exception
+
+        if failure is not None:
+            raise failure
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +196,7 @@ class DurableAgentRuntimeStack:
     observer: DurableRunObserver
     administration: DurableRunAdministration
     reconciliation_administration: DurableReconciliationAdministration | None = None
+    cleanup_administration: DurableCleanupAdministration | None = None
     protector: CheckpointProtector | None = None
     retention_policy: RetentionPolicy | None = None
     retention_worker: DurableRetentionWorker | None = None
@@ -215,6 +251,7 @@ def create_durable_agent_runtime_stack(
     protector: CheckpointProtector | None = None,
     retention_policy: RetentionPolicy | None = None,
     retention_configuration: DurableRetentionWorkerConfiguration | None = None,
+    cleanup_audit: AuditLedger | None = None,
 ) -> DurableAgentRuntimeStack:
     """Compose bounded durable recovery without creating or scheduling agent work."""
 
@@ -281,6 +318,10 @@ def create_durable_agent_runtime_stack(
         raise TypeError("retention_configuration must be DurableRetentionWorkerConfiguration")
     if retention_configuration is not None and retention_policy is None:
         raise ValueError("retention_configuration requires retention_policy")
+    if cleanup_audit is not None and not isinstance(cleanup_audit, AuditLedger):
+        raise TypeError("cleanup_audit must be AuditLedger")
+    if cleanup_audit is not None and retention_policy is None:
+        raise ValueError("cleanup_audit requires retention_policy")
     if retention_policy is not None and not isinstance(
         store,
         DurableRetentionStore,
@@ -309,17 +350,27 @@ def create_durable_agent_runtime_stack(
 
     retention_worker: DurableRetentionWorker | None = None
     retention_lifecycle: DurableRetentionLifecycle | None = None
+    cleanup_administration: DurableCleanupAdministration | None = None
 
     if retention_policy is not None:
         retention_store = store
         assert isinstance(retention_store, DurableRetentionStore)
-        retention_worker = BoundedDurableRetentionWorker(
+        bounded_retention_worker = BoundedDurableRetentionWorker(
             store=retention_store,
             lease_manager=lease_manager,
             policy=retention_policy,
             configuration=retention_configuration,
         )
-        retention_lifecycle = DurableRetentionLifecycle(retention_worker)
+        retention_worker = bounded_retention_worker
+        if cleanup_audit is not None:
+            cleanup_administration = DurableCleanupAdministration(
+                worker=bounded_retention_worker,
+                audit=cleanup_audit,
+            )
+        retention_lifecycle = DurableRetentionLifecycle(
+            retention_worker,
+            cleanup_administration=cleanup_administration,
+        )
 
     selected_observer = NullDurableRunObserver() if observer is None else observer
     administration = DurableRunAdministration(
@@ -362,6 +413,7 @@ def create_durable_agent_runtime_stack(
         observer=selected_observer,
         administration=administration,
         reconciliation_administration=reconciliation_administration,
+        cleanup_administration=cleanup_administration,
         protector=protector,
         retention_policy=retention_policy,
         retention_worker=retention_worker,

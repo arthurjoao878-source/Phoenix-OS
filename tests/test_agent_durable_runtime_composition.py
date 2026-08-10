@@ -32,6 +32,7 @@ from phoenix_os.agent import (
     DeterministicModelTurnAdapter,
     DurableAdministrationConfiguration,
     DurableAgentRuntimeStack,
+    DurableCleanupAdministration,
     DurableLeaseManager,
     DurableReconciliationAdministration,
     DurableRecoveryWorkerState,
@@ -903,6 +904,8 @@ async def test_runtime_assembler_composes_opt_in_durable_retention() -> None:
 
     assert runtime.service("agent.durable.retention") is policy
     assert runtime.service("agent.durable.retention-worker") is worker
+    assert stack.cleanup_administration is None
+    assert "agent.durable.cleanup-administration" not in runtime.services
 
     components = (await runtime.snapshot()).components
 
@@ -1102,6 +1105,278 @@ async def test_runtime_assembler_retention_options_require_explicit_durable_enab
             agent_durable_retention_policy=retention_policy,
             agent_durable_retention_configuration=retention_configuration,
         )
+
+
+@pytest.mark.asyncio
+async def test_durable_stack_cleanup_administration_requires_retention_policy() -> None:
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match="cleanup_audit requires retention_policy",
+        ):
+            create_durable_agent_runtime_stack(
+                store=store,
+                lease_manager=store.lease_manager,
+                compatibility_validator=_compatibility(),
+                cleanup_audit=audit,
+            )
+    finally:
+        await audit.close()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_durable_stack_composes_cleanup_above_exact_retention_worker() -> None:
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    policy = RetentionPolicy()
+    retention_configuration = DurableRetentionWorkerConfiguration(
+        owner_id="runtime-cleanup-composition",
+        page_size=32,
+        max_candidates=16,
+    )
+    stack: DurableAgentRuntimeStack | None = None
+
+    try:
+        stack = create_durable_agent_runtime_stack(
+            store=store,
+            lease_manager=store.lease_manager,
+            compatibility_validator=_compatibility(),
+            retention_policy=policy,
+            retention_configuration=retention_configuration,
+            cleanup_audit=audit,
+        )
+
+        cleanup = stack.cleanup_administration
+        worker = stack.retention_worker
+        assert isinstance(cleanup, DurableCleanupAdministration)
+        assert isinstance(worker, BoundedDurableRetentionWorker)
+        assert worker.policy is policy
+        assert worker.configuration is retention_configuration
+        assert not cleanup.closed
+
+        bounds = cleanup.bounds(_maintainer_context("agent.durable.cleanup"))
+        assert bounds.page_size == retention_configuration.page_size
+        assert bounds.max_candidates == retention_configuration.max_candidates
+    finally:
+        if stack is None:
+            await store.close()
+        else:
+            cleanup = stack.cleanup_administration
+            await stack.close()
+            assert cleanup is not None
+            assert cleanup.closed
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_cleanup_requires_audit_and_retention_policy() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match="cleanup administration requires AuditLedger",
+        ):
+            RuntimeAssembler(
+                kernel=kernel,
+                events=events,
+                capabilities=capabilities,
+                configuration=configuration,
+                policy=PolicyEngine(),
+                agent_enabled=True,
+                agent_configuration=_agent_configuration(),
+                agent_model_adapter=_model_adapter(),
+                agent_durable_enabled=True,
+                agent_durable_store=store,
+                agent_durable_lease_manager=store.lease_manager,
+                agent_durable_compatibility_validator=_compatibility(),
+                agent_durable_retention_policy=RetentionPolicy(),
+                agent_durable_cleanup_administration_enabled=True,
+            )
+
+        with pytest.raises(
+            ValueError,
+            match="cleanup administration requires retention policy",
+        ):
+            RuntimeAssembler(
+                kernel=kernel,
+                events=events,
+                capabilities=capabilities,
+                configuration=configuration,
+                policy=PolicyEngine(),
+                audit=audit,
+                agent_enabled=True,
+                agent_configuration=_agent_configuration(),
+                agent_model_adapter=_model_adapter(),
+                agent_durable_enabled=True,
+                agent_durable_store=store,
+                agent_durable_lease_manager=store.lease_manager,
+                agent_durable_compatibility_validator=_compatibility(),
+                agent_durable_cleanup_administration_enabled=True,
+            )
+    finally:
+        await audit.close()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_composes_opt_in_durable_cleanup_administration() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    policy = RetentionPolicy()
+    retention_configuration = DurableRetentionWorkerConfiguration(
+        owner_id="runtime-cleanup-admin",
+        page_size=11,
+        max_candidates=7,
+    )
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=store.lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_retention_policy=policy,
+        agent_durable_retention_configuration=retention_configuration,
+        agent_durable_cleanup_administration_enabled=True,
+    ).assemble()
+
+    stack = runtime.service("agent.durable")
+    cleanup = runtime.service("agent.durable.cleanup-administration")
+    worker = runtime.service("agent.durable.retention-worker")
+
+    assert isinstance(stack, DurableAgentRuntimeStack)
+    assert isinstance(cleanup, DurableCleanupAdministration)
+    assert isinstance(worker, BoundedDurableRetentionWorker)
+    assert cleanup is stack.cleanup_administration
+    assert worker is stack.retention_worker
+    assert not cleanup.closed
+
+    components = (await runtime.snapshot()).components
+    assert "agent.durable.cleanup-administration" not in components
+    assert "agent.durable.retention" in components
+
+    await runtime.start()
+    assert worker.state is DurableRetentionWorkerState.RUNNING
+    assert not cleanup.closed
+
+    await runtime.stop()
+    assert cleanup.closed
+    assert worker.state is DurableRetentionWorkerState.CLOSED
+    assert store.closed
+    assert store.lease_manager.closed
+
+
+@pytest.mark.asyncio
+async def test_durable_stack_cleanup_closes_before_retention_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    stack = create_durable_agent_runtime_stack(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility(),
+        retention_policy=RetentionPolicy(),
+        cleanup_audit=audit,
+    )
+    cleanup = stack.cleanup_administration
+    worker = stack.retention_worker
+    assert isinstance(cleanup, DurableCleanupAdministration)
+    assert isinstance(worker, BoundedDurableRetentionWorker)
+
+    calls: list[str] = []
+    original_cleanup_close = DurableCleanupAdministration.close
+    original_worker_close = BoundedDurableRetentionWorker.close
+
+    async def close_cleanup(self: DurableCleanupAdministration) -> None:
+        calls.append("cleanup")
+        await original_cleanup_close(self)
+
+    async def close_retention(self: BoundedDurableRetentionWorker) -> None:
+        calls.append("retention")
+        await original_worker_close(self)
+
+    monkeypatch.setattr(DurableCleanupAdministration, "close", close_cleanup)
+    monkeypatch.setattr(BoundedDurableRetentionWorker, "close", close_retention)
+
+    try:
+        await stack.close()
+
+        assert calls[:2] == ["cleanup", "retention"]
+        assert cleanup.closed
+        assert worker.state is DurableRetentionWorkerState.CLOSED
+        assert store.closed
+        assert store.lease_manager.closed
+    finally:
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_retention_start_failure_closes_cleanup_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_start(self: BoundedDurableRetentionWorker) -> None:
+        del self
+        raise RuntimeError("private retention startup detail")
+
+    monkeypatch.setattr(BoundedDurableRetentionWorker, "start", fail_start)
+
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=store.lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_retention_policy=RetentionPolicy(),
+        agent_durable_cleanup_administration_enabled=True,
+    ).assemble()
+
+    stack = runtime.service("agent.durable")
+    cleanup = runtime.service("agent.durable.cleanup-administration")
+    worker = runtime.service("agent.durable.retention-worker")
+    assert isinstance(stack, DurableAgentRuntimeStack)
+    assert isinstance(cleanup, DurableCleanupAdministration)
+    assert isinstance(worker, BoundedDurableRetentionWorker)
+
+    with pytest.raises(RuntimeStartError) as captured:
+        await runtime.start()
+
+    assert captured.value.failure.component == "agent.durable.retention"
+    assert captured.value.failure.phase is RuntimePhase.START
+    assert cleanup.closed
+    assert worker.state is DurableRetentionWorkerState.CREATED
+    assert store.closed
+    assert store.lease_manager.closed
+
+    await runtime.stop()
 
 
 @pytest.mark.asyncio
