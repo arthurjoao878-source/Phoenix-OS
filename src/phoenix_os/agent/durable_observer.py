@@ -31,6 +31,7 @@ class DurableRunOperation(StrEnum):
     """Fixed Phoenix-owned durable operation categories."""
 
     CHECKPOINT = "checkpoint"
+    RECONCILIATION = "reconciliation"
 
 
 class DurableRunObservationOutcome(StrEnum):

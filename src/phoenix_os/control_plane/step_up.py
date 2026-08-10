@@ -68,6 +68,8 @@ class ControlPlaneStepUpAction(StrEnum):
     REDRIVE_INBOUND_EVENT = "redrive-inbound-event"
     ENABLE_INFERENCE_PROVIDER = "enable-inference-provider"
     ENABLE_INFERENCE_MODEL = "enable-inference-model"
+    CLEANUP_DURABLE_RUNS = "cleanup-durable-runs"
+    RECONCILE_DURABLE_RUN = "reconcile-durable-run"
 
 
 @dataclass(frozen=True, slots=True)

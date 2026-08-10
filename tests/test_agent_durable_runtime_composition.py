@@ -20,19 +20,26 @@ from phoenix_os import (
     RuntimeStartError,
 )
 from phoenix_os.agent import (
+    AgentAdministrationAccessDeniedError,
     AgentId,
     AgentService,
     AgentServiceConfiguration,
     AgentServiceState,
     BoundedDurableRecoveryWorker,
+    ContentFreeDurableRunObserver,
     DeterministicCheckpointProtector,
     DeterministicFinalTurn,
     DeterministicModelTurnAdapter,
+    DurableAdministrationConfiguration,
     DurableAgentRuntimeStack,
+    DurableCleanupAdministration,
     DurableLeaseManager,
+    DurableReconciliationAdministration,
     DurableRecoveryWorkerState,
+    DurableRunAdministration,
     InMemoryDurableLeaseManager,
     InMemoryDurableRunStore,
+    NullDurableRunObserver,
     StaticDurableCompatibilityValidator,
     create_durable_agent_runtime_stack,
 )
@@ -50,9 +57,22 @@ from phoenix_os.agent.durable_retention_worker import (
     DurableRetentionWorkerConfiguration,
     DurableRetentionWorkerState,
 )
+from phoenix_os.audit import AuditLedger
 from phoenix_os.configuration import Configuration
+from phoenix_os.control_plane import (
+    ControlPlaneDurableCleanupAdministration,
+    ControlPlaneDurableReconciliationAdministration,
+    ControlPlaneOperatorToken,
+)
+from phoenix_os.control_plane.durable_cleanup_http import (
+    ControlPlaneDurableCleanupHttpAdapter,
+)
+from phoenix_os.control_plane.durable_reconciliation_http import (
+    ControlPlaneDurableReconciliationHttpAdapter,
+)
+from phoenix_os.control_plane.http import ControlPlaneHttpServer
 from phoenix_os.inference import ModelId, ModelProviderId
-from phoenix_os.policy import PolicyEngine
+from phoenix_os.policy import PolicyEngine, PrincipalType, SecurityContext
 from phoenix_os.runtime import RuntimeContext
 
 
@@ -85,6 +105,41 @@ def _model_adapter() -> DeterministicModelTurnAdapter:
 
 def _compatibility() -> StaticDurableCompatibilityValidator:
     return StaticDurableCompatibilityValidator(())
+
+
+def _maintainer_context(*permissions: str) -> SecurityContext:
+    return SecurityContext(
+        principal="operator:maintainer",
+        principal_type=PrincipalType.USER,
+        authenticated=True,
+        permissions=frozenset(permissions),
+        correlation_id="durable-runtime-composition-test",
+    )
+
+
+def _service_context(*scopes: str) -> SecurityContext:
+    return SecurityContext(
+        principal="service:durable-administration",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+        scopes=frozenset(scopes),
+        correlation_id="durable-runtime-machine-test",
+    )
+
+
+class _AllowMachineAdministrationGuard:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def authorize(
+        self,
+        context: SecurityContext,
+        *,
+        action: str,
+        resource: str,
+    ) -> None:
+        del context
+        self.calls.append((action, resource))
 
 
 class _LegacyDurableRunStore:
@@ -307,6 +362,10 @@ async def test_runtime_assembler_composes_and_owns_durable_services() -> None:
     assert runtime.service("agent.durable.storage") is selected_store
     assert runtime.service("agent.durable.leases") is selected_leases
     assert runtime.service("agent.durable.compatibility") is stack.compatibility_validator
+    assert runtime.service("agent.durable.observer") is stack.observer
+    assert runtime.service("agent.durable.administration") is stack.administration
+    assert isinstance(stack.observer, ContentFreeDurableRunObserver)
+    assert isinstance(stack.administration, DurableRunAdministration)
     assert runtime.service("agent.durable.recovery") is stack.recovery_coordinator
     assert runtime.service("agent.durable.recovery-worker") is stack.recovery_worker
     assert "agent.durable.retention" not in runtime.services
@@ -317,6 +376,8 @@ async def test_runtime_assembler_composes_and_owns_durable_services() -> None:
 
     components = (await runtime.snapshot()).components
     assert "agent.durable.retention" not in components
+    assert "agent.durable.observer" not in components
+    assert "agent.durable.administration" not in components
     assert components.index("agent.durable.storage") < components.index("agent")
     assert components.index("agent") < components.index("agent.durable.recovery")
 
@@ -331,6 +392,133 @@ async def test_runtime_assembler_composes_and_owns_durable_services() -> None:
     assert selected_store.closed
     assert selected_leases.closed
     assert (await agent.snapshot()).state is AgentServiceState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_durable_stack_defaults_to_null_observer_and_read_administration() -> None:
+    store = InMemoryDurableRunStore()
+    stack = create_durable_agent_runtime_stack(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility(),
+    )
+
+    try:
+        assert isinstance(stack.observer, NullDurableRunObserver)
+        assert isinstance(stack.administration, DurableRunAdministration)
+        snapshot = await stack.administration.snapshot(
+            _maintainer_context("agent.durable.health.read")
+        )
+        assert snapshot.store_open
+        assert snapshot.lease_manager_open
+        assert snapshot.recovery is not None
+        assert snapshot.observer is not None
+        assert snapshot.observer.observations == 0
+    finally:
+        await stack.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_machine_administration_is_disabled_by_default() -> None:
+    runtime, _store, _leases = await _durable_runtime()
+    administration = runtime.service("agent.durable.administration")
+    assert isinstance(administration, DurableRunAdministration)
+
+    with pytest.raises(AgentAdministrationAccessDeniedError):
+        await administration.snapshot(_service_context("agent.durable.health.read"))
+
+    await runtime.start()
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_wires_explicit_machine_administration_guard() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    guard = _AllowMachineAdministrationGuard()
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_administration_configuration=DurableAdministrationConfiguration(
+            machine_administration_enabled=True
+        ),
+        agent_durable_machine_administration_guard=guard,
+    ).assemble()
+
+    administration = runtime.service("agent.durable.administration")
+    assert isinstance(administration, DurableRunAdministration)
+    snapshot = await administration.snapshot(_service_context("agent.durable.health.read"))
+    assert snapshot.store_open
+    assert guard.calls == [("agent.durable.health.read", "durable-agent-runs:health")]
+
+    await runtime.start()
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_enabled_machine_administration_requires_guard() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+
+    with pytest.raises(ValueError, match="requires a machine guard"):
+        RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            policy=PolicyEngine(),
+            agent_enabled=True,
+            agent_configuration=_agent_configuration(),
+            agent_model_adapter=_model_adapter(),
+            agent_durable_enabled=True,
+            agent_durable_store=store,
+            agent_durable_lease_manager=lease_manager,
+            agent_durable_compatibility_validator=_compatibility(),
+            agent_durable_administration_configuration=DurableAdministrationConfiguration(
+                machine_administration_enabled=True
+            ),
+        )
+
+    assert not store.closed
+    assert not lease_manager.closed
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_administration_options_require_explicit_durable_enablement() -> (
+    None
+):
+    configuration, events, kernel, capabilities = await _base()
+
+    with pytest.raises(ValueError, match="require agent_durable_enabled"):
+        RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            agent_durable_administration_configuration=(DurableAdministrationConfiguration()),
+        )
+
+    with pytest.raises(ValueError, match="require agent_durable_enabled"):
+        RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            agent_durable_machine_administration_guard=_AllowMachineAdministrationGuard(),
+        )
 
 
 @pytest.mark.asyncio
@@ -720,6 +908,8 @@ async def test_runtime_assembler_composes_opt_in_durable_retention() -> None:
 
     assert runtime.service("agent.durable.retention") is policy
     assert runtime.service("agent.durable.retention-worker") is worker
+    assert stack.cleanup_administration is None
+    assert "agent.durable.cleanup-administration" not in runtime.services
 
     components = (await runtime.snapshot()).components
 
@@ -919,3 +1109,919 @@ async def test_runtime_assembler_retention_options_require_explicit_durable_enab
             agent_durable_retention_policy=retention_policy,
             agent_durable_retention_configuration=retention_configuration,
         )
+
+
+@pytest.mark.asyncio
+async def test_durable_stack_cleanup_administration_requires_retention_policy() -> None:
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match="cleanup_audit requires retention_policy",
+        ):
+            create_durable_agent_runtime_stack(
+                store=store,
+                lease_manager=store.lease_manager,
+                compatibility_validator=_compatibility(),
+                cleanup_audit=audit,
+            )
+    finally:
+        await audit.close()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_durable_stack_composes_cleanup_above_exact_retention_worker() -> None:
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    policy = RetentionPolicy()
+    retention_configuration = DurableRetentionWorkerConfiguration(
+        owner_id="runtime-cleanup-composition",
+        page_size=32,
+        max_candidates=16,
+    )
+    stack: DurableAgentRuntimeStack | None = None
+
+    try:
+        stack = create_durable_agent_runtime_stack(
+            store=store,
+            lease_manager=store.lease_manager,
+            compatibility_validator=_compatibility(),
+            retention_policy=policy,
+            retention_configuration=retention_configuration,
+            cleanup_audit=audit,
+        )
+
+        cleanup = stack.cleanup_administration
+        worker = stack.retention_worker
+        assert isinstance(cleanup, DurableCleanupAdministration)
+        assert isinstance(worker, BoundedDurableRetentionWorker)
+        assert worker.policy is policy
+        assert worker.configuration is retention_configuration
+        assert not cleanup.closed
+
+        bounds = cleanup.bounds(_maintainer_context("agent.durable.cleanup"))
+        assert bounds.page_size == retention_configuration.page_size
+        assert bounds.max_candidates == retention_configuration.max_candidates
+    finally:
+        if stack is None:
+            await store.close()
+        else:
+            cleanup = stack.cleanup_administration
+            await stack.close()
+            assert cleanup is not None
+            assert cleanup.closed
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_cleanup_requires_audit_retention_and_operator_mode() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    operator_token = ControlPlaneOperatorToken("r" * 32)
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match="cleanup administration requires AuditLedger",
+        ):
+            RuntimeAssembler(
+                kernel=kernel,
+                events=events,
+                capabilities=capabilities,
+                configuration=configuration,
+                policy=PolicyEngine(),
+                agent_enabled=True,
+                agent_configuration=_agent_configuration(),
+                agent_model_adapter=_model_adapter(),
+                agent_durable_enabled=True,
+                agent_durable_store=store,
+                agent_durable_lease_manager=store.lease_manager,
+                agent_durable_compatibility_validator=_compatibility(),
+                agent_durable_retention_policy=RetentionPolicy(),
+                agent_durable_cleanup_administration_enabled=True,
+                control_plane_operator_token=operator_token,
+            )
+
+        with pytest.raises(
+            ValueError,
+            match="cleanup administration requires retention policy",
+        ):
+            RuntimeAssembler(
+                kernel=kernel,
+                events=events,
+                capabilities=capabilities,
+                configuration=configuration,
+                policy=PolicyEngine(),
+                audit=audit,
+                agent_enabled=True,
+                agent_configuration=_agent_configuration(),
+                agent_model_adapter=_model_adapter(),
+                agent_durable_enabled=True,
+                agent_durable_store=store,
+                agent_durable_lease_manager=store.lease_manager,
+                agent_durable_compatibility_validator=_compatibility(),
+                agent_durable_cleanup_administration_enabled=True,
+                control_plane_operator_token=operator_token,
+            )
+
+        with pytest.raises(
+            ValueError,
+            match="cleanup administration requires durable operator mode",
+        ):
+            RuntimeAssembler(
+                kernel=kernel,
+                events=events,
+                capabilities=capabilities,
+                configuration=configuration,
+                policy=PolicyEngine(),
+                audit=audit,
+                agent_enabled=True,
+                agent_configuration=_agent_configuration(),
+                agent_model_adapter=_model_adapter(),
+                agent_durable_enabled=True,
+                agent_durable_store=store,
+                agent_durable_lease_manager=store.lease_manager,
+                agent_durable_compatibility_validator=_compatibility(),
+                agent_durable_retention_policy=RetentionPolicy(),
+                agent_durable_cleanup_administration_enabled=True,
+            )
+    finally:
+        await audit.close()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_composes_opt_in_durable_cleanup_administration() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    policy = RetentionPolicy()
+    retention_configuration = DurableRetentionWorkerConfiguration(
+        owner_id="runtime-cleanup-admin",
+        page_size=11,
+        max_candidates=7,
+    )
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=store.lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_retention_policy=policy,
+        agent_durable_retention_configuration=retention_configuration,
+        agent_durable_cleanup_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+
+    stack = runtime.service("agent.durable")
+    cleanup = runtime.service("agent.durable.cleanup-administration")
+    control_plane_cleanup = runtime.service("control_plane.durable-cleanup")
+    cleanup_http = runtime.service("control_plane.durable-cleanup-http")
+    worker = runtime.service("agent.durable.retention-worker")
+    http = runtime.service("control_plane.http")
+
+    assert isinstance(stack, DurableAgentRuntimeStack)
+    assert isinstance(cleanup, DurableCleanupAdministration)
+    assert isinstance(control_plane_cleanup, ControlPlaneDurableCleanupAdministration)
+    assert isinstance(cleanup_http, ControlPlaneDurableCleanupHttpAdapter)
+    assert isinstance(worker, BoundedDurableRetentionWorker)
+    assert isinstance(http, ControlPlaneHttpServer)
+    assert cleanup is stack.cleanup_administration
+    assert worker is stack.retention_worker
+    assert http.durable_cleanup_http is cleanup_http
+    assert http.durable_reconciliation_http is None
+    assert cleanup_http.administration is control_plane_cleanup
+    assert not cleanup.closed
+
+    components = (await runtime.snapshot()).components
+    assert "agent.durable.cleanup-administration" not in components
+    assert "agent.durable.retention" in components
+    assert "control_plane.durable-cleanup" in components
+    assert components.index("agent.durable.retention") < components.index(
+        "control_plane.durable-cleanup"
+    )
+    assert components.index("control_plane.durable-cleanup") < components.index(
+        "control_plane.http"
+    )
+
+    await runtime.start()
+    assert worker.state is DurableRetentionWorkerState.RUNNING
+    assert not cleanup.closed
+
+    await runtime.stop()
+    assert cleanup_http.closed
+    assert cleanup.closed
+    assert worker.state is DurableRetentionWorkerState.CLOSED
+    assert store.closed
+    assert store.lease_manager.closed
+
+
+@pytest.mark.asyncio
+async def test_cleanup_http_bind_failure_rolls_back_confirmation_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    def fail_bind(
+        self: ControlPlaneHttpServer,
+        administration: ControlPlaneDurableCleanupAdministration,
+    ) -> ControlPlaneDurableCleanupHttpAdapter:
+        del self, administration
+        raise RuntimeError("private durable cleanup HTTP binding detail")
+
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+    monkeypatch.setattr(
+        ControlPlaneHttpServer,
+        "bind_durable_cleanup_http",
+        fail_bind,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="private durable cleanup HTTP binding detail",
+    ):
+        await RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            policy=PolicyEngine(),
+            audit=audit,
+            agent_enabled=True,
+            agent_configuration=_agent_configuration(),
+            agent_model_adapter=_model_adapter(),
+            agent_durable_enabled=True,
+            agent_durable_store=store,
+            agent_durable_lease_manager=store.lease_manager,
+            agent_durable_compatibility_validator=_compatibility(),
+            agent_durable_retention_policy=RetentionPolicy(),
+            agent_durable_cleanup_administration_enabled=True,
+            control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+        ).assemble()
+
+    assert close_calls == 1
+    assert store.closed
+    assert store.lease_manager.closed
+
+
+@pytest.mark.asyncio
+async def test_cleanup_storage_start_failure_rolls_back_control_plane_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=store.lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_retention_policy=RetentionPolicy(),
+        agent_durable_cleanup_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+    cleanup = runtime.service("agent.durable.cleanup-administration")
+    cleanup_http = runtime.service("control_plane.durable-cleanup-http")
+    assert isinstance(cleanup, DurableCleanupAdministration)
+    assert isinstance(cleanup_http, ControlPlaneDurableCleanupHttpAdapter)
+
+    await store.close()
+
+    with pytest.raises(RuntimeStartError) as captured:
+        await runtime.start()
+
+    assert captured.value.failure.component == "agent.durable.storage"
+    assert captured.value.failure.phase is RuntimePhase.START
+    assert close_calls >= 1
+    assert cleanup_http.closed
+    assert cleanup.closed
+    assert store.closed
+    assert store.lease_manager.closed
+
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_durable_stack_cleanup_closes_before_retention_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    stack = create_durable_agent_runtime_stack(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility(),
+        retention_policy=RetentionPolicy(),
+        cleanup_audit=audit,
+    )
+    cleanup = stack.cleanup_administration
+    worker = stack.retention_worker
+    assert isinstance(cleanup, DurableCleanupAdministration)
+    assert isinstance(worker, BoundedDurableRetentionWorker)
+
+    calls: list[str] = []
+    original_cleanup_close = DurableCleanupAdministration.close
+    original_worker_close = BoundedDurableRetentionWorker.close
+
+    async def close_cleanup(self: DurableCleanupAdministration) -> None:
+        calls.append("cleanup")
+        await original_cleanup_close(self)
+
+    async def close_retention(self: BoundedDurableRetentionWorker) -> None:
+        calls.append("retention")
+        await original_worker_close(self)
+
+    monkeypatch.setattr(DurableCleanupAdministration, "close", close_cleanup)
+    monkeypatch.setattr(BoundedDurableRetentionWorker, "close", close_retention)
+
+    try:
+        await stack.close()
+
+        assert calls[:2] == ["cleanup", "retention"]
+        assert cleanup.closed
+        assert worker.state is DurableRetentionWorkerState.CLOSED
+        assert store.closed
+        assert store.lease_manager.closed
+    finally:
+        await audit.close()
+
+
+@pytest.mark.asyncio
+async def test_retention_start_failure_closes_cleanup_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_start(self: BoundedDurableRetentionWorker) -> None:
+        del self
+        raise RuntimeError("private retention startup detail")
+
+    monkeypatch.setattr(BoundedDurableRetentionWorker, "start", fail_start)
+
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=store.lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_retention_policy=RetentionPolicy(),
+        agent_durable_cleanup_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+
+    stack = runtime.service("agent.durable")
+    cleanup = runtime.service("agent.durable.cleanup-administration")
+    worker = runtime.service("agent.durable.retention-worker")
+    assert isinstance(stack, DurableAgentRuntimeStack)
+    assert isinstance(cleanup, DurableCleanupAdministration)
+    assert isinstance(worker, BoundedDurableRetentionWorker)
+
+    with pytest.raises(RuntimeStartError) as captured:
+        await runtime.start()
+
+    assert captured.value.failure.component == "agent.durable.retention"
+    assert captured.value.failure.phase is RuntimePhase.START
+    assert cleanup.closed
+    assert worker.state is DurableRetentionWorkerState.CREATED
+    assert store.closed
+    assert store.lease_manager.closed
+
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_durable_reconciliation_is_explicit_opt_in() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=store.lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+
+    stack = runtime.service("agent.durable")
+    assert isinstance(stack, DurableAgentRuntimeStack)
+    assert stack.reconciliation_administration is None
+    assert "agent.durable.reconciliation-administration" not in runtime.services
+    assert "control_plane.durable-reconciliation" not in runtime.services
+    assert "control_plane.durable-reconciliation-http" not in runtime.services
+    http = runtime.service("control_plane.http")
+    assert isinstance(http, ControlPlaneHttpServer)
+    assert http.durable_reconciliation_http is None
+    assert "control_plane.durable-reconciliation" not in (await runtime.snapshot()).components
+
+    await runtime.start()
+    await runtime.stop()
+    assert store.closed
+    assert audit.closed
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_reconciliation_requires_audit_and_operator_mode() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit_without_runtime = AuditLedger()
+    try:
+        with pytest.raises(
+            ValueError,
+            match="requires durable operator mode",
+        ):
+            RuntimeAssembler(
+                kernel=kernel,
+                events=events,
+                capabilities=capabilities,
+                configuration=configuration,
+                policy=PolicyEngine(),
+                audit=audit_without_runtime,
+                agent_enabled=True,
+                agent_configuration=_agent_configuration(),
+                agent_model_adapter=_model_adapter(),
+                agent_durable_enabled=True,
+                agent_durable_store=store,
+                agent_durable_lease_manager=store.lease_manager,
+                agent_durable_compatibility_validator=_compatibility(),
+                agent_durable_reconciliation_administration_enabled=True,
+            )
+
+        with pytest.raises(
+            ValueError,
+            match="requires AuditLedger",
+        ):
+            RuntimeAssembler(
+                kernel=kernel,
+                events=events,
+                capabilities=capabilities,
+                configuration=configuration,
+                policy=PolicyEngine(),
+                agent_enabled=True,
+                agent_configuration=_agent_configuration(),
+                agent_model_adapter=_model_adapter(),
+                agent_durable_enabled=True,
+                agent_durable_store=store,
+                agent_durable_lease_manager=store.lease_manager,
+                agent_durable_compatibility_validator=_compatibility(),
+                agent_durable_reconciliation_administration_enabled=True,
+                control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+            )
+    finally:
+        await audit_without_runtime.close()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_composes_and_orders_durable_reconciliation() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    audit = AuditLedger()
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_reconciliation_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+
+    stack = runtime.service("agent.durable")
+    assert isinstance(stack, DurableAgentRuntimeStack)
+    coordinator = runtime.service("agent.durable.reconciliation-administration")
+    administration = runtime.service("control_plane.durable-reconciliation")
+    reconciliation_http = runtime.service("control_plane.durable-reconciliation-http")
+    http = runtime.service("control_plane.http")
+    assert isinstance(http, ControlPlaneHttpServer)
+    assert isinstance(coordinator, DurableReconciliationAdministration)
+    assert coordinator is stack.reconciliation_administration
+    assert isinstance(
+        administration,
+        ControlPlaneDurableReconciliationAdministration,
+    )
+    assert isinstance(
+        reconciliation_http,
+        ControlPlaneDurableReconciliationHttpAdapter,
+    )
+    assert http.durable_reconciliation_http is reconciliation_http
+    assert http.durable_cleanup_http is None
+    assert reconciliation_http.administration is administration
+
+    components = (await runtime.snapshot()).components
+    assert "control_plane.durable-reconciliation" in components
+    assert components.index("control_plane.durable-reconciliation") < components.index(
+        "control_plane.http"
+    )
+    assert components.index("agent.durable.storage") < components.index(
+        "control_plane.durable-reconciliation"
+    )
+
+    await runtime.start()
+    await runtime.stop()
+
+    assert reconciliation_http.closed
+    assert coordinator.closed
+    assert store.closed
+    assert lease_manager.closed
+    assert audit.closed
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_composes_cleanup_and_reconciliation_http_together() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    store = InMemoryDurableRunStore()
+    audit = AuditLedger()
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=store.lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_reconciliation_administration_enabled=True,
+        agent_durable_retention_policy=RetentionPolicy(),
+        agent_durable_cleanup_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+
+    http = runtime.service("control_plane.http")
+    cleanup_http = runtime.service("control_plane.durable-cleanup-http")
+    reconciliation_http = runtime.service("control_plane.durable-reconciliation-http")
+
+    assert isinstance(http, ControlPlaneHttpServer)
+    assert isinstance(cleanup_http, ControlPlaneDurableCleanupHttpAdapter)
+    assert isinstance(reconciliation_http, ControlPlaneDurableReconciliationHttpAdapter)
+    assert http.durable_cleanup_http is cleanup_http
+    assert http.durable_reconciliation_http is reconciliation_http
+
+    components = (await runtime.snapshot()).components
+    assert components.index("control_plane.durable-reconciliation") < components.index(
+        "control_plane.durable-cleanup"
+    )
+    assert components.index("control_plane.durable-cleanup") < components.index(
+        "control_plane.http"
+    )
+
+    await runtime.start()
+    await runtime.stop()
+
+    assert cleanup_http.closed
+    assert reconciliation_http.closed
+    assert store.closed
+    assert store.lease_manager.closed
+    assert audit.closed
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_reconciliation_rollback_closes_confirmation_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    def fail_runtime(*args: object, **kwargs: object) -> PhoenixRuntime:
+        del args, kwargs
+        raise RuntimeError("private reconciliation runtime construction detail")
+
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+    monkeypatch.setattr(dependencies_module, "PhoenixRuntime", fail_runtime)
+
+    with pytest.raises(
+        RuntimeError,
+        match="private reconciliation runtime construction detail",
+    ):
+        await RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            policy=PolicyEngine(),
+            audit=audit,
+            agent_enabled=True,
+            agent_configuration=_agent_configuration(),
+            agent_model_adapter=_model_adapter(),
+            agent_durable_enabled=True,
+            agent_durable_store=store,
+            agent_durable_lease_manager=lease_manager,
+            agent_durable_compatibility_validator=_compatibility(),
+            agent_durable_reconciliation_administration_enabled=True,
+            control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+        ).assemble()
+
+    assert close_calls == 1
+    assert store.closed
+    assert lease_manager.closed
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_http_bind_failure_rolls_back_confirmation_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    def fail_bind(
+        self: ControlPlaneHttpServer,
+        administration: ControlPlaneDurableReconciliationAdministration,
+    ) -> ControlPlaneDurableReconciliationHttpAdapter:
+        del self, administration
+        raise RuntimeError("private durable reconciliation HTTP binding detail")
+
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+    monkeypatch.setattr(
+        ControlPlaneHttpServer,
+        "bind_durable_reconciliation_http",
+        fail_bind,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="private durable reconciliation HTTP binding detail",
+    ):
+        await RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            policy=PolicyEngine(),
+            audit=audit,
+            agent_enabled=True,
+            agent_configuration=_agent_configuration(),
+            agent_model_adapter=_model_adapter(),
+            agent_durable_enabled=True,
+            agent_durable_store=store,
+            agent_durable_lease_manager=lease_manager,
+            agent_durable_compatibility_validator=_compatibility(),
+            agent_durable_reconciliation_administration_enabled=True,
+            control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+        ).assemble()
+
+    assert close_calls == 1
+    assert store.closed
+    assert lease_manager.closed
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_storage_start_failure_closes_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_reconciliation_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+    coordinator = runtime.service("agent.durable.reconciliation-administration")
+    assert isinstance(coordinator, DurableReconciliationAdministration)
+
+    await store.close()
+
+    with pytest.raises(RuntimeStartError) as captured:
+        await runtime.start()
+
+    assert captured.value.failure.component == "agent.durable.storage"
+    assert captured.value.failure.phase is RuntimePhase.START
+    assert close_calls == 1
+    assert coordinator.closed
+    assert store.closed
+    assert lease_manager.closed
+    assert audit.closed
+
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_recovery_start_failure_rolls_back_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from phoenix_os.control_plane.durable_administration_protection import (
+        ControlPlaneDurableAdministrationProtection,
+    )
+
+    async def fail_start(self: BoundedDurableRecoveryWorker) -> None:
+        del self
+        raise RuntimeError("private reconciliation recovery startup detail")
+
+    configuration, events, kernel, capabilities = await _base()
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    audit = AuditLedger()
+    close_calls = 0
+    original_close = ControlPlaneDurableAdministrationProtection.close
+
+    async def tracked_close(
+        self: ControlPlaneDurableAdministrationProtection,
+    ) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await original_close(self)
+
+    monkeypatch.setattr(BoundedDurableRecoveryWorker, "start", fail_start)
+    monkeypatch.setattr(
+        ControlPlaneDurableAdministrationProtection,
+        "close",
+        tracked_close,
+    )
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        audit=audit,
+        agent_enabled=True,
+        agent_configuration=_agent_configuration(),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_store=store,
+        agent_durable_lease_manager=lease_manager,
+        agent_durable_compatibility_validator=_compatibility(),
+        agent_durable_reconciliation_administration_enabled=True,
+        control_plane_operator_token=ControlPlaneOperatorToken("r" * 32),
+    ).assemble()
+    coordinator = runtime.service("agent.durable.reconciliation-administration")
+    assert isinstance(coordinator, DurableReconciliationAdministration)
+
+    with pytest.raises(RuntimeStartError) as captured:
+        await runtime.start()
+
+    assert captured.value.failure.component == "agent.durable.recovery"
+    assert captured.value.failure.phase is RuntimePhase.START
+    assert close_calls == 1
+    assert coordinator.closed
+    assert store.closed
+    assert lease_manager.closed
+    assert audit.closed
+
+    await runtime.stop()

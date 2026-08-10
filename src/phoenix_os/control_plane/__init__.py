@@ -77,8 +77,34 @@ from phoenix_os.control_plane.csrf import (
     ControlPlaneNonceSource,
     ControlPlaneProtectionClock,
 )
+from phoenix_os.control_plane.durable_administration_protection import (
+    DEFAULT_CONTROL_PLANE_DURABLE_CONFIRMATION_CAPACITY,
+    DEFAULT_CONTROL_PLANE_DURABLE_CONFIRMATION_TTL,
+    MAX_CONTROL_PLANE_DURABLE_CONFIRMATION_CAPACITY,
+    MAX_CONTROL_PLANE_DURABLE_CONFIRMATION_TTL,
+    ControlPlaneDurableAdministrationConfirmationChallenge,
+    ControlPlaneDurableAdministrationConfirmationProof,
+    ControlPlaneDurableAdministrationConfirmationVerification,
+    ControlPlaneDurableAdministrationProtection,
+    ControlPlaneDurableAdministrationProtectionSnapshot,
+    ControlPlaneDurableCleanupBounds,
+    ControlPlaneDurableCleanupIntent,
+    ControlPlaneDurableReconciliationEvidenceBinding,
+    ControlPlaneDurableReconciliationIntent,
+)
+from phoenix_os.control_plane.durable_cleanup_administration import (
+    ControlPlaneDurableCleanupAdministration,
+    ControlPlaneDurableCleanupConfirmation,
+)
+from phoenix_os.control_plane.durable_machine_administration import (
+    ControlPlaneDurableMachineAdministrationGuard,
+)
 from phoenix_os.control_plane.durable_operator_http import (
     ControlPlaneDurableOperatorHttpAdapter,
+)
+from phoenix_os.control_plane.durable_reconciliation_administration import (
+    ControlPlaneDurableReconciliationAdministration,
+    ControlPlaneDurableReconciliationConfirmation,
 )
 from phoenix_os.control_plane.durable_session_access import (
     ControlPlaneDurableSessionAccessService,
@@ -402,6 +428,8 @@ from phoenix_os.control_plane.operator_contracts import (
     CONTROL_PLANE_API_TOKENS_ISSUE_PERMISSION,
     CONTROL_PLANE_API_TOKENS_REVOKE_PERMISSION,
     CONTROL_PLANE_API_TOKENS_ROTATE_PERMISSION,
+    CONTROL_PLANE_DURABLE_CLEANUP_PERMISSION,
+    CONTROL_PLANE_DURABLE_RECONCILE_PERMISSION,
     CONTROL_PLANE_OPERATOR_SESSIONS_READ_PERMISSION,
     CONTROL_PLANE_OPERATOR_SESSIONS_REVOKE_PERMISSION,
     CONTROL_PLANE_OPERATORS_CREATE_PERMISSION,
@@ -712,6 +740,8 @@ __all__ = [
     "CONTROL_PLANE_API_TOKENS_ISSUE_PERMISSION",
     "CONTROL_PLANE_API_TOKENS_REVOKE_PERMISSION",
     "CONTROL_PLANE_API_TOKENS_ROTATE_PERMISSION",
+    "CONTROL_PLANE_DURABLE_CLEANUP_PERMISSION",
+    "CONTROL_PLANE_DURABLE_RECONCILE_PERMISSION",
     "CONTROL_PLANE_INBOUND_MACHINE_BASE_PATH",
     "CONTROL_PLANE_INBOUND_MACHINE_RESOURCE",
     "CONTROL_PLANE_INFERENCE_MACHINE_BASE_PATH",
@@ -737,6 +767,8 @@ __all__ = [
     "DEFAULT_CONTROL_PLANE_CLIENT_RATE_CAPACITY",
     "DEFAULT_CONTROL_PLANE_CLIENT_RATE_LIMIT",
     "DEFAULT_CONTROL_PLANE_CLIENT_RATE_WINDOW",
+    "DEFAULT_CONTROL_PLANE_DURABLE_CONFIRMATION_CAPACITY",
+    "DEFAULT_CONTROL_PLANE_DURABLE_CONFIRMATION_TTL",
     "DEFAULT_CONTROL_PLANE_OPERATOR_LOGIN_ATTEMPTS",
     "DEFAULT_CONTROL_PLANE_OPERATOR_LOGIN_WINDOW",
     "DEFAULT_CONTROL_PLANE_OPERATOR_PAGE_REQUEST",
@@ -786,6 +818,8 @@ __all__ = [
     "MAX_CONTROL_PLANE_CLIENT_RATE_LIMIT",
     "MAX_CONTROL_PLANE_CLIENT_RATE_WINDOW",
     "MAX_CONTROL_PLANE_CONNECTIONS_PER_CLIENT",
+    "MAX_CONTROL_PLANE_DURABLE_CONFIRMATION_CAPACITY",
+    "MAX_CONTROL_PLANE_DURABLE_CONFIRMATION_TTL",
     "MAX_CONTROL_PLANE_OPERATOR_CAPACITY",
     "MAX_CONTROL_PLANE_OPERATOR_LOGIN_ATTEMPTS",
     "MAX_CONTROL_PLANE_OPERATOR_LOGIN_WINDOW",
@@ -937,8 +971,22 @@ __all__ = [
     "ControlPlaneCsrfRejectedError",
     "ControlPlaneCsrfToken",
     "ControlPlaneCsrfVerification",
+    "ControlPlaneDurableAdministrationConfirmationChallenge",
+    "ControlPlaneDurableAdministrationConfirmationProof",
+    "ControlPlaneDurableAdministrationConfirmationVerification",
+    "ControlPlaneDurableAdministrationProtection",
+    "ControlPlaneDurableAdministrationProtectionSnapshot",
+    "ControlPlaneDurableCleanupAdministration",
+    "ControlPlaneDurableCleanupBounds",
+    "ControlPlaneDurableCleanupConfirmation",
+    "ControlPlaneDurableCleanupIntent",
     "ControlPlaneDurableCsrfSecret",
+    "ControlPlaneDurableMachineAdministrationGuard",
     "ControlPlaneDurableOperatorHttpAdapter",
+    "ControlPlaneDurableReconciliationAdministration",
+    "ControlPlaneDurableReconciliationConfirmation",
+    "ControlPlaneDurableReconciliationEvidenceBinding",
+    "ControlPlaneDurableReconciliationIntent",
     "ControlPlaneDurableSessionAccessClosedError",
     "ControlPlaneDurableSessionAccessService",
     "ControlPlaneDurableSessionAccessSnapshot",
