@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -20,11 +19,9 @@ def test_rfc_0027_metadata_is_accepted_for_v0270() -> None:
     assert "- Target release: Phoenix OS v0.27.0" in rfc
 
 
-def test_readme_lists_rfc_0027_as_accepted() -> None:
+def test_readme_preserves_rfc_0027_release_history() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.27.0` implements twenty-seven accepted specifications:" in readme
     assert "**RFC-0027 — Secure Agent Loop and Tool Calling Runtime:**" in readme
-    assert "## Draft specifications" not in readme
     assert "[Phoenix OS 0.27.0](docs/releases/v0.27.0.md)" in readme
 
 
@@ -100,10 +97,8 @@ def test_rfc_0027_defines_finite_no_retry_shutdown_semantics() -> None:
         assert phrase in rfc
 
 
-def test_rfc_0027_releases_version_0270_after_implementation() -> None:
+def test_rfc_0027_records_historical_version_transition() -> None:
     rfc = _normalized(_RFC.read_text(encoding="utf-8"))
-    project = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert project["project"]["version"] == "0.27.0"
     assert "Agent configuration begins absent and disabled" in rfc
     assert "remains `0.26.0` during implementation slices" in rfc
     assert "changes to `0.27.0` only in the final release slice" in rfc

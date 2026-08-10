@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -13,16 +12,14 @@ _RFC = _ROOT / "docs" / "rfcs" / "RFC-0027-secure-agent-loop-and-tool-calling.md
 _GATE = _ROOT / "scripts" / "check_agent_release.py"
 
 
-def test_project_version_is_v0270() -> None:
-    document = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert document["project"]["version"] == "0.27.0"
+def test_v027_release_metadata_remains_available() -> None:
+    assert _RELEASE_NOTES.is_file()
+    assert _RFC.is_file()
 
 
-def test_readme_announces_twenty_seven_accepted_specifications() -> None:
+def test_readme_preserves_v027_release_history() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.27.0` implements twenty-seven accepted specifications:" in readme
     assert "**RFC-0027 — Secure Agent Loop and Tool Calling Runtime:**" in readme
-    assert "## Draft specifications" not in readme
     assert "[Phoenix OS 0.27.0](docs/releases/v0.27.0.md)" in readme
     assert "[Phoenix OS 0.26.0](docs/releases/v0.26.0.md)" in readme
 

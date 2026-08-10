@@ -21,6 +21,7 @@ _COMPANION_TESTS = (
     "tests/test_durable_agent_adrs.py",
     "tests/test_durable_agent_security_review.py",
     "tests/test_durable_agent_release_gate.py",
+    "tests/test_v028_release.py",
 )
 
 _REQUIRED_SDIST_DOCUMENTS = (
@@ -28,6 +29,7 @@ _REQUIRED_SDIST_DOCUMENTS = (
     "CHANGELOG.md",
     "LICENSE",
     "pyproject.toml",
+    "docs/releases/v0.28.0.md",
     "docs/rfcs/RFC-0028-durable-agent-runs-and-controlled-resumption.md",
     "docs/migrations/v0.27.0-to-v0.28.0-durable-agent.md",
     "docs/security/RFC-0028-durable-agent-threat-model-review.md",

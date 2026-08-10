@@ -1049,8 +1049,9 @@ workflows, audit, secrets, Event Bus, network, TLS, and persistence behavior.
 Upgrade creates no durable run, checkpoint, payload, key lease, recovery worker,
 permission, approval, model call, tool call, or external access.
 
-The package version remains `0.27.0` during implementation slices and changes to
-`0.28.0` only in the final release slice.
+The implementation slices remained on `0.27.0`. The release-preparation slice
+sets the package version to `0.28.0`; final tag, artifacts, and checksums remain
+reserved for the publication step.
 
 Migration must support:
 
@@ -1125,6 +1126,11 @@ The gate reads the current package version from `pyproject.toml`. Per the
 compatibility rule above, implementation slices remain on v0.27.0 and the
 package changes to v0.28.0 only in the final release slice.
 
+Release metadata is recorded in
+[`docs/releases/v0.28.0.md`](../releases/v0.28.0.md), and the package version is
+`0.28.0`. This preparation does not claim the final `v0.28.0` tag, published
+wheel/sdist assets, or `SHA256SUMS`; those remain the final checklist item.
+
 ## Slice plan
 
 ### Slice 1 - Contracts, codecs, checkpoint store, and deterministic fakes
@@ -1176,7 +1182,7 @@ package changes to v0.28.0 only in the final release slice.
 - [x] Threat-model and security-invariant review
 - [x] Durable-agent release gate
 - [x] Wheel and sdist isolated offline installation tests
-- [ ] Release notes and package version 0.28.0
+- [x] Release notes and package version 0.28.0
 - [ ] Tag, artifacts, and checksums
 
 ## Acceptance

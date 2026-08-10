@@ -30,6 +30,7 @@ _COMPANION_TESTS = (
     "tests/test_durable_agent_adrs.py",
     "tests/test_durable_agent_security_review.py",
     "tests/test_durable_agent_release_gate.py",
+    "tests/test_v028_release.py",
 )
 
 
@@ -177,13 +178,18 @@ def test_rfc_marks_durable_gate_and_offline_install_complete_only() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
     assert "- [x] Durable-agent release gate" in rfc
     assert "- [x] Wheel and sdist isolated offline installation tests" in rfc
-    assert "- [ ] Release notes and package version 0.28.0" in rfc
+    assert "- [x] Release notes and package version 0.28.0" in rfc
     assert "- [ ] Tag, artifacts, and checksums" in rfc
     assert "python scripts/check_durable_agent_release.py" in rfc
 
 
-def test_gate_derives_current_package_version_until_final_release_slice() -> None:
+def test_gate_derives_current_package_version_from_pyproject() -> None:
     gate = _gate()
     assert 'version = project.get("version")' in gate
     assert 'distribution_version("phoenix-os") == {version!r}' in gate
-    assert '"0.28.0"' not in gate
+
+
+def test_gate_includes_v028_release_metadata() -> None:
+    gate = _gate()
+    assert '"tests/test_v028_release.py"' in gate
+    assert '"docs/releases/v0.28.0.md"' in gate

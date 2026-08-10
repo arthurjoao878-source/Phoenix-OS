@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.28.0] - 2026-08-10
+
+### Added
+- Prepared RFC-0028 durable agent runs, checkpoints, controlled recovery, and the five durable-agent architecture records for release.
+- Canonical chained checkpoints, atomic reference stores, fenced leases, deterministic recovery, and bounded workers.
+- Explicit execution-attempt and reconciliation records for indeterminate external work without transparent retry or exactly-once claims.
+- Optional protected payload persistence, bounded retention, cleanup, tombstones, content-free observation, safe administration, and Runtime composition.
+- Durable-agent migration guidance, threat review, release metadata, and wheel/sdist isolated offline package validation.
+
+### Security
+- Durable-agent execution remains disabled unless explicitly configured, and checkpoints remain data rather than authority.
+- Resume, model, tool, approval, reconciliation, lease, fencing, and compatibility decisions are revalidated against current state.
+- Stale workers cannot mutate after fencing changes; malformed, rolled-back, substituted, unsupported, or non-canonical checkpoints fail closed.
+- Indeterminate model or tool attempts are never retried automatically, and Phoenix does not claim exactly-once external side effects.
+- Protected payloads are absent by default and, when enabled, remain bounded, authenticated, versioned, retention-limited, and excluded from safe output.
+
+### Compatibility
+- Phoenix OS 0.27.0 behavior is preserved when durable-agent configuration is omitted.
+- Ordinary RFC-0027 agent execution and RFC-0026 inference remain independently configurable.
+- Final Git tag, wheel/sdist publication, and SHA256SUMS remain pending the final release-publication step.
+
+
 ## [0.27.0] - 2026-07-29
 
 ### Added

@@ -191,12 +191,13 @@ final v0.28.0 release slice.
 
 ## Release notes
 
+- [Phoenix OS 0.28.0](docs/releases/v0.28.0.md)
 - [Phoenix OS 0.27.0](docs/releases/v0.27.0.md)
 - [Phoenix OS 0.26.0](docs/releases/v0.26.0.md)
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize agent, inference, inbound, and webhook behavior,
+The release notes summarize durable-agent, agent, inference, inbound, and webhook behavior,
 security boundaries, compatibility, migration, architecture decisions,
 validation, and package artifacts.
 
