@@ -38,6 +38,8 @@ def test_recursion_fanout_concurrency_and_budget_are_bounded() -> None:
     assert "Per-parent fan-out has a finite configured maximum." in text
     assert "Concurrent child execution has a finite configured maximum." in text
     assert "Delegation cannot increase the root run's total configured budget." in text
+    assert "One `DelegationId` is permanently bound to at most one child-run identity" in text
+    assert "Completing a child releases concurrency capacity but does not restore" in text
 
 
 def test_child_results_remain_untrusted() -> None:
@@ -74,5 +76,10 @@ def test_slice_plan_starts_pending() -> None:
     assert "- [x] Server-owned child-agent registry" in text
     assert "- [x] Exact `agent.delegate` authorization boundary" in text
     assert "- [x] Deterministic contract and authorization tests" in text
-    assert "- [ ] Delegation coordinator" in text
+    assert "- [x] Delegation coordinator" in text
+    assert "- [x] Child admission and lifecycle state machine" in text
+    assert "- [x] Depth, fan-out, concurrency, queue, deadline, and budget enforcement" in text
+    assert "- [x] Cycle prevention and duplicate-identity rejection" in text
+    assert "- [x] Deterministic race and limit tests" in text
+    assert "- [ ] Bounded child input/result validation" in text
     assert "- [ ] Tag, artifacts, and checksums" in text

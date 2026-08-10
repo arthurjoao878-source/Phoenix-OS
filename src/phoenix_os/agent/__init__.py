@@ -142,6 +142,11 @@ from phoenix_os.agent.contracts import (
     canonical_agent_json_bytes,
     freeze_agent_json_object,
 )
+from phoenix_os.agent.coordination import (
+    AgentDelegationCoordinator,
+    AgentDelegationCoordinatorSnapshot,
+    DelegatedChildRun,
+)
 from phoenix_os.agent.coordination_authorization import (
     AGENT_DELEGATE_ACTION,
     DelegationAuthorizer,
@@ -176,6 +181,12 @@ from phoenix_os.agent.coordination_registry import (
     AgentDelegationRegistration,
     AgentDelegationRegistry,
     DelegableAgentDescriptor,
+)
+from phoenix_os.agent.coordination_state import (
+    DelegationBudgetLedger,
+    DelegationLifecycleSnapshot,
+    DelegationRootBudgetSnapshot,
+    DelegationStateMachine,
 )
 from phoenix_os.agent.durable_administration import (
     AGENT_DURABLE_CLEANUP_ACTION,
@@ -413,6 +424,8 @@ from phoenix_os.agent.errors import (
     AgentTimeoutError,
     DelegableAgentAlreadyRegisteredError,
     DelegableAgentNotFoundError,
+    DelegationAlreadyExistsError,
+    DelegationNotFoundError,
     ToolAlreadyRegisteredError,
     ToolExecutionError,
     ToolNotFoundError,
@@ -638,6 +651,8 @@ __all__ = [
     "AgentCancelledError",
     "AgentCodecError",
     "AgentCoordinationError",
+    "AgentDelegationCoordinator",
+    "AgentDelegationCoordinatorSnapshot",
     "AgentDelegationRegistration",
     "AgentDelegationRegistry",
     "AgentDelegationRegistryClosedError",
@@ -711,15 +726,22 @@ __all__ = [
     "DelegableAgentAlreadyRegisteredError",
     "DelegableAgentDescriptor",
     "DelegableAgentNotFoundError",
+    "DelegatedChildRun",
     "DelegatingAgentModelTurnAuthorizer",
+    "DelegationAlreadyExistsError",
     "DelegationAuthorizer",
     "DelegationBudget",
+    "DelegationBudgetLedger",
     "DelegationDepth",
     "DelegationId",
+    "DelegationLifecycleSnapshot",
     "DelegationLimits",
     "DelegationLineage",
     "DelegationLineageEntry",
+    "DelegationNotFoundError",
     "DelegationRequest",
+    "DelegationRootBudgetSnapshot",
+    "DelegationStateMachine",
     "DelegationStatus",
     "DeterministicCheckpointProtector",
     "DeterministicFinalTurn",

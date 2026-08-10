@@ -26,6 +26,8 @@ class AgentErrorCode(StrEnum):
     COORDINATION_REGISTRY_CLOSED = "coordination_registry_closed"
     DELEGABLE_AGENT_ALREADY_REGISTERED = "delegable_agent_already_registered"
     DELEGABLE_AGENT_NOT_FOUND = "delegable_agent_not_found"
+    DELEGATION_ALREADY_EXISTS = "delegation_already_exists"
+    DELEGATION_NOT_FOUND = "delegation_not_found"
 
 
 class AgentError(Exception):
@@ -172,3 +174,17 @@ class DelegableAgentNotFoundError(AgentCoordinationError):
 
     def __init__(self) -> None:
         super().__init__("delegable agent was not found")
+
+
+class DelegationAlreadyExistsError(AgentCoordinationError):
+    code = AgentErrorCode.DELEGATION_ALREADY_EXISTS
+
+    def __init__(self) -> None:
+        super().__init__("delegation already exists")
+
+
+class DelegationNotFoundError(AgentCoordinationError):
+    code = AgentErrorCode.DELEGATION_NOT_FOUND
+
+    def __init__(self) -> None:
+        super().__init__("delegation was not found")

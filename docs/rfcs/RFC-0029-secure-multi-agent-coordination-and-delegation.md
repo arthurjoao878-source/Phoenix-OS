@@ -187,6 +187,48 @@ model/tool budgets, and remaining root allowance.
 
 Delegation cannot manufacture additional authority or budget.
 
+## Coordinator and bounded lifecycle
+
+The in-memory coordinator is responsible only for authorization, finite admission,
+stable child identity, root-budget reservation, and deterministic lifecycle state.
+It does not execute child agents directly.
+
+The reviewed lifecycle is:
+
+```text
+REQUESTED
+-> AUTHORIZED
+-> ADMITTED
+-> RUNNING
+-> COMPLETED
+```
+
+`FAILED`, `CANCELLED`, and `EXPIRED` are immutable terminal outcomes. Invalid,
+non-monotonic, duplicate, or post-terminal transitions fail closed.
+
+Before admission the coordinator enforces the most restrictive applicable values
+for:
+
+- delegation depth;
+- per-parent fan-out;
+- total children per root;
+- concurrent children;
+- queue capacity;
+- request deadline;
+- child budget;
+- root aggregate budget.
+
+One `DelegationId` is permanently bound to at most one child-run identity in one
+coordinator lifetime. Duplicate identities are rejected instead of creating a
+second child.
+
+Root budget reservations are cumulative. Completing a child releases concurrency
+capacity but does not restore already-reserved model turns, tool calls, tokens,
+bytes, or duration, so delegation cannot manufacture additional root allowance.
+
+Cycle prevention remains a pre-admission invariant of the Phoenix-owned lineage
+and registry boundary.
+
 ## Child results
 
 Child input and output are bounded, schema-validated, untrusted data. Child output
@@ -231,11 +273,11 @@ queue, or worker is created, and RFC-0027/RFC-0028 behavior remains unchanged.
 
 ### Slice 2 - Coordinator and bounded lifecycle
 
-- [ ] Delegation coordinator
-- [ ] Child admission and lifecycle state machine
-- [ ] Depth, fan-out, concurrency, queue, deadline, and budget enforcement
-- [ ] Cycle prevention and duplicate-identity rejection
-- [ ] Deterministic race and limit tests
+- [x] Delegation coordinator
+- [x] Child admission and lifecycle state machine
+- [x] Depth, fan-out, concurrency, queue, deadline, and budget enforcement
+- [x] Cycle prevention and duplicate-identity rejection
+- [x] Deterministic race and limit tests
 
 ### Slice 3 - Results, cancellation, and Runtime ownership
 
