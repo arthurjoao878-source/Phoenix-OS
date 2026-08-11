@@ -18,7 +18,7 @@ def test_project_version_is_v0290() -> None:
     assert document["project"]["version"] == "0.29.0"
 
 
-def test_readme_announces_twenty_nine_specs_and_release_candidate() -> None:
+def test_readme_announces_twenty_nine_accepted_specs() -> None:
     readme = _README.read_text(encoding="utf-8")
     assert "Version `0.29.0` implements twenty-nine accepted specifications:" in readme
     assert "**RFC-0029 — Secure Multi-Agent Coordination and Delegation:**" in readme
@@ -29,14 +29,14 @@ def test_readme_announces_twenty_nine_specs_and_release_candidate() -> None:
     assert "## Multi-agent release gate" in readme
 
 
-def test_changelog_starts_with_v0290_release_candidate() -> None:
+def test_changelog_starts_with_v0290_release() -> None:
     changelog = _CHANGELOG.read_text(encoding="utf-8")
     current = "## [0.29.0] - 2026-08-11"
     previous = "## [0.28.0] - 2026-08-10"
     assert changelog.count(current) == 1
     assert changelog.index(current) < changelog.index(previous)
     for phrase in (
-        "RFC-0029",
+        "Accepted RFC-0029",
         "agent.delegate",
         "DelegationId",
         "root budget",
@@ -46,17 +46,17 @@ def test_changelog_starts_with_v0290_release_candidate() -> None:
         assert phrase in changelog
 
 
-def test_v029_release_candidate_notes_are_complete() -> None:
+def test_v029_release_notes_are_complete() -> None:
     notes = _RELEASE_NOTES.read_text(encoding="utf-8")
     for phrase in (
         "# Phoenix OS 0.29.0",
-        "**Release candidate:** 2026-08-11",
+        "**Released:** 2026-08-11",
         "## Highlights",
         "## Security",
         "## Compatibility and migration",
         "## Architecture decisions",
         "## Release validation",
-        "## Planned artifacts",
+        "## Artifacts",
         "python scripts/check_multi_agent_release.py",
         "Git tag `v0.29.0`",
         "phoenix_os-0.29.0-py3-none-any.whl",
@@ -69,11 +69,13 @@ def test_v029_release_candidate_notes_are_complete() -> None:
     assert "TBD" not in upper
 
 
-def test_rfc_remains_draft_until_publication_artifacts_exist() -> None:
+def test_rfc_is_fully_accepted_for_v0290() -> None:
     rfc = " ".join(_RFC.read_text(encoding="utf-8").split())
-    assert "- Status: Draft" in rfc
-    assert "- [ ] Tag, artifacts, and checksums" in rfc
+    assert "- Status: Accepted" in rfc
+    assert "- [ ]" not in rfc
+    assert "- [x] Tag, artifacts, and checksums" in rfc
     assert "- Target release: Phoenix OS v0.29.0" in rfc
+    assert "RFC-0029 is accepted for Phoenix OS 0.29.0." in rfc
 
 
 def test_gate_and_previous_release_notes_remain_available() -> None:

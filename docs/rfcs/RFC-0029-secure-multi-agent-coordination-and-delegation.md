@@ -1,6 +1,6 @@
 # RFC-0029: Secure Multi-Agent Coordination and Delegation
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.29.0
 - Owners: Phoenix OS maintainers
 - Depends on: RFC-0004, RFC-0005, RFC-0007, RFC-0009, RFC-0012, RFC-0015, RFC-0016, RFC-0026, RFC-0027, and RFC-0028
@@ -360,8 +360,8 @@ Phoenix OS v0.29.0 release-candidate evidence is maintained in:
 The named gate builds and validates wheel and sdist archives, rebuilds a wheel
 from the validated sdist, and installs both wheel forms with `--no-deps
 --no-index` in isolated environments before executing the packaged coordination
-surface without source-tree imports. Tagging, final artifacts, checksums, and RFC
-acceptance remain separate final-publication actions.
+surface without source-tree imports. Release publication uses Git tag `v0.29.0`,
+wheel and sdist artifacts, and `SHA256SUMS`.
 
 ## Slice plan
 
@@ -414,7 +414,7 @@ acceptance remain separate final-publication actions.
 - [x] Named multi-agent release gate
 - [x] Offline wheel/sdist validation
 - [x] Release notes and package version 0.29.0
-- [ ] Tag, artifacts, and checksums
+- [x] Tag, artifacts, and checksums
 
 ## Acceptance
 
@@ -425,3 +425,5 @@ Acceptance requires evidence that delegation cannot increase authority or root
 budgets, recursion/fan-out are bounded, cancellation owns child lifecycle,
 durable recovery cannot duplicate children, child results remain untrusted, and
 omitting coordination preserves Phoenix OS v0.28.0 behavior.
+
+RFC-0029 is accepted for Phoenix OS 0.29.0.
