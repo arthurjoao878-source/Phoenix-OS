@@ -42,6 +42,12 @@ def test_recursion_fanout_concurrency_and_budget_are_bounded() -> None:
     assert "Completing a child releases concurrency capacity but does not restore" in text
     assert "One Runtime-owned cancellation token covers the entire queued-to-running child" in text
     assert "`create_agent_coordination_runtime_stack`" in text
+    assert "`create_durable_agent_coordination_runtime_stack`" in text
+    assert "`RUNNING` records become `INDETERMINATE`" in text
+    assert "Recovery never allocates a replacement child identity" in text
+    assert "Only evidence-backed `CONFIRM_NOT_STARTED`" in text
+    assert "Lifetime accounting is durable." in text
+    assert "Recoverable replay is claimed with optimistic compare-and-swap" in text
     assert "Failed, cancelled, and timed-out children expose only a bounded safe" in text
 
 
@@ -90,5 +96,12 @@ def test_slice_plan_starts_pending() -> None:
     assert "- [x] Controlled shutdown and finite draining" in text
     assert "- [x] RuntimeAssembler opt-in composition" in text
     assert "- [x] Content-free observer and administration" in text
-    assert "- [ ] Durable parent/child linkage" in text
+    assert "- [x] Durable parent/child linkage" in text
+    assert "- [x] Durable parent/child linkage" in text
+    assert "- [x] Stable child identity across restart" in text
+    assert "- [x] Duplicate-child prevention after recovery" in text
+    assert "- [x] Fenced durable coordination mutation" in text
+    assert "- [x] Current-policy/config revalidation" in text
+    assert "- [x] Durable cancellation and terminal reconciliation" in text
+    assert "- [ ] Threat-model/security-invariant review" in text
     assert "- [ ] Tag, artifacts, and checksums" in text

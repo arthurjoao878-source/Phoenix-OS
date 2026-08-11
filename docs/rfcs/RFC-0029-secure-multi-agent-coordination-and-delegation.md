@@ -289,6 +289,63 @@ invariants.
 When coordination configuration is omitted, no coordination registry, coordinator,
 queue, or worker is created, and RFC-0027/RFC-0028 behavior remains unchanged.
 
+## Durable coordination recovery
+
+Durable coordination persists content-free delegation identity before child
+execution can begin. The persisted binding includes the stable `DelegationId`,
+parent/root identities, reviewed child identity, exactly one Phoenix-owned
+`child_run_id`, bounded reserved budget, request digest, compatibility digest,
+lifecycle status, optimistic version, recovery classification, and timestamps.
+Raw delegation input and child output are not stored in this coordination
+metadata.
+
+Persistence follows compare-and-swap versioning. `DelegationId` and
+`child_run_id` are unique, immutable identities. A replayed request must match
+the original request digest and the current reviewed child compatibility digest
+before the same child identity can be admitted again.
+
+Startup recovery is deliberately asymmetric:
+
+- `REQUESTED`, `AUTHORIZED`, and `ADMITTED` records become `RECOVERABLE`;
+- `RUNNING` records become `INDETERMINATE`;
+- expired non-terminal records become terminal `EXPIRED`;
+- terminal records are never recovery candidates.
+
+Recoverable work may be re-submitted only with the exact original request
+identity. Phoenix then re-authorizes against current policy and current registry
+configuration and reuses the already-persisted `child_run_id`. Recovery never
+allocates a replacement child identity for the same `DelegationId`.
+
+Indeterminate running work is never replayed automatically. Reconciliation
+requires bounded content-free evidence and an exact expected durable version.
+Only evidence-backed `CONFIRM_NOT_STARTED` may return an indeterminate record to
+recoverable `ADMITTED` state. Evidence may instead confirm completed, failed, or
+cancelled terminal state. Without such evidence, the record remains
+indeterminate.
+
+The reference stores are an atomic in-memory implementation for deterministic
+testing and a dedicated-file SQLite implementation using WAL, `synchronous =
+FULL`, unique child identities, and optimistic compare-and-swap updates. The
+SQLite store persists only coordination metadata and is intentionally separate
+from child prompts/results and provider payloads.
+
+Lifetime accounting is durable. Terminal child records continue to consume the
+root total-child allowance, per-parent fan-out, and reserved root budget after a
+restart. New reservations are checked atomically with record creation; SQLite
+performs that check inside the same `BEGIN IMMEDIATE` transaction as the insert.
+A restart therefore never restores consumed delegation capacity or budget.
+
+Recoverable replay is claimed with optimistic compare-and-swap before local
+admission. Two owners racing the same recoverable `DelegationId` cannot both
+acquire it. If any sibling for the same root remains `INDETERMINATE`, Phoenix
+blocks new or resumed work for that root until reconciliation resolves the
+unknown execution state.
+
+`create_durable_agent_coordination_runtime_stack` is explicit opt-in composition.
+Its lifecycle runs recovery before the coordination runtime accepts new work and
+closes the durable store only after bounded runtime shutdown. Existing
+non-durable coordination and the v0.28 agent stack remain unchanged by omission.
+
 ## Slice plan
 
 ### Slice 0 - RFC foundation and executable specification
@@ -325,12 +382,12 @@ queue, or worker is created, and RFC-0027/RFC-0028 behavior remains unchanged.
 
 ### Slice 4 - Durable coordination and recovery
 
-- [ ] Durable parent/child linkage
-- [ ] Stable child identity across restart
-- [ ] Duplicate-child prevention after recovery
-- [ ] Fenced durable coordination mutation
-- [ ] Current-policy/config revalidation
-- [ ] Durable cancellation and terminal reconciliation
+- [x] Durable parent/child linkage
+- [x] Stable child identity across restart
+- [x] Duplicate-child prevention after recovery
+- [x] Fenced durable coordination mutation
+- [x] Current-policy/config revalidation
+- [x] Durable cancellation and terminal reconciliation
 
 ### Slice 5 - Security review, migration, and release hardening
 

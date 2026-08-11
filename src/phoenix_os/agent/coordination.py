@@ -190,6 +190,7 @@ class AgentDelegationCoordinator:
         context: SecurityContext,
         *,
         cancellation: AgentCancellationToken | None = None,
+        _trusted_child_run_id: AgentRunId | None = None,
     ) -> DelegatedChildRun:
         """Authorize and admit one child, waiting only inside finite queue/deadline bounds."""
 
@@ -204,6 +205,8 @@ class AgentDelegationCoordinator:
             raise TypeError("cancellation must be AgentCancellationToken or None")
         if cancellation is not None:
             cancellation.raise_if_cancelled()
+        if _trusted_child_run_id is not None and not isinstance(_trusted_child_run_id, AgentRunId):
+            raise TypeError("_trusted_child_run_id must be AgentRunId or None")
         if not self._limits.contains(request.limits):
             raise AgentLimitExceededError()
 
@@ -212,7 +215,7 @@ class AgentDelegationCoordinator:
         if cancellation is not None:
             cancellation.raise_if_cancelled()
 
-        child_run_id = AgentRunId()
+        child_run_id = _trusted_child_run_id or AgentRunId()
         lifecycle = DelegationStateMachine(
             request.delegation_id,
             child_run_id,
