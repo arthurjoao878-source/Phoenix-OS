@@ -40,6 +40,9 @@ def test_recursion_fanout_concurrency_and_budget_are_bounded() -> None:
     assert "Delegation cannot increase the root run's total configured budget." in text
     assert "One `DelegationId` is permanently bound to at most one child-run identity" in text
     assert "Completing a child releases concurrency capacity but does not restore" in text
+    assert "One Runtime-owned cancellation token covers the entire queued-to-running child" in text
+    assert "`create_agent_coordination_runtime_stack`" in text
+    assert "Failed, cancelled, and timed-out children expose only a bounded safe" in text
 
 
 def test_child_results_remain_untrusted() -> None:
@@ -81,5 +84,11 @@ def test_slice_plan_starts_pending() -> None:
     assert "- [x] Depth, fan-out, concurrency, queue, deadline, and budget enforcement" in text
     assert "- [x] Cycle prevention and duplicate-identity rejection" in text
     assert "- [x] Deterministic race and limit tests" in text
-    assert "- [ ] Bounded child input/result validation" in text
+    assert "- [x] Bounded child input/result validation" in text
+    assert "- [x] Deterministic aggregation boundary" in text
+    assert "- [x] Parent cancellation propagation" in text
+    assert "- [x] Controlled shutdown and finite draining" in text
+    assert "- [x] RuntimeAssembler opt-in composition" in text
+    assert "- [x] Content-free observer and administration" in text
+    assert "- [ ] Durable parent/child linkage" in text
     assert "- [ ] Tag, artifacts, and checksums" in text

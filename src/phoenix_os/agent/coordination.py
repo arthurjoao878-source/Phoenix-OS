@@ -27,12 +27,14 @@ from phoenix_os.agent.coordination_state import (
     DelegationStateMachine,
 )
 from phoenix_os.agent.errors import (
+    AgentCancelledError,
     AgentLimitExceededError,
     AgentStateConflictError,
     AgentTimeoutError,
     DelegationAlreadyExistsError,
     DelegationNotFoundError,
 )
+from phoenix_os.agent.state import AgentCancellationToken
 from phoenix_os.policy import SecurityContext
 
 
@@ -186,6 +188,8 @@ class AgentDelegationCoordinator:
         self,
         request: DelegationRequest,
         context: SecurityContext,
+        *,
+        cancellation: AgentCancellationToken | None = None,
     ) -> DelegatedChildRun:
         """Authorize and admit one child, waiting only inside finite queue/deadline bounds."""
 
@@ -193,11 +197,20 @@ class AgentDelegationCoordinator:
             raise TypeError("request must be DelegationRequest")
         if not isinstance(context, SecurityContext):
             raise TypeError("context must be SecurityContext")
+        if cancellation is not None and not isinstance(
+            cancellation,
+            AgentCancellationToken,
+        ):
+            raise TypeError("cancellation must be AgentCancellationToken or None")
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
         if not self._limits.contains(request.limits):
             raise AgentLimitExceededError()
 
         descriptor = self._registry.resolve_request(request)
         await self._authorizer.authorize(request, descriptor, context)
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
 
         child_run_id = AgentRunId()
         lifecycle = DelegationStateMachine(
@@ -243,6 +256,8 @@ class AgentDelegationCoordinator:
 
         try:
             while True:
+                if cancellation is not None:
+                    cancellation.raise_if_cancelled()
                 now = self._clock()
                 _require_aware(now, label="clock result")
                 remaining = (request.deadline - now).total_seconds()
@@ -267,10 +282,20 @@ class AgentDelegationCoordinator:
                     changed = self._changed
 
                 try:
-                    await asyncio.wait_for(changed.wait(), timeout=remaining)
+                    if cancellation is None:
+                        await asyncio.wait_for(changed.wait(), timeout=remaining)
+                    else:
+                        await _wait_for_change_or_cancel(
+                            changed,
+                            cancellation,
+                            timeout_seconds=remaining,
+                        )
                 except TimeoutError:
                     await self._expire_queued(record)
                     raise AgentTimeoutError() from None
+        except AgentCancelledError:
+            await self._cancel_queued(record)
+            raise
         except asyncio.CancelledError:
             await self._fail_queued(record)
             raise
@@ -308,6 +333,28 @@ class AgentDelegationCoordinator:
             record = self._require_record_locked(delegation_id)
             record.lifecycle.fail(now=self._resolve_now(now))
             self._release_active_locked(record)
+            return self._view(record)
+
+    async def cancel(
+        self,
+        delegation_id: DelegationId,
+        *,
+        now: datetime | None = None,
+    ) -> DelegatedChildRun:
+        async with self._lock:
+            record = self._require_record_locked(delegation_id)
+            resolved = self._resolve_now(now)
+            if record.queued:
+                record.queued = False
+                self._queued -= 1
+                record.lifecycle.cancel(now=resolved)
+                self._signal_locked()
+                return self._view(record)
+            record.lifecycle.cancel(now=resolved)
+            if record.active:
+                self._release_active_locked(record)
+            else:
+                self._signal_locked()
             return self._view(record)
 
     async def get(self, delegation_id: DelegationId) -> DelegatedChildRun:
@@ -394,6 +441,15 @@ class AgentDelegationCoordinator:
                     record.lifecycle.fail(now=self._clock())
                 self._signal_locked()
 
+    async def _cancel_queued(self, record: _CoordinatorRecord) -> None:
+        async with self._lock:
+            if record.queued:
+                record.queued = False
+                self._queued -= 1
+                if not record.lifecycle.terminal:
+                    record.lifecycle.cancel(now=self._clock())
+                self._signal_locked()
+
     def _release_active_locked(self, record: _CoordinatorRecord) -> None:
         if not record.active:
             raise AgentStateConflictError()
@@ -439,3 +495,32 @@ class AgentDelegationCoordinator:
         changed = self._changed
         self._changed = asyncio.Event()
         changed.set()
+
+
+async def _wait_for_change_or_cancel(
+    changed: asyncio.Event,
+    cancellation: AgentCancellationToken,
+    *,
+    timeout_seconds: float,
+) -> None:
+    change_waiter = asyncio.create_task(changed.wait())
+    cancellation_waiter = asyncio.create_task(cancellation.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {change_waiter, cancellation_waiter},
+            timeout=timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cancellation_waiter in done:
+            raise AgentCancelledError()
+        if change_waiter not in done:
+            raise TimeoutError
+    finally:
+        for waiter in (change_waiter, cancellation_waiter):
+            if not waiter.done():
+                waiter.cancel()
+        await asyncio.gather(
+            change_waiter,
+            cancellation_waiter,
+            return_exceptions=True,
+        )

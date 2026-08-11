@@ -231,6 +231,41 @@ and registry boundary.
 
 ## Child results
 
+### Bounded child execution, results, and Runtime ownership
+
+Child input remains untrusted data. Before a delegated child starts, Phoenix
+canonically encodes the structured delegation input and derives a new
+`AgentRunRequest` from the reviewed child registry entry. The child request uses
+the coordinator-owned `AgentRunId`, current provider/model configuration, and an
+`AgentLimits` value narrowed to the reserved `DelegationBudget`. No parent
+permission, approval, credential, policy decision, tool grant, or model grant is
+copied into the child request.
+
+Child run results are also untrusted. Phoenix binds every result to the exact
+delegation and child-run identity, maps it to a finite `ChildResultStatus`, and
+enforces delegated result-byte and structured-depth bounds before the parent may
+consume it. Failed, cancelled, and timed-out children expose only a bounded safe
+error code and never a partial output.
+
+Multi-child aggregation is deterministic: results are ordered by stable
+`DelegationId`, duplicate delegation or child-run identities fail closed, and
+the aggregate has explicit result-count and encoded-byte limits.
+
+One Runtime-owned cancellation token covers the entire queued-to-running child
+operation. Parent cancellation therefore removes queued work before admission
+and propagates to an active child. Runtime shutdown cancels every owned queued or
+running operation, drains for a finite grace period, and force-cancels only
+within a second finite bound. Detached children remain unsupported.
+
+Coordination is explicit opt-in composition through
+`create_agent_coordination_runtime_stack`. The existing
+`create_agent_runtime_stack` path is unchanged by omission. The coordination
+stack exposes a lifecycle component compatible with Phoenix Runtime
+`ComponentSpec` ownership, plus content-free observer and administration
+surfaces. Operational observations contain stable identifiers, statuses,
+durations, and safe error codes only; they never contain child input or output.
+
+
 Child input and output are bounded, schema-validated, untrusted data. Child output
 never carries executable policy, approvals, credentials, or direct authority.
 
@@ -281,12 +316,12 @@ queue, or worker is created, and RFC-0027/RFC-0028 behavior remains unchanged.
 
 ### Slice 3 - Results, cancellation, and Runtime ownership
 
-- [ ] Bounded child input/result validation
-- [ ] Deterministic aggregation boundary
-- [ ] Parent cancellation propagation
-- [ ] Controlled shutdown and finite draining
-- [ ] RuntimeAssembler opt-in composition
-- [ ] Content-free observer and administration
+- [x] Bounded child input/result validation
+- [x] Deterministic aggregation boundary
+- [x] Parent cancellation propagation
+- [x] Controlled shutdown and finite draining
+- [x] RuntimeAssembler opt-in composition
+- [x] Content-free observer and administration
 
 ### Slice 4 - Durable coordination and recovery
 

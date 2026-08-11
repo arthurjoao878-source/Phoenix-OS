@@ -147,12 +147,25 @@ from phoenix_os.agent.coordination import (
     AgentDelegationCoordinatorSnapshot,
     DelegatedChildRun,
 )
+from phoenix_os.agent.coordination_administration import (
+    AGENT_COORDINATION_DELEGATION_READ_PERMISSION,
+    AGENT_COORDINATION_HEALTH_READ_PERMISSION,
+    AgentCoordinationAdministration,
+    AgentCoordinationAdministrationSnapshot,
+    coordination_delegation_resource,
+    coordination_health_resource,
+)
 from phoenix_os.agent.coordination_authorization import (
     AGENT_DELEGATE_ACTION,
     DelegationAuthorizer,
     PolicyEngineDelegationAuthorizer,
     agent_delegation_resource,
     canonical_delegation_input_digest,
+)
+from phoenix_os.agent.coordination_composition import (
+    AgentCoordinationRuntimeLifecycle,
+    AgentCoordinationRuntimeStack,
+    create_agent_coordination_runtime_stack,
 )
 from phoenix_os.agent.coordination_contracts import (
     MAX_COORDINATION_NAMESPACE_LENGTH,
@@ -177,10 +190,31 @@ from phoenix_os.agent.coordination_contracts import (
     DelegationStatus,
     delegation_budget_fits_agent_limits,
 )
+from phoenix_os.agent.coordination_observer import (
+    AgentCoordinationObserver,
+    ContentFreeAgentCoordinationObserver,
+    CoordinationObservation,
+    CoordinationOperation,
+    CoordinationOperationOutcome,
+    NullAgentCoordinationObserver,
+)
 from phoenix_os.agent.coordination_registry import (
     AgentDelegationRegistration,
     AgentDelegationRegistry,
     DelegableAgentDescriptor,
+)
+from phoenix_os.agent.coordination_results import (
+    ChildResultStatus,
+    DelegatedChildAggregate,
+    DelegatedChildResult,
+    aggregate_delegated_child_results,
+    delegated_child_result_from_agent_result,
+)
+from phoenix_os.agent.coordination_runtime import (
+    AgentCoordinationConfiguration,
+    AgentCoordinationRuntime,
+    AgentCoordinationRuntimeSnapshot,
+    DelegatedAgentService,
 )
 from phoenix_os.agent.coordination_state import (
     DelegationBudgetLedger,
@@ -519,6 +553,8 @@ from phoenix_os.agent.tools import (
 )
 
 __all__ = [
+    "AGENT_COORDINATION_DELEGATION_READ_PERMISSION",
+    "AGENT_COORDINATION_HEALTH_READ_PERMISSION",
     "AGENT_DELEGATE_ACTION",
     "AGENT_DURABLE_CLEANUP_ACTION",
     "AGENT_DURABLE_HEALTH_READ_ACTION",
@@ -650,7 +686,15 @@ __all__ = [
     "AgentCancellationToken",
     "AgentCancelledError",
     "AgentCodecError",
+    "AgentCoordinationAdministration",
+    "AgentCoordinationAdministrationSnapshot",
+    "AgentCoordinationConfiguration",
     "AgentCoordinationError",
+    "AgentCoordinationObserver",
+    "AgentCoordinationRuntime",
+    "AgentCoordinationRuntimeLifecycle",
+    "AgentCoordinationRuntimeSnapshot",
+    "AgentCoordinationRuntimeStack",
     "AgentDelegationCoordinator",
     "AgentDelegationCoordinatorSnapshot",
     "AgentDelegationRegistration",
@@ -718,14 +762,22 @@ __all__ = [
     "CheckpointProtector",
     "CheckpointSchemaVersion",
     "CheckpointSequence",
+    "ChildResultStatus",
     "CompatibilityDigests",
+    "ContentFreeAgentCoordinationObserver",
     "ContentFreeAgentObserver",
     "ContentFreeDurableRunObserver",
     "CoordinationNamespace",
+    "CoordinationObservation",
+    "CoordinationOperation",
+    "CoordinationOperationOutcome",
     "DefaultAgentInferenceRequestFactory",
     "DelegableAgentAlreadyRegisteredError",
     "DelegableAgentDescriptor",
     "DelegableAgentNotFoundError",
+    "DelegatedAgentService",
+    "DelegatedChildAggregate",
+    "DelegatedChildResult",
     "DelegatedChildRun",
     "DelegatingAgentModelTurnAuthorizer",
     "DelegationAlreadyExistsError",
@@ -830,6 +882,7 @@ __all__ = [
     "InMemoryDurableRunStore",
     "InMemoryToolApprovalService",
     "IndeterminateReason",
+    "NullAgentCoordinationObserver",
     "NullAgentObserver",
     "NullDurableRunObserver",
     "PolicyEngineAgentRunAuthorizer",
@@ -894,6 +947,7 @@ __all__ = [
     "agent_run_resource",
     "agent_tool_resource",
     "agent_tools_resource",
+    "aggregate_delegated_child_results",
     "approval_wait_checkpoint_metadata",
     "canonical_agent_json_bytes",
     "canonical_agent_run_request_bytes",
@@ -908,6 +962,9 @@ __all__ = [
     "canonical_tool_schema_bytes",
     "checkpoint_envelope_digest",
     "classify_recovery_checkpoint",
+    "coordination_delegation_resource",
+    "coordination_health_resource",
+    "create_agent_coordination_runtime_stack",
     "create_agent_runtime_stack",
     "create_durable_agent_runtime_stack",
     "decode_agent_run_request",
@@ -920,6 +977,7 @@ __all__ = [
     "decode_tool_invocation_request",
     "decode_tool_invocation_result",
     "decode_tool_output_schema",
+    "delegated_child_result_from_agent_result",
     "delegation_budget_fits_agent_limits",
     "durable_agent_run_resource",
     "durable_attempt_status_query",
