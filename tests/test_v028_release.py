@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PYPROJECT = _ROOT / "pyproject.toml"
 _README = _ROOT / "README.md"
 _CHANGELOG = _ROOT / "CHANGELOG.md"
 _RELEASE_NOTES = _ROOT / "docs" / "releases" / "v0.28.0.md"
@@ -13,9 +11,9 @@ _RFC = _ROOT / "docs" / "rfcs" / "RFC-0028-durable-agent-runs-and-controlled-res
 _GATE = _ROOT / "scripts" / "check_durable_agent_release.py"
 
 
-def test_project_version_is_v0280() -> None:
-    document = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert document["project"]["version"] == "0.28.0"
+def test_v028_release_metadata_remains_available() -> None:
+    assert _RELEASE_NOTES.is_file()
+    assert _RFC.is_file()
 
 
 def test_readme_lists_v028_release_notes_before_v027() -> None:
@@ -115,11 +113,11 @@ def test_previous_release_notes_remain_available() -> None:
     assert "RFC-0027" in previous
 
 
-def test_readme_announces_twenty_eight_accepted_specifications() -> None:
+def test_readme_preserves_v028_release_history() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.28.0` implements twenty-eight accepted specifications:" in readme
     assert "**RFC-0028 — Durable Agent Runs, Checkpoints, and Controlled Resumption:**" in readme
     assert "[Phoenix OS 0.28.0](docs/releases/v0.28.0.md)" in readme
+    assert "[Phoenix OS 0.27.0](docs/releases/v0.27.0.md)" in readme
 
 
 def test_release_records_acceptance_and_publication_names() -> None:

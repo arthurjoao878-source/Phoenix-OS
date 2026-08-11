@@ -46,6 +46,10 @@ the decision requires a new ADR that explicitly supersedes the previous one.
 | [ADR-0023](ADR-0023-controlled-recovery-and-explicit-indeterminate-reconciliation.md) | Accepted | Resume only from reviewed safe boundaries with fresh authority and reconcile indeterminate external attempts explicitly without transparent retry. |
 | [ADR-0024](ADR-0024-opt-in-protected-payloads-and-content-free-durable-operations.md) | Accepted | Keep metadata-only persistence as the default and make bounded authenticated protected content explicit while operational surfaces remain content-free. |
 | [ADR-0025](ADR-0025-opt-in-runtime-owned-durable-lifecycle-retention-and-administration.md) | Accepted | Keep durability opt-in and Runtime-owned with bounded recovery, retention, cleanup, shutdown, and separated exact administration authority. |
+| [ADR-0048](ADR-0048-delegation-creates-work-never-authority.md) | Accepted | Delegation creates reviewed child work but never transfers parent authority. |
+| [ADR-0049](ADR-0049-monotonic-root-budget-reservation.md) | Accepted | Reserve root delegation budget and child capacity monotonically across completion and restart. |
+| [ADR-0050](ADR-0050-phoenix-owned-delegation-lineage.md) | Accepted | Keep lineage Phoenix-owned and permanently bind one delegation identity to at most one child run. |
+| [ADR-0051](ADR-0051-runtime-owned-child-lifecycle-and-recovery.md) | Accepted | Keep child lifecycle Runtime-owned, bounded, cancellation-linked, and fail closed on unknown restart state. |
 
 ## Related specifications
 
@@ -60,3 +64,5 @@ the decision requires a new ADR that explicitly supersedes the previous one.
   [RFC-0027 — Secure Agent Loop and Tool Calling Runtime](../rfcs/RFC-0027-secure-agent-loop-and-tool-calling.md).
 - ADR-0021 through ADR-0025 record the principal durable choices implemented by
   [RFC-0028 — Durable Agent Runs, Checkpoints, and Controlled Resumption](../rfcs/RFC-0028-durable-agent-runs-and-controlled-resumption.md).
+- ADR-0048 through ADR-0051 record the principal durable choices implemented by
+  [RFC-0029 — Secure Multi-Agent Coordination and Delegation](../rfcs/RFC-0029-secure-multi-agent-coordination-and-delegation.md).

@@ -346,6 +346,23 @@ Its lifecycle runs recovery before the coordination runtime accepts new work and
 closes the durable store only after bounded runtime shutdown. Existing
 non-durable coordination and the v0.28 agent stack remain unchanged by omission.
 
+
+## Release-candidate hardening
+
+Phoenix OS v0.29.0 release-candidate evidence is maintained in:
+
+- `docs/security/RFC-0029-multi-agent-threat-model-review.md`;
+- `docs/migrations/v0.28.0-to-v0.29.0-multi-agent.md`;
+- ADR-0048 through ADR-0051;
+- `docs/releases/v0.29.0.md`; and
+- `scripts/check_multi_agent_release.py`.
+
+The named gate builds and validates wheel and sdist archives, rebuilds a wheel
+from the validated sdist, and installs both wheel forms with `--no-deps
+--no-index` in isolated environments before executing the packaged coordination
+surface without source-tree imports. Tagging, final artifacts, checksums, and RFC
+acceptance remain separate final-publication actions.
+
 ## Slice plan
 
 ### Slice 0 - RFC foundation and executable specification
@@ -391,12 +408,12 @@ non-durable coordination and the v0.28 agent stack remain unchanged by omission.
 
 ### Slice 5 - Security review, migration, and release hardening
 
-- [ ] Threat-model/security-invariant review
-- [ ] ADRs for authority, budgets, lineage, and lifecycle
-- [ ] v0.28.0 to v0.29.0 migration guidance
-- [ ] Named multi-agent release gate
-- [ ] Offline wheel/sdist validation
-- [ ] Release notes and package version 0.29.0
+- [x] Threat-model/security-invariant review
+- [x] ADRs for authority, budgets, lineage, and lifecycle
+- [x] v0.28.0 to v0.29.0 migration guidance
+- [x] Named multi-agent release gate
+- [x] Offline wheel/sdist validation
+- [x] Release notes and package version 0.29.0
 - [ ] Tag, artifacts, and checksums
 
 ## Acceptance

@@ -139,6 +139,8 @@ class InMemoryDurableDelegationStore(DurableDelegationStore):
             current = self._records.get(record.delegation_id)
             if current is None or current.version != expected_version:
                 raise AgentStateConflictError()
+            if current.terminal:
+                raise AgentStateConflictError()
             _require_same_identity(current, record)
             self._records[record.delegation_id] = record
             return record

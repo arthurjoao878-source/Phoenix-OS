@@ -97,11 +97,15 @@ def test_slice_plan_starts_pending() -> None:
     assert "- [x] RuntimeAssembler opt-in composition" in text
     assert "- [x] Content-free observer and administration" in text
     assert "- [x] Durable parent/child linkage" in text
-    assert "- [x] Durable parent/child linkage" in text
     assert "- [x] Stable child identity across restart" in text
     assert "- [x] Duplicate-child prevention after recovery" in text
     assert "- [x] Fenced durable coordination mutation" in text
     assert "- [x] Current-policy/config revalidation" in text
     assert "- [x] Durable cancellation and terminal reconciliation" in text
-    assert "- [ ] Threat-model/security-invariant review" in text
+    assert "- [x] Threat-model/security-invariant review" in text
+    assert "- [x] ADRs for authority, budgets, lineage, and lifecycle" in text
+    assert "- [x] v0.28.0 to v0.29.0 migration guidance" in text
+    assert "- [x] Named multi-agent release gate" in text
+    assert "- [x] Offline wheel/sdist validation" in text
+    assert "- [x] Release notes and package version 0.29.0" in text
     assert "- [ ] Tag, artifacts, and checksums" in text

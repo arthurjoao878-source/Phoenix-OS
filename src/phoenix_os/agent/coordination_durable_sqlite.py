@@ -387,6 +387,8 @@ class SQLiteDurableDelegationStore(DurableDelegationStore):
                 current = _record_from_row(current_row)
                 if current.version != expected_version:
                     raise AgentStateConflictError()
+                if current.terminal:
+                    raise AgentStateConflictError()
                 _require_same_identity(current, record)
 
                 cursor = connection.execute(

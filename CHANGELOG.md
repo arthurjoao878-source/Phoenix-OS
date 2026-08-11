@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.29.0] - 2026-08-11
+
+### Added
+- RFC-0029 secure multi-agent coordination with reviewed registered-child delegation and exact `agent.delegate` authority.
+- Phoenix-owned delegation lineage, stable `DelegationId` child identity, bounded result aggregation, parent cancellation, and finite Runtime lifecycle.
+- Monotonic root budget, total-child, fan-out, concurrency, queue, deadline, input/result, and aggregation limits.
+- Durable delegation linkage with restart-safe lifetime accounting, exclusive recovery claims, indeterminate running-child reconciliation, and SQLite reference persistence.
+- Multi-agent migration guidance, four architecture records, formal threat review, release metadata, and isolated offline wheel/sdist validation.
+
+### Security
+- Delegation creates work, never authority; parent permissions, approvals, credentials, model grants, tool grants, and policy decisions are never copied to a child.
+- Child admission uses current server-owned registration and current policy, while child results remain untrusted data.
+- Completing children does not restore lifetime root budget or child capacity, and restart does not reset those reservations.
+- One delegation binds to one child run; unknown running work becomes indeterminate and is never replayed automatically.
+- Coordination exposes no generic shell, filesystem, network, browser, desktop, or operating-system authority.
+
+### Compatibility
+- Phoenix OS 0.28.0 behavior is preserved when coordination configuration is omitted.
+- Upgrade creates no delegation, child, worker, store, permission, approval, credential, model call, tool call, or external access automatically.
+- Final publication is blocked on the full quality gate, all named subsystem gates, the new multi-agent gate, and release artifact checksums.
+
+
 ## [0.28.0] - 2026-08-10
 
 ### Added

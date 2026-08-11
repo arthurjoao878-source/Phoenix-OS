@@ -280,3 +280,47 @@ async def test_sqlite_restart_preserves_lifetime_parent_fanout(tmp_path: Path) -
             limits=limits,
         )
     await second_store.close()
+
+
+@pytest.mark.asyncio
+async def test_in_memory_terminal_record_cannot_be_resurrected() -> None:
+    store = InMemoryDurableDelegationStore()
+    terminal = _record(status=DelegationStatus.COMPLETED)
+    await _create(store, terminal)
+
+    resurrected = replace(
+        terminal,
+        status=DelegationStatus.ADMITTED,
+        version=terminal.version.next(),
+        updated_at=_NOW + timedelta(seconds=1),
+    )
+    with pytest.raises(AgentStateConflictError):
+        await store.compare_and_swap(
+            resurrected,
+            expected_version=terminal.version,
+        )
+
+    assert await store.get(terminal.delegation_id) == terminal
+
+
+@pytest.mark.asyncio
+async def test_sqlite_terminal_record_cannot_be_resurrected(tmp_path: Path) -> None:
+    path = tmp_path / "coordination.sqlite3"
+    store = SQLiteDurableDelegationStore(path)
+    terminal = _record(status=DelegationStatus.COMPLETED)
+    await _create(store, terminal)
+
+    resurrected = replace(
+        terminal,
+        status=DelegationStatus.ADMITTED,
+        version=terminal.version.next(),
+        updated_at=_NOW + timedelta(seconds=1),
+    )
+    with pytest.raises(AgentStateConflictError):
+        await store.compare_and_swap(
+            resurrected,
+            expected_version=terminal.version,
+        )
+
+    assert await store.get(terminal.delegation_id) == terminal
+    await store.close()

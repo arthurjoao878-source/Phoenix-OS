@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.28.0` implements twenty-eight accepted specifications:
+Version `0.29.0` implements twenty-nine accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -77,6 +77,10 @@ Version `0.28.0` implements twenty-eight accepted specifications:
   restart-resumable agent execution with canonical chained checkpoints, fenced
   leases, fresh authority on recovery, explicit indeterminate reconciliation,
   metadata-only persistence by default, bounded retention, and Runtime-owned lifecycle.
+- **RFC-0029 — Secure Multi-Agent Coordination and Delegation:** opt-in
+  registered-agent delegation with exact independent authority, Phoenix-owned
+  lineage, monotonic root budgets, bounded child lifecycle, untrusted results,
+  durable child identity, and fail-closed restart recovery.
 
 The core intentionally contains no AI model, remote database driver, semantic-memory engine,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -193,8 +197,26 @@ action/resource surface. The gate derives the package version from
 `pyproject.toml`, so the implementation slices can remain on v0.27.0 until the
 final v0.28.0 release slice.
 
+## Multi-agent release gate
+
+RFC-0029 adds a named gate for delegation authority, lineage, root budgets,
+child lifecycle, durable recovery, migration, security review, and packaging:
+
+```bash
+python scripts/check_multi_agent_release.py
+```
+
+The gate reruns all `test_agent_coordination*.py` regressions plus RFC-0029
+migration, ADR, threat-review, and release suites; validates package metadata,
+all shipped `coordination*.py` modules, archive paths, and sensitive-file
+exclusions; rebuilds a wheel from the validated sdist; and installs both wheel
+forms with `--no-deps --no-index` in isolated environments before exercising
+exact `agent.delegate` authority and durable delegation identity without
+source-tree imports.
+
 ## Release notes
 
+- [Phoenix OS 0.29.0](docs/releases/v0.29.0.md)
 - [Phoenix OS 0.28.0](docs/releases/v0.28.0.md)
 - [Phoenix OS 0.27.0](docs/releases/v0.27.0.md)
 - [Phoenix OS 0.26.0](docs/releases/v0.26.0.md)
@@ -250,6 +272,16 @@ administration, and disable-first rollback guidance:
 Existing v0.27.0 behavior remains unchanged when durable-agent configuration is
 omitted.
 
+The opt-in v0.29.0 secure multi-agent subsystem has staged registration, exact
+delegation policy, bounded root budgets, lineage, cancellation, durable recovery,
+content-free observation, and disable-first rollback guidance:
+
+- [Migrate v0.28.0 deployments to v0.29.0 multi-agent coordination](docs/migrations/v0.28.0-to-v0.29.0-multi-agent.md)
+
+Existing v0.28.0 behavior remains unchanged when coordination configuration is
+omitted. The [RFC-0029 threat-model and security-invariant review](docs/security/RFC-0029-multi-agent-threat-model-review.md) records the release
+evidence and residual risks.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -274,6 +306,10 @@ reconciliation, opt-in protected payloads with content-free operations, and
 opt-in Runtime-owned durability with bounded retention and administration.
 The [RFC-0028 durable-agent threat-model and security-invariant review](docs/security/RFC-0028-durable-agent-threat-model-review.md)
 records release evidence, residual risks, and the mapping of all forty-five security invariants.
+The RFC-0029 coordination records cover delegation-without-authority, monotonic
+root-budget reservation, Phoenix-owned lineage with stable child identity, and
+Runtime-owned bounded lifecycle with fail-closed recovery. The [RFC-0029 multi-agent threat-model and security-invariant review](docs/security/RFC-0029-multi-agent-threat-model-review.md) records all forty-five
+coordination invariants and release evidence.
 
 ## Local dashboard example
 
