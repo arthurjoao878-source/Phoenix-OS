@@ -27,6 +27,7 @@ from phoenix_os.agent import (
     ArtifactOriginKind,
     ArtifactProvenance,
     ArtifactReadRequest,
+    ArtifactRecord,
     ArtifactStatus,
     ArtifactVersion,
     ArtifactWriteRequest,
@@ -203,6 +204,41 @@ def test_workspace_retention_and_limits_are_finite_and_relationally_safe() -> No
         )
     with pytest.raises(ValueError):
         WorkspaceLimits(max_artifact_bytes=1024, max_total_bytes_per_scope=512)
+
+
+def test_artifact_record_retention_is_globally_bounded_by_status() -> None:
+    content = b"artifact bytes"
+    digest = artifact_content_digest(content)
+
+    with pytest.raises(ValueError, match="global maximum"):
+        ArtifactRecord(
+            scope=_scope(),
+            artifact_id=_ARTIFACT_ID,
+            version=ArtifactVersion(),
+            status=ArtifactStatus.ACTIVE,
+            content_digest=digest,
+            byte_length=len(content),
+            created_at=_NOW,
+            updated_at=_NOW,
+            expires_at=_NOW + MAX_WORKSPACE_RETENTION + timedelta(seconds=1),
+            logical_path=ArtifactLogicalPath("reports/result.txt"),
+            media_type=ArtifactMediaType("text/plain"),
+            provenance=_provenance(content),
+        )
+
+    with pytest.raises(ValueError, match="global maximum"):
+        ArtifactRecord(
+            scope=_scope(),
+            artifact_id=_ARTIFACT_ID,
+            status=ArtifactStatus.TOMBSTONED,
+            version=ArtifactVersion(2),
+            content_digest=digest,
+            byte_length=0,
+            created_at=_NOW,
+            updated_at=_NOW,
+            expires_at=_NOW + MAX_WORKSPACE_TOMBSTONE_RETENTION + timedelta(seconds=1),
+            deleted_at=_NOW,
+        )
 
 
 def test_provenance_is_immutable_bounded_origin_metadata() -> None:

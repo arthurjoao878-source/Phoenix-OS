@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
+from typing import Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
 from phoenix_os.agent.contracts import AgentId, AgentRunId
@@ -27,6 +28,7 @@ MAX_WORKSPACE_MEDIA_TYPE_LENGTH = 255
 MAX_WORKSPACE_PROVENANCE_ITEMS = 32
 MAX_WORKSPACE_SOURCE_VERSION_LENGTH = 128
 MAX_WORKSPACE_ARTIFACTS_PER_SCOPE = 100_000
+MAX_WORKSPACE_ARTIFACT_ID_HISTORY_PER_SCOPE = 100_000
 MAX_WORKSPACE_SCOPE_TOTAL_BYTES = 10_737_418_240
 MAX_WORKSPACE_LIST_RESULTS = 256
 MAX_WORKSPACE_RETENTION = timedelta(days=3650)
@@ -50,6 +52,15 @@ def _positive_int(value: int, *, label: str, maximum: int) -> None:
         raise TypeError(f"{label} must be an integer")
     if value <= 0:
         raise ValueError(f"{label} must be greater than zero")
+    if value > maximum:
+        raise ValueError(f"{label} exceeds the global maximum")
+
+
+def _non_negative_int(value: int, *, label: str, maximum: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{label} must be an integer")
+    if value < 0:
+        raise ValueError(f"{label} cannot be negative")
     if value > maximum:
         raise ValueError(f"{label} exceeds the global maximum")
 
@@ -428,6 +439,7 @@ class WorkspaceLimits:
 
     max_artifact_bytes: int = 16_777_216
     max_artifacts_per_scope: int = 10_000
+    max_artifact_id_history_per_scope: int = 100_000
     max_total_bytes_per_scope: int = 1_073_741_824
     max_logical_path_bytes: int = 512
     max_logical_path_segments: int = 32
@@ -441,6 +453,11 @@ class WorkspaceLimits:
                 "max_artifacts_per_scope",
                 self.max_artifacts_per_scope,
                 MAX_WORKSPACE_ARTIFACTS_PER_SCOPE,
+            ),
+            (
+                "max_artifact_id_history_per_scope",
+                self.max_artifact_id_history_per_scope,
+                MAX_WORKSPACE_ARTIFACT_ID_HISTORY_PER_SCOPE,
             ),
             (
                 "max_total_bytes_per_scope",
@@ -463,8 +480,182 @@ class WorkspaceLimits:
             _positive_int(value, label=label, maximum=maximum)
         if self.max_artifact_bytes > self.max_total_bytes_per_scope:
             raise ValueError("max_artifact_bytes cannot exceed max_total_bytes_per_scope")
+        if self.max_artifact_id_history_per_scope < self.max_artifacts_per_scope:
+            raise ValueError(
+                "max_artifact_id_history_per_scope cannot be less than max_artifacts_per_scope"
+            )
         if not isinstance(self.retention, WorkspaceRetentionPolicy):
             raise TypeError("retention must be WorkspaceRetentionPolicy")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRecord:
+    """Content-free authoritative metadata for one artifact version or tombstone."""
+
+    scope: WorkspaceScope
+    artifact_id: ArtifactId
+    version: ArtifactVersion
+    status: ArtifactStatus
+    content_digest: ArtifactDigest
+    byte_length: int
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+    logical_path: ArtifactLogicalPath | None = None
+    media_type: ArtifactMediaType | None = None
+    provenance: ArtifactProvenance | None = None
+    metadata: Mapping[str, str] = field(default_factory=dict)
+    deleted_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, WorkspaceScope):
+            raise TypeError("scope must be WorkspaceScope")
+        if not isinstance(self.artifact_id, ArtifactId):
+            raise TypeError("artifact_id must be ArtifactId")
+        if not isinstance(self.version, ArtifactVersion):
+            raise TypeError("version must be ArtifactVersion")
+        if not isinstance(self.status, ArtifactStatus):
+            raise TypeError("status must be ArtifactStatus")
+        if not isinstance(self.content_digest, ArtifactDigest):
+            raise TypeError("content_digest must be ArtifactDigest")
+        _non_negative_int(
+            self.byte_length,
+            label="artifact byte_length",
+            maximum=MAX_WORKSPACE_ARTIFACT_BYTES,
+        )
+        _aware(self.created_at, label="created_at")
+        _aware(self.updated_at, label="updated_at")
+        _aware(self.expires_at, label="expires_at")
+        if self.updated_at < self.created_at:
+            raise ValueError("updated_at cannot precede created_at")
+        if self.expires_at <= self.updated_at:
+            raise ValueError("expires_at must follow updated_at")
+        retention_duration = self.expires_at - self.updated_at
+        maximum_retention = (
+            MAX_WORKSPACE_RETENTION
+            if self.status is ArtifactStatus.ACTIVE
+            else MAX_WORKSPACE_TOMBSTONE_RETENTION
+        )
+        if retention_duration > maximum_retention:
+            raise ValueError("artifact record retention exceeds the global maximum")
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_text_mapping(
+                self.metadata,
+                label="artifact metadata",
+                maximum_items=MAX_WORKSPACE_METADATA_ITEMS,
+            ),
+        )
+
+        if self.status is ArtifactStatus.ACTIVE:
+            if not isinstance(self.logical_path, ArtifactLogicalPath):
+                raise TypeError("active artifact record requires ArtifactLogicalPath")
+            if not isinstance(self.media_type, ArtifactMediaType):
+                raise TypeError("active artifact record requires ArtifactMediaType")
+            if not isinstance(self.provenance, ArtifactProvenance):
+                raise TypeError("active artifact record requires ArtifactProvenance")
+            if self.provenance.content_digest != self.content_digest:
+                raise ValueError("provenance content digest does not match artifact digest")
+            if self.provenance.created_at > self.updated_at:
+                raise ValueError("provenance created_at cannot follow artifact updated_at")
+            if self.deleted_at is not None:
+                raise ValueError("active artifact record cannot have deleted_at")
+            return
+
+        if self.logical_path is not None:
+            raise ValueError("tombstoned artifact record cannot retain logical_path")
+        if self.byte_length != 0:
+            raise ValueError("tombstoned artifact record cannot retain byte length")
+        if self.media_type is not None:
+            raise ValueError("tombstoned artifact record cannot retain media_type")
+        if self.provenance is not None:
+            raise ValueError("tombstoned artifact record cannot retain provenance")
+        if self.metadata:
+            raise ValueError("tombstoned artifact record cannot retain metadata")
+        if self.deleted_at is None:
+            raise ValueError("tombstoned artifact record requires deleted_at")
+        _aware(self.deleted_at, label="deleted_at")
+        if self.deleted_at != self.updated_at:
+            raise ValueError("tombstone deleted_at must equal updated_at")
+
+    def expired(self, *, now: datetime) -> bool:
+        """Return whether this logical version is outside its retention window."""
+
+        _aware(now, label="now")
+        return now >= self.expires_at
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReadResult:
+    """Validated immutable bytes paired with their content-free authoritative record."""
+
+    record: ArtifactRecord
+    content: bytes
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.record, ArtifactRecord):
+            raise TypeError("record must be ArtifactRecord")
+        if self.record.status is not ArtifactStatus.ACTIVE:
+            raise ValueError("artifact read result requires an active record")
+        content = _bounded_bytes(
+            self.content,
+            label="artifact content",
+            maximum_bytes=MAX_WORKSPACE_ARTIFACT_BYTES,
+        )
+        if len(content) != self.record.byte_length:
+            raise ValueError("artifact content byte length does not match record")
+        if artifact_content_digest(content) != self.record.content_digest:
+            raise ValueError("artifact content digest does not match record")
+        object.__setattr__(self, "content", content)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactListResult:
+    """Bounded deterministic content-free listing for one exact workspace scope."""
+
+    scope: WorkspaceScope
+    artifacts: Sequence[ArtifactRecord]
+    truncated: bool = False
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, WorkspaceScope):
+            raise TypeError("scope must be WorkspaceScope")
+        normalized = tuple(self.artifacts)
+        if len(normalized) > MAX_WORKSPACE_LIST_RESULTS:
+            raise ValueError("artifact list result exceeds the maximum artifact count")
+        if any(not isinstance(record, ArtifactRecord) for record in normalized):
+            raise TypeError("artifacts must contain ArtifactRecord values")
+        if any(record.scope != self.scope for record in normalized):
+            raise ValueError("artifact list result contains a mismatched scope")
+        if any(record.status is not ArtifactStatus.ACTIVE for record in normalized):
+            raise ValueError("artifact list result contains a non-active artifact")
+        artifact_ids = [record.artifact_id for record in normalized]
+        if len(artifact_ids) != len(set(artifact_ids)):
+            raise ValueError("artifact list result contains duplicate artifacts")
+        if not isinstance(self.truncated, bool):
+            raise TypeError("truncated must be bool")
+        _aware(self.created_at, label="created_at")
+        object.__setattr__(
+            self,
+            "artifacts",
+            tuple(
+                sorted(
+                    normalized,
+                    key=lambda record: (
+                        record.logical_path.value if record.logical_path is not None else "",
+                        record.artifact_id.value.int,
+                    ),
+                )
+            ),
+        )
+
+    @property
+    def records(self) -> tuple[ArtifactRecord, ...]:
+        """Return the artifact records using the generic record-listing vocabulary."""
+
+        return tuple(self.artifacts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,3 +762,24 @@ class ArtifactDeleteRequest:
         if not isinstance(self.expected_version, ArtifactVersion):
             raise TypeError("expected_version must be ArtifactVersion")
         _aware(self.created_at, label="created_at")
+
+
+@runtime_checkable
+class WorkspaceStore(Protocol):
+    """Authoritative provider-neutral boundary for workspace metadata and bytes."""
+
+    @property
+    def closed(self) -> bool: ...
+
+    @property
+    def limits(self) -> WorkspaceLimits: ...
+
+    def write(self, request: ArtifactWriteRequest) -> Awaitable[ArtifactRecord]: ...
+
+    def read(self, request: ArtifactReadRequest) -> Awaitable[ArtifactReadResult | None]: ...
+
+    def list(self, request: ArtifactListRequest) -> Awaitable[ArtifactListResult]: ...
+
+    def delete(self, request: ArtifactDeleteRequest) -> Awaitable[None]: ...
+
+    def close(self) -> Awaitable[None]: ...
