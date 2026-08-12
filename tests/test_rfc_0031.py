@@ -194,7 +194,7 @@ def test_rfc_0031_proposes_provider_neutral_contracts() -> None:
     assert "process handle" in text
 
 
-def test_rfc_0031_slice_zero_complete_and_later_slices_pending() -> None:
+def test_rfc_0031_slices_zero_and_one_complete_and_later_slices_pending() -> None:
     text = _text()
     for slice_number in range(6):
         assert f"### Slice {slice_number} -" in text
@@ -209,7 +209,18 @@ def test_rfc_0031_slice_zero_complete_and_later_slices_pending() -> None:
     ):
         assert f"- [x] {item}" in text
 
-    assert "- [ ] Immutable workspace/artifact identifiers" in text
+    for item in (
+        (
+            "Immutable workspace/artifact identifiers, versions, digests, "
+            "provenance, retention, and limits"
+        ),
+        "Canonical bounded Phoenix logical paths",
+        "Exact `workspace.*` constants and resources",
+        "Server-owned run, agent, and principal scope derivation",
+        "Independent current-policy authorization",
+        "Deterministic contract/path/authorization tests",
+    ):
+        assert f"- [x] {item}" in text
     assert "- [ ] Reference authoritative workspace store" in text
     assert "- [ ] Explicit bounded import contract and service path" in text
     assert "- [ ] Fail-closed startup/recovery" in text

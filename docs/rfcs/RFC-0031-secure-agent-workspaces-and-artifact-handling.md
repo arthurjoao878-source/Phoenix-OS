@@ -373,12 +373,12 @@ behavior remains unchanged.
 
 ### Slice 1 - Contracts, scopes, paths, and authorization
 
-- [ ] Immutable workspace/artifact identifiers, versions, digests, provenance, retention, and limits
-- [ ] Canonical bounded Phoenix logical paths
-- [ ] Exact `workspace.*` constants and resources
-- [ ] Server-owned run, agent, and principal scope derivation
-- [ ] Independent current-policy authorization
-- [ ] Deterministic contract/path/authorization tests
+- [x] Immutable workspace/artifact identifiers, versions, digests, provenance, retention, and limits
+- [x] Canonical bounded Phoenix logical paths
+- [x] Exact `workspace.*` constants and resources
+- [x] Server-owned run, agent, and principal scope derivation
+- [x] Independent current-policy authorization
+- [x] Deterministic contract/path/authorization tests
 
 ### Slice 2 - Authoritative store, quotas, and mutation safety
 
