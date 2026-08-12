@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.29.0` implements twenty-nine accepted specifications:
+Version `0.30.0` implements thirty accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -81,8 +81,12 @@ Version `0.29.0` implements twenty-nine accepted specifications:
   registered-agent delegation with exact independent authority, Phoenix-owned
   lineage, monotonic root budgets, bounded child lifecycle, untrusted results,
   durable child identity, and fail-closed restart recovery.
+- **RFC-0030 — Secure Agent Memory and Context Retrieval:** opt-in persistent
+  run/agent/principal memory with exact independent authorization, explicit bounded
+  writes and provenance, authoritative retention/tombstones, deterministic retrieval,
+  untrusted context assembly, optional semantic indexing, and Runtime-owned recovery.
 
-The core intentionally contains no AI model, remote database driver, semantic-memory engine,
+The core intentionally contains no AI model, remote database driver, external vector database,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
 queue broker, audit signature provider, remote audit archive, telemetry vendor, hosted control-plane service, implicit remote exposure, or
 operating-system automation. The
@@ -214,8 +218,27 @@ forms with `--no-deps --no-index` in isolated environments before exercising
 exact `agent.delegate` authority and durable delegation identity without
 source-tree imports.
 
+## Agent-memory release gate
+
+RFC-0030 adds a named gate for exact memory authority, scope isolation, retention,
+retrieval, untrusted context, semantic indexing, recovery, migration, security
+review, and packaging:
+
+```bash
+python scripts/check_agent_memory_release.py
+```
+
+The gate reruns all `test_agent_memory*.py` regressions plus RFC-0030 release
+metadata; validates package metadata, all shipped `memory_*.py` modules, archive
+paths, sensitive-file exclusions, migration guidance, ADRs, and threat review;
+rebuilds a wheel from the validated sdist; and installs both wheel forms with
+`--no-deps --no-index` in isolated environments before exercising packaged exact
+scope/resources, authoritative memory, deterministic retrieval, and deletion
+without source-tree imports.
+
 ## Release notes
 
+- [Phoenix OS 0.30.0](docs/releases/v0.30.0.md)
 - [Phoenix OS 0.29.0](docs/releases/v0.29.0.md)
 - [Phoenix OS 0.28.0](docs/releases/v0.28.0.md)
 - [Phoenix OS 0.27.0](docs/releases/v0.27.0.md)
@@ -223,7 +246,7 @@ source-tree imports.
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize durable-agent, agent, inference, inbound, and webhook behavior,
+The release notes summarize agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
 security boundaries, compatibility, migration, architecture decisions,
 validation, and package artifacts.
 
@@ -282,6 +305,17 @@ Existing v0.28.0 behavior remains unchanged when coordination configuration is
 omitted. The [RFC-0029 threat-model and security-invariant review](docs/security/RFC-0029-multi-agent-threat-model-review.md) records the release
 evidence and residual risks.
 
+The opt-in v0.30.0 secure agent-memory subsystem has staged exact scopes,
+independent memory policy, explicit writes, conservative bounds, isolation,
+poisoning resistance, semantic-provider review, restart recovery, safe operations,
+and disable-first rollback guidance:
+
+- [Migrate v0.29.0 deployments to v0.30.0 agent memory](docs/migrations/v0.29.0-to-v0.30.0-agent-memory.md)
+
+Existing v0.29.0 behavior remains unchanged when memory configuration is omitted.
+The [RFC-0030 agent-memory threat-model and security-invariant review](docs/security/RFC-0030-agent-memory-threat-model-review.md)
+records all fifty-four invariants, release evidence, and residual risks.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -310,6 +344,11 @@ The RFC-0029 coordination records cover delegation-without-authority, monotonic
 root-budget reservation, Phoenix-owned lineage with stable child identity, and
 Runtime-owned bounded lifecycle with fail-closed recovery. The [RFC-0029 multi-agent threat-model and security-invariant review](docs/security/RFC-0029-multi-agent-threat-model-review.md) records all forty-five
 coordination invariants and release evidence.
+The RFC-0030 agent-memory records cover memory-without-authority, Phoenix-owned
+exact scopes without implicit sharing, authoritative source records with derived
+indexes, and finite retention with Runtime-owned bounded lifecycle. The
+[RFC-0030 agent-memory threat-model and security-invariant review](docs/security/RFC-0030-agent-memory-threat-model-review.md)
+records all fifty-four memory invariants and release evidence.
 
 ## Local dashboard example
 

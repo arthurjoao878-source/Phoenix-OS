@@ -328,6 +328,25 @@ adapter, index, worker, cleanup task, or context injection is created.
 Existing Phoenix OS v0.29.0 agent, durable-agent, and multi-agent behavior remains
 unchanged.
 
+## Release-candidate evidence
+
+Phoenix OS v0.30.0 release-candidate evidence is maintained in:
+
+- `docs/security/RFC-0030-agent-memory-threat-model-review.md`;
+- `docs/migrations/v0.29.0-to-v0.30.0-agent-memory.md`;
+- `docs/adrs/ADR-0052-memory-informs-work-never-authority.md`;
+- `docs/adrs/ADR-0053-phoenix-owned-exact-memory-scopes.md`;
+- `docs/adrs/ADR-0054-authoritative-memory-records-derived-indexes.md`;
+- `docs/adrs/ADR-0055-finite-retention-runtime-owned-memory-lifecycle.md`;
+- `docs/releases/v0.30.0.md`;
+- `scripts/check_agent_memory_release.py`.
+
+The named gate builds and validates wheel and sdist archives, rebuilds a wheel from
+the validated sdist, and installs both wheel forms with `--no-deps --no-index` in
+isolated environments before executing the packaged agent-memory surface without
+source-tree imports. Tagging, final artifacts, checksums, and RFC acceptance remain
+separate final-publication actions.
+
 ## Slice plan
 
 ### Slice 0 - RFC foundation and executable specification
@@ -375,12 +394,12 @@ unchanged.
 
 ### Slice 5 - Security review, migration, and release hardening
 
-- [ ] Threat-model/security-invariant review
-- [ ] ADRs for memory authority, scope isolation, source-of-truth indexing, and retention
-- [ ] v0.29.0 to v0.30.0 migration guidance
-- [ ] Named agent-memory release gate
-- [ ] Offline wheel/sdist validation
-- [ ] Release notes and package version 0.30.0
+- [x] Threat-model/security-invariant review
+- [x] ADRs for memory authority, scope isolation, source-of-truth indexing, and retention
+- [x] v0.29.0 to v0.30.0 migration guidance
+- [x] Named agent-memory release gate
+- [x] Offline wheel/sdist validation
+- [x] Release notes and package version 0.30.0
 - [ ] Tag, artifacts, and checksums
 
 ## Acceptance

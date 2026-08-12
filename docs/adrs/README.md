@@ -50,6 +50,10 @@ the decision requires a new ADR that explicitly supersedes the previous one.
 | [ADR-0049](ADR-0049-monotonic-root-budget-reservation.md) | Accepted | Reserve root delegation budget and child capacity monotonically across completion and restart. |
 | [ADR-0050](ADR-0050-phoenix-owned-delegation-lineage.md) | Accepted | Keep lineage Phoenix-owned and permanently bind one delegation identity to at most one child run. |
 | [ADR-0051](ADR-0051-runtime-owned-child-lifecycle-and-recovery.md) | Accepted | Keep child lifecycle Runtime-owned, bounded, cancellation-linked, and fail closed on unknown restart state. |
+| [ADR-0052](ADR-0052-memory-informs-work-never-authority.md) | Accepted | Memory informs work but never becomes Phoenix authority. |
+| [ADR-0053](ADR-0053-phoenix-owned-exact-memory-scopes.md) | Accepted | Keep exact run/agent/principal memory scopes Phoenix-owned with no implicit sharing. |
+| [ADR-0054](ADR-0054-authoritative-memory-records-derived-indexes.md) | Accepted | Keep source records authoritative and treat lexical/semantic indexes as derived candidate selectors. |
+| [ADR-0055](ADR-0055-finite-retention-runtime-owned-memory-lifecycle.md) | Accepted | Keep memory retention finite and recovery/cleanup/shutdown Runtime-owned and bounded. |
 
 ## Related specifications
 
@@ -66,3 +70,5 @@ the decision requires a new ADR that explicitly supersedes the previous one.
   [RFC-0028 — Durable Agent Runs, Checkpoints, and Controlled Resumption](../rfcs/RFC-0028-durable-agent-runs-and-controlled-resumption.md).
 - ADR-0048 through ADR-0051 record the principal durable choices implemented by
   [RFC-0029 — Secure Multi-Agent Coordination and Delegation](../rfcs/RFC-0029-secure-multi-agent-coordination-and-delegation.md).
+- ADR-0052 through ADR-0055 record the principal durable choices implemented by
+  [RFC-0030 — Secure Agent Memory and Context Retrieval](../rfcs/RFC-0030-secure-agent-memory-and-context-retrieval.md).

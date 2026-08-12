@@ -9,3 +9,4 @@ python scripts/check_inference_release.py
 python scripts/check_agent_release.py
 python scripts/check_durable_agent_release.py
 python scripts/check_multi_agent_release.py
+python scripts/check_agent_memory_release.py

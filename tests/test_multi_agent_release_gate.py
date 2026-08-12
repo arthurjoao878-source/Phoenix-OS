@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +11,6 @@ _SECURITY = _ROOT / "docs" / "security" / "RFC-0029-multi-agent-threat-model-rev
 _CI = _ROOT / ".github" / "workflows" / "ci.yml"
 _CHECK_PS1 = _ROOT / "scripts" / "check.ps1"
 _CHECK_SH = _ROOT / "scripts" / "check.sh"
-_PYPROJECT = _ROOT / "pyproject.toml"
 
 
 def _gate() -> str:
@@ -108,5 +106,3 @@ def test_multi_agent_gate_derives_current_package_version_from_pyproject() -> No
     gate = _gate()
     assert 'version = project.get("version")' in gate
     assert 'distribution_version("phoenix-os") == {version!r}' in gate
-    document = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert document["project"]["version"] == "0.29.0"

@@ -131,7 +131,7 @@ def test_v0290_behavior_is_preserved_by_omission() -> None:
     )
 
 
-def test_slice_plan_has_slices_zero_through_four_complete() -> None:
+def test_slice_plan_has_slices_zero_through_five_rc_complete_and_publication_pending() -> None:
     text = _text()
     assert "### Slice 0 - RFC foundation and executable specification" in text
     assert "### Slice 5 - Security review, migration, and release hardening" in text
@@ -184,5 +184,16 @@ def test_slice_plan_has_slices_zero_through_four_complete() -> None:
         "Content-free observer and administration",
     ):
         assert f"- [x] {item}" in text
-    assert "- [ ] Threat-model/security-invariant review" in text
+    for item in (
+        "Threat-model/security-invariant review",
+        "ADRs for memory authority, scope isolation, source-of-truth indexing, and retention",
+        "v0.29.0 to v0.30.0 migration guidance",
+        "Named agent-memory release gate",
+        "Offline wheel/sdist validation",
+        "Release notes and package version 0.30.0",
+    ):
+        assert f"- [x] {item}" in text
     assert "- [ ] Tag, artifacts, and checksums" in text
+    assert "- [x] Tag, artifacts, and checksums" not in text
+    assert "## Release-candidate evidence" in text
+    assert "scripts/check_agent_memory_release.py" in text

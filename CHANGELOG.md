@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.30.0] - 2026-08-12
+
+### Added
+- RFC-0030 secure agent memory with Phoenix-owned run/agent/principal scopes and exact independent `memory.search`, `memory.read`, `memory.write`, `memory.delete`, and `memory.admin` authority.
+- Explicit bounded records with immutable provenance, optimistic versions, finite retention, expiry, tombstones, and authoritative anti-resurrection semantics.
+- Deterministic bounded retrieval, source-record version/digest revalidation, and provenance-preserving untrusted `MemoryContextBlock` agent integration.
+- Optional provider-neutral semantic retrieval with candidate-only derived indexes, bounded provider/recovery deadlines, and Runtime-owned cleanup/shutdown.
+- Agent-memory migration guidance, four architecture records, formal threat review, release metadata, and isolated offline wheel/sdist validation.
+
+### Security
+- Memory informs work, never authority; remembered instructions, historical policy-like text, approvals, credentials, grants, and provenance never reconstruct current authority.
+- Memory scope identity is Phoenix-owned, cross-scope substitution fails closed, and agents, principals, runs, parents, and children do not share memory implicitly.
+- Normal conversations and hidden reasoning are not captured automatically; writes are explicit and sensitive material remains behind the secrets boundary.
+- Stale, deleted, expired, wrong-version, and wrong-digest retrieval candidates are rejected against the authoritative source before disclosure.
+- Memory exposes no generic shell, filesystem, network, browser, desktop, or operating-system authority.
+
+### Compatibility
+- Phoenix OS 0.29.0 behavior is preserved when memory configuration is omitted.
+- Upgrade creates no record, memory store, index, provider call, worker, permission, context injection, model call, tool call, delegation, or external access automatically.
+- Final publication is blocked on the full quality gate, all named subsystem gates, the new agent-memory gate, and release artifact checksums.
+
+
 ## [0.29.0] - 2026-08-11
 
 ### Added
