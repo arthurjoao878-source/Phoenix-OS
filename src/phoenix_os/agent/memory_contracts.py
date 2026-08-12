@@ -357,6 +357,98 @@ class MemoryLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryRecord:
+    """Authoritative immutable version of one logical memory record or tombstone."""
+
+    scope: MemoryScope
+    memory_id: MemoryId
+    version: MemoryRecordVersion
+    status: MemoryRecordStatus
+    content_digest: str
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+    content: str | None = None
+    provenance: MemoryProvenance | None = None
+    metadata: Mapping[str, str] = field(default_factory=dict)
+    deleted_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, MemoryScope):
+            raise TypeError("scope must be MemoryScope")
+        if not isinstance(self.memory_id, MemoryId):
+            raise TypeError("memory_id must be MemoryId")
+        if not isinstance(self.version, MemoryRecordVersion):
+            raise TypeError("version must be MemoryRecordVersion")
+        if not isinstance(self.status, MemoryRecordStatus):
+            raise TypeError("status must be MemoryRecordStatus")
+        if not isinstance(self.content_digest, str):
+            raise TypeError("content_digest must be a string")
+        if _MEMORY_DIGEST_PATTERN.fullmatch(self.content_digest) is None:
+            raise ValueError("content_digest must be a canonical sha256 digest")
+
+        _aware(self.created_at, label="created_at")
+        _aware(self.updated_at, label="updated_at")
+        _aware(self.expires_at, label="expires_at")
+        if self.updated_at < self.created_at:
+            raise ValueError("updated_at cannot precede created_at")
+        if self.expires_at <= self.updated_at:
+            raise ValueError("expires_at must follow updated_at")
+
+        frozen_metadata = _freeze_text_mapping(
+            self.metadata,
+            label="memory metadata",
+            maximum_items=MAX_MEMORY_METADATA_ITEMS,
+        )
+        object.__setattr__(self, "metadata", frozen_metadata)
+
+        if self.status is MemoryRecordStatus.ACTIVE:
+            if self.content is None:
+                raise ValueError("active memory record requires content")
+            content = _bounded_utf8_text(
+                self.content,
+                label="memory content",
+                maximum_bytes=MAX_MEMORY_RECORD_BYTES,
+            )
+            object.__setattr__(self, "content", content)
+            if memory_content_digest(content) != self.content_digest:
+                raise ValueError("content_digest does not match memory content")
+            if not isinstance(self.provenance, MemoryProvenance):
+                raise TypeError("active memory record requires MemoryProvenance")
+            if self.provenance.content_digest != self.content_digest:
+                raise ValueError("provenance content digest does not match memory content")
+            if self.deleted_at is not None:
+                raise ValueError("active memory record cannot have deleted_at")
+            return
+
+        if self.content is not None:
+            raise ValueError("tombstoned memory record cannot retain content")
+        if self.provenance is not None:
+            raise ValueError("tombstoned memory record cannot retain provenance")
+        if self.metadata:
+            raise ValueError("tombstoned memory record cannot retain metadata")
+        if self.deleted_at is None:
+            raise ValueError("tombstoned memory record requires deleted_at")
+        _aware(self.deleted_at, label="deleted_at")
+        if self.deleted_at != self.updated_at:
+            raise ValueError("tombstone deleted_at must equal updated_at")
+        if self.expires_at <= self.deleted_at:
+            raise ValueError("tombstone expiry must follow deletion")
+
+    @property
+    def content_bytes(self) -> int:
+        """Return persisted content bytes without exposing content."""
+
+        return 0 if self.content is None else len(self.content.encode("utf-8"))
+
+    def expired(self, *, now: datetime) -> bool:
+        """Return whether this version is outside its authoritative retention window."""
+
+        _aware(now, label="now")
+        return now >= self.expires_at
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryWriteRequest:
     """One explicit bounded write proposal against an exact memory record."""
 

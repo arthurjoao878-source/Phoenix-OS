@@ -556,6 +556,7 @@ from phoenix_os.agent.memory_contracts import (
     MemoryOriginKind,
     MemoryProvenance,
     MemoryReadRequest,
+    MemoryRecord,
     MemoryRecordStatus,
     MemoryRecordVersion,
     MemoryRetentionPolicy,
@@ -565,6 +566,11 @@ from phoenix_os.agent.memory_contracts import (
     MemorySearchRequest,
     MemoryWriteRequest,
     memory_content_digest,
+)
+from phoenix_os.agent.memory_store import (
+    InMemoryAgentMemoryStore,
+    MemoryStore,
+    StateStoreMemoryStore,
 )
 from phoenix_os.agent.observer import (
     AgentObserver,
@@ -994,6 +1000,7 @@ __all__ = [
     "ExecutionAttemptKind",
     "ExecutionAttemptStatus",
     "FencingGeneration",
+    "InMemoryAgentMemoryStore",
     "InMemoryDurableDelegationStore",
     "InMemoryDurableLeaseManager",
     "InMemoryDurableRunStore",
@@ -1007,6 +1014,7 @@ __all__ = [
     "MemoryOriginKind",
     "MemoryProvenance",
     "MemoryReadRequest",
+    "MemoryRecord",
     "MemoryRecordStatus",
     "MemoryRecordVersion",
     "MemoryRetentionPolicy",
@@ -1014,6 +1022,7 @@ __all__ = [
     "MemoryScopeId",
     "MemoryScopeKind",
     "MemorySearchRequest",
+    "MemoryStore",
     "MemoryWriteRequest",
     "NullAgentCoordinationObserver",
     "NullAgentObserver",
@@ -1039,6 +1048,7 @@ __all__ = [
     "SQLiteDurableLeaseManager",
     "SQLiteDurableRunStore",
     "StartupDurableRecoveryCoordinator",
+    "StateStoreMemoryStore",
     "StaticDurableCompatibilityValidator",
     "StaticToolResourceResolver",
     "StoreBackedDurableExecutionAttemptRecorder",

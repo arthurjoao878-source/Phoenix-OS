@@ -348,12 +348,12 @@ unchanged.
 
 ### Slice 2 - Authoritative store, retention, and mutation safety
 
-- [ ] Reference authoritative memory store
-- [ ] Bounded record content, metadata, provenance, count, and total bytes
-- [ ] Optimistic write/delete versioning
-- [ ] TTL, retention, expiry, tombstone, and anti-resurrection behavior
-- [ ] State Store-backed reference composition
-- [ ] Deterministic persistence and race tests
+- [x] Reference authoritative memory store
+- [x] Bounded record content, metadata, provenance, count, and total bytes
+- [x] Optimistic write/delete versioning
+- [x] TTL, retention, expiry, tombstone, and anti-resurrection behavior
+- [x] State Store-backed reference composition
+- [x] Deterministic persistence and race tests
 
 ### Slice 3 - Retrieval, context assembly, and agent integration
 
