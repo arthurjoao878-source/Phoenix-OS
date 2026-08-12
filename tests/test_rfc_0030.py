@@ -131,7 +131,7 @@ def test_v0290_behavior_is_preserved_by_omission() -> None:
     )
 
 
-def test_slice_plan_starts_with_only_slice_zero_complete() -> None:
+def test_slice_plan_has_slices_zero_and_one_complete() -> None:
     text = _text()
     assert "### Slice 0 - RFC foundation and executable specification" in text
     assert "### Slice 5 - Security review, migration, and release hardening" in text
@@ -145,10 +145,16 @@ def test_slice_plan_starts_with_only_slice_zero_complete() -> None:
     ):
         assert f"- [x] {item}" in text
 
-    assert (
-        "- [ ] Immutable memory identifiers, scopes, versions, provenance, retention, and limits"
-        in text
-    )
+    for item in (
+        "Immutable memory identifiers, scopes, versions, provenance, retention, and limits",
+        "Exact `memory.search`, `memory.read`, `memory.write`, `memory.delete`, and "
+        "`memory.admin` constants/resources",
+        "Server-owned run, agent, and principal scope derivation",
+        "Independent current-policy authorization",
+        "Deterministic contract and authorization tests",
+    ):
+        assert f"- [x] {item}" in text
+
     assert "- [ ] Reference authoritative memory store" in text
     assert "- [ ] Bounded retrieval requests and results" in text
     assert "- [ ] Provider-neutral optional semantic/vector retrieval boundary" in text

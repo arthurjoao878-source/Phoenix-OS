@@ -340,11 +340,11 @@ unchanged.
 
 ### Slice 1 - Contracts, scopes, and authorization
 
-- [ ] Immutable memory identifiers, scopes, versions, provenance, retention, and limits
-- [ ] Exact `memory.search`, `memory.read`, `memory.write`, `memory.delete`, and `memory.admin` constants/resources
-- [ ] Server-owned run, agent, and principal scope derivation
-- [ ] Independent current-policy authorization
-- [ ] Deterministic contract and authorization tests
+- [x] Immutable memory identifiers, scopes, versions, provenance, retention, and limits
+- [x] Exact `memory.search`, `memory.read`, `memory.write`, `memory.delete`, and `memory.admin` constants/resources
+- [x] Server-owned run, agent, and principal scope derivation
+- [x] Independent current-policy authorization
+- [x] Deterministic contract and authorization tests
 
 ### Slice 2 - Authoritative store, retention, and mutation safety
 
