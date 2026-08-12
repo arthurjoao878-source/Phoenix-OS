@@ -147,6 +147,62 @@ async def test_local_backing_fails_closed_on_digest_substitution(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_local_backing_publish_race_never_clobbers_existing_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    adapter = LocalFilesystemWorkspaceBackingAdapter(root, create=True)
+    key = _key()
+    content = b"writer-a"
+    competing_content = b"writer-b"
+    target = root.joinpath(*key.segments)
+    real_link = os.link
+
+    def publish_competitor_then_link(src: Path | str, dst: Path | str) -> None:
+        Path(dst).write_bytes(competing_content)
+        real_link(src, dst)
+
+    monkeypatch.setattr(os, "link", publish_competitor_then_link)
+
+    with pytest.raises(AgentStateConflictError):
+        await adapter.write(
+            key,
+            content,
+            expected_digest=artifact_content_digest(content),
+        )
+
+    assert target.read_bytes() == competing_content
+    assert not any(path.suffix == ".tmp" for path in root.rglob("*"))
+
+
+@pytest.mark.asyncio
+async def test_local_backing_publish_race_is_idempotent_for_exact_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    adapter = LocalFilesystemWorkspaceBackingAdapter(root, create=True)
+    key = _key()
+    content = b"same immutable bytes"
+    digest = artifact_content_digest(content)
+    target = root.joinpath(*key.segments)
+    real_link = os.link
+
+    def publish_same_bytes_then_link(src: Path | str, dst: Path | str) -> None:
+        Path(dst).write_bytes(content)
+        real_link(src, dst)
+
+    monkeypatch.setattr(os, "link", publish_same_bytes_then_link)
+
+    await adapter.write(key, content, expected_digest=digest)
+
+    assert target.read_bytes() == content
+    assert await adapter.read(key, expected_digest=digest) == content
+    assert not any(path.suffix == ".tmp" for path in root.rglob("*"))
+
+
+@pytest.mark.asyncio
 async def test_local_backing_rejects_symlink_or_reparse_object_when_available(
     tmp_path: Path,
 ) -> None:
@@ -197,3 +253,28 @@ async def test_local_backing_rejects_symlink_parent_escape_when_available(
             b"blocked",
             expected_digest=artifact_content_digest(b"blocked"),
         )
+
+
+@pytest.mark.asyncio
+async def test_local_backing_rejects_hardlinked_object_when_available(tmp_path: Path) -> None:
+    if not hasattr(os, "link"):
+        pytest.skip("hardlinks unavailable")
+
+    root = tmp_path / "workspace"
+    adapter = LocalFilesystemWorkspaceBackingAdapter(root, create=True)
+    key = _key()
+    content = b"single-link artifact"
+    digest = artifact_content_digest(content)
+    await adapter.write(key, content, expected_digest=digest)
+
+    target = root.joinpath(*key.segments)
+    alias = tmp_path / "hardlink-alias.bin"
+    try:
+        os.link(target, alias)
+    except OSError:
+        pytest.skip("hardlink creation unavailable")
+
+    with pytest.raises(AgentCodecError):
+        await adapter.exists(key)
+    with pytest.raises(AgentCodecError):
+        await adapter.read(key, expected_digest=digest)

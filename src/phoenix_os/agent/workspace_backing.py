@@ -261,12 +261,6 @@ class LocalFilesystemWorkspaceBackingAdapter:
         target = self._target(key)
         self._ensure_parent_chain(target.parent)
 
-        if target.exists():
-            existing = await self.read(key, expected_digest=expected_digest)
-            if existing != normalized:
-                raise AgentStateConflictError()
-            return
-
         temp = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
         try:
             with temp.open("xb") as handle:
@@ -275,11 +269,27 @@ class LocalFilesystemWorkspaceBackingAdapter:
                 os.fsync(handle.fileno())
             _require_safe_regular_file(temp)
 
-            # Each authoritative write receives a unique Phoenix-owned key. os.replace
-            # therefore publishes an already-complete object in one namespace step.
-            os.replace(temp, target)
-            _require_safe_regular_file(target)
-            persisted = target.read_bytes()
+            # Publish without replacement. Linking a fully fsynced temporary regular
+            # file makes the final name visible atomically while O_EXCL-like target
+            # creation semantics prevent a concurrent writer from being clobbered.
+            # The temporary link is removed immediately after publication, leaving
+            # the authoritative backing object with exactly one link.
+            self._ensure_parent_chain(target.parent)
+            try:
+                os.link(temp, target)
+            except FileExistsError:
+                existing = self._read_target_bytes(target)
+                if existing != normalized:
+                    raise AgentStateConflictError() from None
+                return
+
+            try:
+                temp.unlink()
+            except OSError as exception:
+                raise AgentCodecError("workspace backing publish cleanup failed") from exception
+
+            self._ensure_parent_chain(target.parent)
+            persisted = self._read_target_bytes(target)
             _validated_content(persisted, expected_digest)
         except FileExistsError as exception:
             raise AgentStateConflictError() from exception
@@ -308,17 +318,7 @@ class LocalFilesystemWorkspaceBackingAdapter:
         if not isinstance(expected_digest, ArtifactDigest):
             raise TypeError("expected_digest must be ArtifactDigest")
         target = self._target(key)
-        self._ensure_parent_chain(target.parent)
-        try:
-            info = _require_safe_regular_file(target)
-        except FileNotFoundError as exception:
-            raise AgentCodecError("workspace backing object is missing") from exception
-        if info.st_size > MAX_WORKSPACE_ARTIFACT_BYTES:
-            raise AgentCodecError("workspace backing object exceeds supported bounds")
-        try:
-            content = target.read_bytes()
-        except OSError as exception:
-            raise AgentCodecError("workspace backing read failed") from exception
+        content = self._read_target_bytes(target)
         return _validated_content(content, expected_digest)
 
     async def delete(self, key: WorkspaceBackingKey) -> None:
@@ -381,6 +381,32 @@ class LocalFilesystemWorkspaceBackingAdapter:
             except OSError as exception:
                 raise AgentCodecError("workspace backing directory creation failed") from exception
             _require_safe_directory(current)
+
+    def _read_target_bytes(self, target: Path) -> bytes:
+        """Read one confined regular object without assigning trust to its bytes."""
+
+        self._ensure_parent_chain(target.parent)
+        try:
+            info = _require_safe_regular_file(target)
+        except FileNotFoundError as exception:
+            raise AgentCodecError("workspace backing object is missing") from exception
+        if info.st_size > MAX_WORKSPACE_ARTIFACT_BYTES:
+            raise AgentCodecError("workspace backing object exceeds supported bounds")
+        try:
+            content = target.read_bytes()
+        except OSError as exception:
+            raise AgentCodecError("workspace backing read failed") from exception
+
+        self._ensure_parent_chain(target.parent)
+        try:
+            after = _require_safe_regular_file(target)
+        except FileNotFoundError as exception:
+            raise AgentCodecError("workspace backing object changed during read") from exception
+        before_snapshot = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        after_snapshot = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        if before_snapshot != after_snapshot or len(content) != info.st_size:
+            raise AgentCodecError("workspace backing object changed during read")
+        return content
 
     def _ensure_open(self) -> None:
         if self._closed:
