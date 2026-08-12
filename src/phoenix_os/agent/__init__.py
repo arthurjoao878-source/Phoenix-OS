@@ -686,6 +686,13 @@ from phoenix_os.agent.workspace_authorization import (
     workspace_artifact_resource,
     workspace_scope_resource,
 )
+from phoenix_os.agent.workspace_backing import (
+    InMemoryWorkspaceBackingAdapter,
+    LocalFilesystemWorkspaceBackingAdapter,
+    WorkspaceBackingAdapter,
+    WorkspaceBackingKey,
+    workspace_backing_key,
+)
 from phoenix_os.agent.workspace_contracts import (
     MAX_WORKSPACE_ARTIFACT_BYTES,
     MAX_WORKSPACE_ARTIFACTS_PER_SCOPE,
@@ -1146,7 +1153,9 @@ __all__ = [
     "InMemoryDurableLeaseManager",
     "InMemoryDurableRunStore",
     "InMemoryToolApprovalService",
+    "InMemoryWorkspaceBackingAdapter",
     "IndeterminateReason",
+    "LocalFilesystemWorkspaceBackingAdapter",
     "MemoryAdministrationSnapshot",
     "MemoryAuthorizer",
     "MemoryContextBlock",
@@ -1243,6 +1252,8 @@ __all__ = [
     "ToolSchema",
     "ToolSchemaType",
     "WorkspaceAuthorizer",
+    "WorkspaceBackingAdapter",
+    "WorkspaceBackingKey",
     "WorkspaceId",
     "WorkspaceLimits",
     "WorkspaceNamespace",
@@ -1335,5 +1346,6 @@ __all__ = [
     "validate_tool_invocation_result",
     "validate_tool_output",
     "workspace_artifact_resource",
+    "workspace_backing_key",
     "workspace_scope_resource",
 ]
