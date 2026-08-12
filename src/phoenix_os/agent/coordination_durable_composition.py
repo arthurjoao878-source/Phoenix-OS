@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from phoenix_os.agent.contracts import AgentId
 from phoenix_os.agent.coordination_administration import AgentCoordinationAdministration
@@ -32,6 +33,10 @@ from phoenix_os.events import EventBus
 from phoenix_os.observability import ObservabilityHub
 from phoenix_os.policy import PolicyEngine
 from phoenix_os.runtime import RuntimeContext
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class DurableAgentCoordinationLifecycle:
@@ -105,6 +110,7 @@ def create_durable_agent_coordination_runtime_stack(
     events: EventBus | None = None,
     audit: AuditLedger | None = None,
     observability: ObservabilityHub | None = None,
+    clock: Callable[[], datetime] = _utc_now,
 ) -> DurableAgentCoordinationRuntimeStack:
     """Compose durable coordination only when an explicit durable store is installed."""
 
@@ -123,6 +129,8 @@ def create_durable_agent_coordination_runtime_stack(
         raise TypeError("audit must be AuditLedger")
     if observability is not None and not isinstance(observability, ObservabilityHub):
         raise TypeError("observability must be ObservabilityHub")
+    if not callable(clock):
+        raise TypeError("clock must be callable")
 
     descriptor_values = tuple(descriptors)
     if not descriptor_values:
@@ -158,8 +166,9 @@ def create_durable_agent_coordination_runtime_stack(
             store=store,
             limits=configuration.limits,
             root_budget_limit=configuration.root_budget_limit,
+            clock=clock,
         )
-        recovery = DurableDelegationRecoveryCoordinator(store)
+        recovery = DurableDelegationRecoveryCoordinator(store, clock=clock)
         observer = ContentFreeAgentCoordinationObserver(
             events=resolved_events,
             audit=audit,

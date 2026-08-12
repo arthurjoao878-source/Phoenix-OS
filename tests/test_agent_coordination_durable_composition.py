@@ -162,6 +162,7 @@ async def test_durable_composition_recovers_before_runtime_accepts_work() -> Non
         child_services={child_configuration.agent_id: service},
         policy=PolicyEngine(),
         store=store,
+        clock=lambda: _NOW + timedelta(minutes=1),
     )
 
     assert isinstance(stack, DurableAgentCoordinationRuntimeStack)
