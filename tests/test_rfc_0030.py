@@ -10,10 +10,10 @@ def _text() -> str:
     return " ".join(_RFC.read_text(encoding="utf-8").split())
 
 
-def test_rfc_0030_exists_as_v0300_draft() -> None:
+def test_rfc_0030_is_accepted_for_v0300() -> None:
     text = _text()
     assert "# RFC-0030: Secure Agent Memory and Context Retrieval" in text
-    assert "- Status: Draft" in text
+    assert "- Status: Accepted" in text
     assert "- Target release: Phoenix OS v0.30.0" in text
 
 
@@ -131,7 +131,7 @@ def test_v0290_behavior_is_preserved_by_omission() -> None:
     )
 
 
-def test_slice_plan_has_slices_zero_through_five_rc_complete_and_publication_pending() -> None:
+def test_slice_plan_is_fully_complete() -> None:
     text = _text()
     assert "### Slice 0 - RFC foundation and executable specification" in text
     assert "### Slice 5 - Security review, migration, and release hardening" in text
@@ -193,7 +193,8 @@ def test_slice_plan_has_slices_zero_through_five_rc_complete_and_publication_pen
         "Release notes and package version 0.30.0",
     ):
         assert f"- [x] {item}" in text
-    assert "- [ ] Tag, artifacts, and checksums" in text
-    assert "- [x] Tag, artifacts, and checksums" not in text
+    assert "- [x] Tag, artifacts, and checksums" in text
+    assert "- [ ]" not in text
     assert "## Release-candidate evidence" in text
     assert "scripts/check_agent_memory_release.py" in text
+    assert "RFC-0030 is accepted for Phoenix OS 0.30.0." in text

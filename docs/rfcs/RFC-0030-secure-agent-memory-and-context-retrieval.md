@@ -1,6 +1,6 @@
 # RFC-0030: Secure Agent Memory and Context Retrieval
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.30.0
 - Owners: Phoenix OS maintainers
 - Depends on: RFC-0004, RFC-0005, RFC-0007, RFC-0009, RFC-0010, RFC-0011, RFC-0012, RFC-0026, RFC-0027, RFC-0028, and RFC-0029
@@ -344,8 +344,8 @@ Phoenix OS v0.30.0 release-candidate evidence is maintained in:
 The named gate builds and validates wheel and sdist archives, rebuilds a wheel from
 the validated sdist, and installs both wheel forms with `--no-deps --no-index` in
 isolated environments before executing the packaged agent-memory surface without
-source-tree imports. Tagging, final artifacts, checksums, and RFC acceptance remain
-separate final-publication actions.
+source-tree imports. Release publication uses Git tag `v0.30.0`, wheel and sdist
+artifacts, and `SHA256SUMS`.
 
 ## Slice plan
 
@@ -400,7 +400,7 @@ separate final-publication actions.
 - [x] Named agent-memory release gate
 - [x] Offline wheel/sdist validation
 - [x] Release notes and package version 0.30.0
-- [ ] Tag, artifacts, and checksums
+- [x] Tag, artifacts, and checksums
 
 ## Acceptance
 
@@ -413,3 +413,5 @@ strictly bounded, prompt injection cannot alter current policy, stale indexes ca
 resurrect deleted/expired records, semantic providers remain optional, operational
 surfaces remain content-free, and omitting memory preserves Phoenix OS v0.29.0
 behavior.
+
+RFC-0030 is accepted for Phoenix OS 0.30.0.

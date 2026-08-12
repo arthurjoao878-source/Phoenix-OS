@@ -3,7 +3,7 @@
 ## [0.30.0] - 2026-08-12
 
 ### Added
-- RFC-0030 secure agent memory with Phoenix-owned run/agent/principal scopes and exact independent `memory.search`, `memory.read`, `memory.write`, `memory.delete`, and `memory.admin` authority.
+- Accepted RFC-0030 secure agent memory with Phoenix-owned run/agent/principal scopes and exact independent `memory.search`, `memory.read`, `memory.write`, `memory.delete`, and `memory.admin` authority.
 - Explicit bounded records with immutable provenance, optimistic versions, finite retention, expiry, tombstones, and authoritative anti-resurrection semantics.
 - Deterministic bounded retrieval, source-record version/digest revalidation, and provenance-preserving untrusted `MemoryContextBlock` agent integration.
 - Optional provider-neutral semantic retrieval with candidate-only derived indexes, bounded provider/recovery deadlines, and Runtime-owned cleanup/shutdown.
@@ -19,7 +19,7 @@
 ### Compatibility
 - Phoenix OS 0.29.0 behavior is preserved when memory configuration is omitted.
 - Upgrade creates no record, memory store, index, provider call, worker, permission, context injection, model call, tool call, delegation, or external access automatically.
-- Final publication is blocked on the full quality gate, all named subsystem gates, the new agent-memory gate, and release artifact checksums.
+- Release publication uses Git tag `v0.30.0`, wheel and sdist artifacts, and `SHA256SUMS`.
 
 
 ## [0.29.0] - 2026-08-11

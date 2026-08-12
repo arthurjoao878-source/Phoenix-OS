@@ -29,14 +29,14 @@ def test_readme_announces_thirty_specs_and_agent_memory_gate() -> None:
     assert "## Agent-memory release gate" in readme
 
 
-def test_changelog_starts_with_v0300_release_candidate() -> None:
+def test_changelog_starts_with_v0300_release() -> None:
     changelog = _CHANGELOG.read_text(encoding="utf-8")
     current = "## [0.30.0] - 2026-08-12"
     previous = "## [0.29.0] - 2026-08-11"
     assert changelog.count(current) == 1
     assert changelog.index(current) < changelog.index(previous)
     for phrase in (
-        "RFC-0030",
+        "Accepted RFC-0030",
         "Memory informs work, never authority",
         "memory.search",
         "MemoryContextBlock",
@@ -47,17 +47,17 @@ def test_changelog_starts_with_v0300_release_candidate() -> None:
         assert phrase in changelog
 
 
-def test_v030_release_candidate_notes_are_complete() -> None:
+def test_v030_release_notes_are_complete() -> None:
     notes = _RELEASE_NOTES.read_text(encoding="utf-8")
     for phrase in (
         "# Phoenix OS 0.30.0",
-        "**Release candidate:** 2026-08-12",
+        "**Released:** 2026-08-12",
         "## Highlights",
         "## Security",
         "## Compatibility and migration",
         "## Architecture decisions",
         "## Release validation",
-        "## Planned artifacts",
+        "## Artifacts",
         "python scripts/check_agent_memory_release.py",
         "Git tag `v0.30.0`",
         "phoenix_os-0.30.0-py3-none-any.whl",
@@ -70,11 +70,13 @@ def test_v030_release_candidate_notes_are_complete() -> None:
     assert "TBD" not in upper
 
 
-def test_rfc_remains_draft_until_publication_artifacts_exist() -> None:
+def test_rfc_is_fully_accepted_for_v0300() -> None:
     rfc = " ".join(_RFC.read_text(encoding="utf-8").split())
-    assert "- Status: Draft" in rfc
-    assert "- [ ] Tag, artifacts, and checksums" in rfc
+    assert "- Status: Accepted" in rfc
+    assert "- [ ]" not in rfc
+    assert "- [x] Tag, artifacts, and checksums" in rfc
     assert "- Target release: Phoenix OS v0.30.0" in rfc
+    assert "RFC-0030 is accepted for Phoenix OS 0.30.0." in rfc
 
 
 def test_gate_and_previous_release_notes_remain_available() -> None:
