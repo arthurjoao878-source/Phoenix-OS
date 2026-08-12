@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -30,6 +31,8 @@ MAX_MEMORY_CONTEXT_ITEMS = 128
 MAX_MEMORY_CONTEXT_BYTES = 4_194_304
 MAX_MEMORY_RETENTION = timedelta(days=3650)
 MAX_MEMORY_TOMBSTONE_RETENTION = timedelta(days=3650)
+MAX_MEMORY_RANKING_SCORE = 1_000_000.0
+MEMORY_CONTEXT_TRUST_LABEL = "untrusted_retrieved_memory"
 
 _MEMORY_NAMESPACE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
 _MEMORY_SCOPE_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,191})$")
@@ -43,6 +46,17 @@ def _positive_int(value: int, *, label: str, maximum: int) -> None:
         raise ValueError(f"{label} must be greater than zero")
     if value > maximum:
         raise ValueError(f"{label} exceeds the global maximum")
+
+
+def _memory_ranking_score(value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("memory ranking score must be numeric")
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        raise ValueError("memory ranking score must be finite")
+    if abs(normalized) > MAX_MEMORY_RANKING_SCORE:
+        raise ValueError("memory ranking score exceeds the maximum")
+    return normalized
 
 
 def _positive_duration(value: timedelta, *, label: str, maximum: timedelta) -> None:
@@ -537,6 +551,151 @@ class MemorySearchRequest:
             maximum=MAX_MEMORY_SEARCH_RESULT_BYTES,
         )
         _aware(self.created_at, label="created_at")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRetrievalCandidate:
+    """Untrusted provider-neutral candidate identity returned by one retrieval adapter."""
+
+    scope: MemoryScope
+    memory_id: MemoryId
+    version: MemoryRecordVersion
+    content_digest: str
+    score: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, MemoryScope):
+            raise TypeError("scope must be MemoryScope")
+        if not isinstance(self.memory_id, MemoryId):
+            raise TypeError("memory_id must be MemoryId")
+        if not isinstance(self.version, MemoryRecordVersion):
+            raise TypeError("version must be MemoryRecordVersion")
+        if not isinstance(self.content_digest, str):
+            raise TypeError("content_digest must be a string")
+        if _MEMORY_DIGEST_PATTERN.fullmatch(self.content_digest) is None:
+            raise ValueError("content_digest must be a canonical sha256 digest")
+        object.__setattr__(self, "score", _memory_ranking_score(self.score))
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySearchHit:
+    """One authoritative active record paired with validated untrusted ranking metadata."""
+
+    record: MemoryRecord
+    score: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.record, MemoryRecord):
+            raise TypeError("record must be MemoryRecord")
+        if self.record.status is not MemoryRecordStatus.ACTIVE:
+            raise ValueError("memory search hits require active records")
+        object.__setattr__(self, "score", _memory_ranking_score(self.score))
+
+    @property
+    def scope(self) -> MemoryScope:
+        return self.record.scope
+
+    @property
+    def memory_id(self) -> MemoryId:
+        return self.record.memory_id
+
+    @property
+    def version(self) -> MemoryRecordVersion:
+        return self.record.version
+
+    @property
+    def content_digest(self) -> str:
+        return self.record.content_digest
+
+    @property
+    def content_bytes(self) -> int:
+        return self.record.content_bytes
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySearchResult:
+    """Bounded deterministic authoritative disclosure for one exact memory scope."""
+
+    scope: MemoryScope
+    hits: Sequence[MemorySearchHit]
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, MemoryScope):
+            raise TypeError("scope must be MemoryScope")
+        normalized = tuple(self.hits)
+        if len(normalized) > MAX_MEMORY_SEARCH_RESULTS:
+            raise ValueError("memory search result exceeds the maximum hit count")
+        if any(not isinstance(hit, MemorySearchHit) for hit in normalized):
+            raise TypeError("hits must contain MemorySearchHit values")
+        if any(hit.scope != self.scope for hit in normalized):
+            raise ValueError("memory search result contains a mismatched scope")
+        memory_ids = [hit.memory_id for hit in normalized]
+        if len(memory_ids) != len(set(memory_ids)):
+            raise ValueError("memory search result contains duplicate records")
+        if sum(hit.content_bytes for hit in normalized) > MAX_MEMORY_SEARCH_RESULT_BYTES:
+            raise ValueError("memory search result exceeds the maximum content bytes")
+        _aware(self.created_at, label="created_at")
+        object.__setattr__(
+            self,
+            "hits",
+            tuple(
+                sorted(
+                    normalized,
+                    key=lambda hit: (-hit.score, hit.memory_id.value.int),
+                )
+            ),
+        )
+
+    @property
+    def content_bytes(self) -> int:
+        return sum(hit.content_bytes for hit in self.hits)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryContextBlock:
+    """Bounded provenance-preserving memory data that is never policy or authority."""
+
+    scope: MemoryScope
+    hits: Sequence[MemorySearchHit]
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, MemoryScope):
+            raise TypeError("scope must be MemoryScope")
+        normalized = tuple(self.hits)
+        if not normalized:
+            raise ValueError("memory context block requires at least one hit")
+        if len(normalized) > MAX_MEMORY_CONTEXT_ITEMS:
+            raise ValueError("memory context block exceeds the maximum item count")
+        if any(not isinstance(hit, MemorySearchHit) for hit in normalized):
+            raise TypeError("hits must contain MemorySearchHit values")
+        if any(hit.scope != self.scope for hit in normalized):
+            raise ValueError("memory context block contains a mismatched scope")
+        memory_ids = [hit.memory_id for hit in normalized]
+        if len(memory_ids) != len(set(memory_ids)):
+            raise ValueError("memory context block contains duplicate records")
+        if sum(hit.content_bytes for hit in normalized) > MAX_MEMORY_CONTEXT_BYTES:
+            raise ValueError("memory context block exceeds the maximum content bytes")
+        _aware(self.created_at, label="created_at")
+        object.__setattr__(
+            self,
+            "hits",
+            tuple(
+                sorted(
+                    normalized,
+                    key=lambda hit: (-hit.score, hit.memory_id.value.int),
+                )
+            ),
+        )
+
+    @property
+    def trust_label(self) -> str:
+        return MEMORY_CONTEXT_TRUST_LABEL
+
+    @property
+    def content_bytes(self) -> int:
+        return sum(hit.content_bytes for hit in self.hits)
 
 
 @dataclass(frozen=True, slots=True)

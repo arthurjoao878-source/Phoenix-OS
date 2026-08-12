@@ -58,6 +58,10 @@ from phoenix_os.agent.fake import (
     AgentModelTurnKind,
     AgentModelTurnRequest,
 )
+from phoenix_os.agent.memory_retrieval import (
+    AgentMemoryContextProvider,
+    memory_context_messages,
+)
 from phoenix_os.agent.observer import (
     AgentObserver,
     AgentOperation,
@@ -152,6 +156,7 @@ class AgentLoop:
         approval_resolver: ToolApprovalResolver | None = None,
         admission: AgentAdmissionController | None = None,
         observer: AgentObserver | None = None,
+        memory_context: AgentMemoryContextProvider | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(run_authorizer, AgentRunAuthorizer):
@@ -184,6 +189,10 @@ class AgentLoop:
         resolved_observer = NullAgentObserver() if observer is None else observer
         if not isinstance(resolved_observer, AgentObserver):
             raise TypeError("observer must implement AgentObserver")
+        if memory_context is not None and not isinstance(
+            memory_context, AgentMemoryContextProvider
+        ):
+            raise TypeError("memory_context must implement AgentMemoryContextProvider")
         if not callable(clock):
             raise TypeError("clock must be callable")
 
@@ -198,6 +207,7 @@ class AgentLoop:
         self._approval_service = approval_service
         self._approval_resolver = approval_resolver
         self._observer = resolved_observer
+        self._memory_context = memory_context
         self._clock = clock
 
     async def run(
@@ -261,6 +271,12 @@ class AgentLoop:
                 ),
                 context,
             )
+
+            if self._memory_context is not None:
+                memory_block = await self._memory_context.context_for_run(request, context)
+                if memory_block is not None:
+                    messages.extend(memory_context_messages(memory_block))
+                    _require_prompt_limits(messages, request)
 
             while True:
                 token.raise_if_cancelled()

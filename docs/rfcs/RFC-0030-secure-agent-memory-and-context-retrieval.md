@@ -357,12 +357,12 @@ unchanged.
 
 ### Slice 3 - Retrieval, context assembly, and agent integration
 
-- [ ] Bounded retrieval requests and results
-- [ ] Deterministic reference retrieval adapter
-- [ ] Candidate score/identity validation and source-record revalidation
-- [ ] Provenance-preserving untrusted `MemoryContextBlock`
-- [ ] Agent-loop opt-in context integration without authority promotion
-- [ ] Prompt-injection and cross-scope regression tests
+- [x] Bounded retrieval requests and results
+- [x] Deterministic reference retrieval adapter
+- [x] Candidate score/identity validation and source-record revalidation
+- [x] Provenance-preserving untrusted `MemoryContextBlock`
+- [x] Agent-loop opt-in context integration without authority promotion
+- [x] Prompt-injection and cross-scope regression tests
 
 ### Slice 4 - Semantic adapters, recovery, and Runtime ownership
 
