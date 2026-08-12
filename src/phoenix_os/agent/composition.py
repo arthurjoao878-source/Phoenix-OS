@@ -18,6 +18,7 @@ from phoenix_os.agent.contracts import ToolId
 from phoenix_os.agent.execution import BoundedAgentExecutor
 from phoenix_os.agent.fake import AgentModelTurnAdapter
 from phoenix_os.agent.loop import AgentLoop, ToolApprovalResolver
+from phoenix_os.agent.memory_retrieval import AgentMemoryContextProvider
 from phoenix_os.agent.observer import AgentObserver, ContentFreeAgentObserver
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.service import AgentService
@@ -45,6 +46,7 @@ class AgentRuntimeStack:
     administration: AgentAdministration
     lifecycle: AgentService
     approval_service: ToolApprovalService | None = None
+    memory_context: AgentMemoryContextProvider | None = None
 
 
 def create_agent_runtime_stack(
@@ -57,6 +59,7 @@ def create_agent_runtime_stack(
     events: EventBus | None = None,
     approval_service: ToolApprovalService | None = None,
     approval_resolver: ToolApprovalResolver | None = None,
+    memory_context: AgentMemoryContextProvider | None = None,
     audit: AuditLedger | None = None,
     observability: ObservabilityHub | None = None,
 ) -> AgentRuntimeStack:
@@ -83,6 +86,8 @@ def create_agent_runtime_stack(
         raise TypeError("approval_resolver must implement ToolApprovalResolver")
     if (approval_service is None) != (approval_resolver is None):
         raise ValueError("approval_service and approval_resolver must be configured together")
+    if memory_context is not None and not isinstance(memory_context, AgentMemoryContextProvider):
+        raise TypeError("memory_context must implement AgentMemoryContextProvider")
     if (
         any(
             tool_descriptor_requires_approval(descriptor)
@@ -154,6 +159,7 @@ def create_agent_runtime_stack(
             approval_resolver=approval_resolver,
             admission=admission,
             observer=observer,
+            memory_context=memory_context,
         )
         service = AgentService(
             runtime,
@@ -190,4 +196,5 @@ def create_agent_runtime_stack(
         administration=administration,
         lifecycle=service,
         approval_service=approval_service,
+        memory_context=memory_context,
     )

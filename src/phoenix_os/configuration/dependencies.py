@@ -35,6 +35,7 @@ from phoenix_os.state import StateStore, StateStoreRegistry
 
 if TYPE_CHECKING:
     from phoenix_os.agent import (
+        AgentMemoryRuntimeConfiguration,
         AgentModelTurnAdapter,
         AgentServiceConfiguration,
         CheckpointProtector,
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
         DurableRecoveryWorkerConfiguration,
         DurableRetentionWorkerConfiguration,
         DurableRunStore,
+        MemoryDerivedIndex,
+        MemoryEmbeddingProvider,
         RetentionPolicy,
         ToolAdapter,
         ToolApprovalResolver,
@@ -121,6 +124,12 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "agent.approvals",
         "agent.executor",
         "agent.health",
+        "agent.memory",
+        "agent.memory.administration",
+        "agent.memory.index",
+        "agent.memory.owner",
+        "agent.memory.retrieval",
+        "agent.memory.store",
         "agent.registry",
         "agent.runtime",
         "agent.durable",
@@ -643,6 +652,9 @@ class RuntimeAssembler:
         agent_tool_adapters: tuple[ToolAdapter, ...] = (),
         agent_approval_service: ToolApprovalService | None = None,
         agent_approval_resolver: ToolApprovalResolver | None = None,
+        agent_memory_configuration: AgentMemoryRuntimeConfiguration | None = None,
+        agent_memory_embedding_provider: MemoryEmbeddingProvider | None = None,
+        agent_memory_index: MemoryDerivedIndex | None = None,
         agent_durable_enabled: bool = False,
         agent_durable_store: DurableRunStore | None = None,
         agent_durable_lease_manager: DurableLeaseManager | None = None,
@@ -771,6 +783,9 @@ class RuntimeAssembler:
         self._agent_tool_adapters = tuple(agent_tool_adapters)
         self._agent_approval_service = agent_approval_service
         self._agent_approval_resolver = agent_approval_resolver
+        self._agent_memory_configuration = agent_memory_configuration
+        self._agent_memory_embedding_provider = agent_memory_embedding_provider
+        self._agent_memory_index = agent_memory_index
         self._agent_durable_enabled = agent_durable_enabled
         self._agent_durable_store = agent_durable_store
         self._agent_durable_lease_manager = agent_durable_lease_manager
@@ -929,6 +944,49 @@ class RuntimeAssembler:
                 raise ValueError("enabled agent requires configuration")
             if agent_model_adapter is None:
                 raise ValueError("enabled agent requires a model adapter")
+
+        memory_options_supplied = any(
+            (
+                agent_memory_configuration is not None,
+                agent_memory_embedding_provider is not None,
+                agent_memory_index is not None,
+            )
+        )
+        if memory_options_supplied and agent_memory_configuration is None:
+            raise ValueError("agent memory options require memory configuration")
+        if agent_memory_configuration is not None:
+            from phoenix_os.agent.memory_runtime import (
+                AgentMemoryRuntimeConfiguration as RuntimeAgentMemoryRuntimeConfiguration,
+            )
+            from phoenix_os.agent.memory_runtime import (
+                MemoryDerivedIndex as RuntimeMemoryDerivedIndex,
+            )
+            from phoenix_os.agent.memory_runtime import (
+                MemoryEmbeddingProvider as RuntimeMemoryEmbeddingProvider,
+            )
+
+            if not isinstance(
+                agent_memory_configuration,
+                RuntimeAgentMemoryRuntimeConfiguration,
+            ):
+                raise TypeError("agent memory configuration has an invalid type")
+            if not agent_enabled:
+                raise ValueError("agent memory configuration requires agent_enabled")
+            if agent_memory_configuration.semantic_enabled:
+                if agent_memory_embedding_provider is None:
+                    raise ValueError("semantic agent memory requires an embedding provider")
+                if not isinstance(
+                    agent_memory_embedding_provider,
+                    RuntimeMemoryEmbeddingProvider,
+                ):
+                    raise TypeError("agent memory embedding provider has an invalid type")
+                if agent_memory_index is not None and not isinstance(
+                    agent_memory_index,
+                    RuntimeMemoryDerivedIndex,
+                ):
+                    raise TypeError("agent memory index has an invalid type")
+            elif agent_memory_embedding_provider is not None or agent_memory_index is not None:
+                raise ValueError("agent memory semantic provider/index require semantic_enabled")
         if not isinstance(agent_durable_enabled, bool):
             raise TypeError("agent durable enabled flag must be bool")
         if not isinstance(agent_durable_reconciliation_administration_enabled, bool):
@@ -1370,6 +1428,28 @@ class RuntimeAssembler:
             custom_services["inference.administration"] = inference_stack.administration
             components.append(ComponentSpec("inference", inference_stack.service))
 
+        agent_memory_stack = None
+        if self._agent_memory_configuration is not None:
+            from phoenix_os.agent import create_agent_memory_runtime_stack
+
+            assert self._policy is not None
+            agent_memory_stack = create_agent_memory_runtime_stack(
+                configuration=self._agent_memory_configuration,
+                policy=self._policy,
+                state_store=state_store,
+                embedding_provider=self._agent_memory_embedding_provider,
+                index=self._agent_memory_index,
+                events=self._events,
+            )
+            custom_services["agent.memory"] = agent_memory_stack.service
+            custom_services["agent.memory.owner"] = agent_memory_stack.owner
+            custom_services["agent.memory.store"] = agent_memory_stack.store
+            custom_services["agent.memory.retrieval"] = agent_memory_stack.retrieval
+            custom_services["agent.memory.administration"] = agent_memory_stack.administration
+            if agent_memory_stack.index is not None:
+                custom_services["agent.memory.index"] = agent_memory_stack.index
+            components.append(ComponentSpec("agent.memory", agent_memory_stack.owner))
+
         agent_stack = None
         if self._agent_enabled:
             from phoenix_os.agent import create_agent_runtime_stack
@@ -1386,6 +1466,7 @@ class RuntimeAssembler:
                 events=self._events,
                 approval_service=self._agent_approval_service,
                 approval_resolver=self._agent_approval_resolver,
+                memory_context=(None if agent_memory_stack is None else agent_memory_stack.context),
                 audit=self._audit,
                 observability=self._observability,
             )

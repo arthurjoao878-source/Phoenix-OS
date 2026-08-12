@@ -366,12 +366,12 @@ unchanged.
 
 ### Slice 4 - Semantic adapters, recovery, and Runtime ownership
 
-- [ ] Provider-neutral optional semantic/vector retrieval boundary
-- [ ] Derived-index version/digest consistency
-- [ ] Stale/deleted/expired hit rejection
-- [ ] Restart recovery without memory resurrection
-- [ ] Runtime-owned bounded indexing, cleanup, and shutdown
-- [ ] Content-free observer and administration
+- [x] Provider-neutral optional semantic/vector retrieval boundary
+- [x] Derived-index version/digest consistency
+- [x] Stale/deleted/expired hit rejection
+- [x] Restart recovery without memory resurrection
+- [x] Runtime-owned bounded indexing, cleanup, and shutdown
+- [x] Content-free observer and administration
 
 ### Slice 5 - Security review, migration, and release hardening
 

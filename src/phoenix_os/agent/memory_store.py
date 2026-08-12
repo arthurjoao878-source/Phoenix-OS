@@ -43,6 +43,7 @@ from phoenix_os.state.memory import MemoryStateStore
 
 _MEMORY_STATE_NAMESPACE = "agent-memory"
 _MEMORY_DOCUMENT_SCHEMA_VERSION = 1
+_MAX_MEMORY_SCOPE_LIST = 100_000
 _MEMORY_DOCUMENT_FIELDS = frozenset(
     {
         "schema_version",
@@ -408,6 +409,8 @@ class MemoryStore(Protocol):
 
     async def purge_expired(self, scope: MemoryScope) -> int: ...
 
+    async def list_scopes(self, *, limit: int) -> tuple[MemoryScope, ...]: ...
+
     async def close(self) -> None: ...
 
 
@@ -622,6 +625,33 @@ class StateStoreMemoryStore:
             if await self._purge_one(scope, memory_id, now=now):
                 purged += 1
         return purged
+
+    async def list_scopes(self, *, limit: int) -> tuple[MemoryScope, ...]:
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise TypeError("limit must be an integer")
+        if limit <= 0 or limit > _MAX_MEMORY_SCOPE_LIST:
+            raise ValueError("limit is outside supported memory scope bounds")
+        self._ensure_open()
+        try:
+            stored_records = await self._state_store.list(
+                namespace=_MEMORY_STATE_NAMESPACE,
+                prefix="record.",
+            )
+        except (StateStoreClosedError, StateSerializationError) as exception:
+            raise _safe_state_failure(exception) from None
+
+        by_identity: dict[tuple[str, str, str], MemoryScope] = {}
+        for stored in stored_records:
+            record = _decode_record(stored.value)
+            _require_state_identity(record, state_key=stored.key)
+            identity = (
+                record.scope.namespace.value,
+                record.scope.kind.value,
+                record.scope.scope_id.value,
+            )
+            by_identity[identity] = record.scope
+        ordered = tuple(by_identity[key] for key in sorted(by_identity))
+        return ordered[:limit]
 
     async def close(self) -> None:
         if self._closed:

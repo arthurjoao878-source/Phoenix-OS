@@ -131,7 +131,7 @@ def test_v0290_behavior_is_preserved_by_omission() -> None:
     )
 
 
-def test_slice_plan_has_slices_zero_through_three_complete() -> None:
+def test_slice_plan_has_slices_zero_through_four_complete() -> None:
     text = _text()
     assert "### Slice 0 - RFC foundation and executable specification" in text
     assert "### Slice 5 - Security review, migration, and release hardening" in text
@@ -175,6 +175,14 @@ def test_slice_plan_has_slices_zero_through_three_complete() -> None:
     ):
         assert f"- [x] {item}" in text
 
-    assert "- [ ] Provider-neutral optional semantic/vector retrieval boundary" in text
+    for item in (
+        "Provider-neutral optional semantic/vector retrieval boundary",
+        "Derived-index version/digest consistency",
+        "Stale/deleted/expired hit rejection",
+        "Restart recovery without memory resurrection",
+        "Runtime-owned bounded indexing, cleanup, and shutdown",
+        "Content-free observer and administration",
+    ):
+        assert f"- [x] {item}" in text
     assert "- [ ] Threat-model/security-invariant review" in text
     assert "- [ ] Tag, artifacts, and checksums" in text
