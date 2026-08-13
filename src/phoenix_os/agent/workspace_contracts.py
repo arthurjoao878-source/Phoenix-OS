@@ -27,6 +27,8 @@ MAX_WORKSPACE_METADATA_VALUE_LENGTH = 1_024
 MAX_WORKSPACE_MEDIA_TYPE_LENGTH = 255
 MAX_WORKSPACE_PROVENANCE_ITEMS = 32
 MAX_WORKSPACE_SOURCE_VERSION_LENGTH = 128
+MAX_WORKSPACE_TRANSFER_ADAPTER_ID_LENGTH = 128
+MAX_WORKSPACE_TRANSFER_REFERENCE_LENGTH = 512
 MAX_WORKSPACE_ARTIFACTS_PER_SCOPE = 100_000
 MAX_WORKSPACE_ARTIFACT_ID_HISTORY_PER_SCOPE = 100_000
 MAX_WORKSPACE_SCOPE_TOTAL_BYTES = 10_737_418_240
@@ -40,6 +42,8 @@ _ARTIFACT_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MEDIA_TYPE_PATTERN = re.compile(
     r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"
 )
+_WORKSPACE_TRANSFER_ADAPTER_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
+_WORKSPACE_TRANSFER_REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,511})$")
 _WINDOWS_RESERVED_STEMS = frozenset(
     {"con", "prn", "aux", "nul"}
     | {f"com{index}" for index in range(1, 10)}
@@ -102,6 +106,25 @@ def _bounded_bytes(value: bytes, *, label: str, maximum_bytes: int) -> bytes:
     if not isinstance(value, bytes):
         raise TypeError(f"{label} must be bytes")
     if len(value) > maximum_bytes:
+        raise ValueError(f"{label} exceeds the maximum byte size")
+    return value
+
+
+def _bounded_utf8_text(
+    value: str,
+    *,
+    label: str,
+    maximum_bytes: int,
+) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a string")
+    if not value:
+        raise ValueError(f"{label} must not be blank")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exception:
+        raise ValueError(f"{label} is not valid Unicode") from exception
+    if len(encoded) > maximum_bytes:
         raise ValueError(f"{label} exceeds the maximum byte size")
     return value
 
@@ -308,6 +331,44 @@ class ArtifactMediaType:
         return self.value
 
 
+@dataclass(frozen=True, slots=True, order=True)
+class WorkspaceTransferAdapterId:
+    """Stable server-owned identity for one configured transfer adapter."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, str):
+            raise TypeError("workspace transfer adapter id must be a string")
+        normalized = self.value.strip().lower()
+        if _WORKSPACE_TRANSFER_ADAPTER_ID_PATTERN.fullmatch(normalized) is None:
+            raise ValueError("workspace transfer adapter id is invalid")
+        object.__setattr__(self, "value", normalized)
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class WorkspaceTransferReference:
+    """Opaque adapter-local data reference carrying no authority.
+
+    It cannot select an adapter, credential, network permission, host root, URL,
+    native path, Phoenix scope, policy, or approval.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, str):
+            raise TypeError("workspace transfer reference must be a string")
+        if _WORKSPACE_TRANSFER_REFERENCE_PATTERN.fullmatch(self.value) is None:
+            raise ValueError("workspace transfer reference is invalid")
+
+    def __str__(self) -> str:
+        return self.value
+
+
 class WorkspaceScopeKind(StrEnum):
     RUN = "run"
     AGENT = "agent"
@@ -327,6 +388,11 @@ class ArtifactOriginKind(StrEnum):
     OPERATOR = "operator"
     IMPORT = "import"
     SYSTEM = "system"
+
+
+class ArtifactTransferDirection(StrEnum):
+    IMPORT = "import"
+    EXPORT = "export"
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -762,6 +828,221 @@ class ArtifactDeleteRequest:
         if not isinstance(self.expected_version, ArtifactVersion):
             raise TypeError("expected_version must be ArtifactVersion")
         _aware(self.created_at, label="created_at")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactImportRequest:
+    """One independently authorized import through a server-owned adapter."""
+
+    scope: WorkspaceScope
+    artifact_id: ArtifactId
+    source_reference: WorkspaceTransferReference
+    expected_version: ArtifactVersion | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, WorkspaceScope):
+            raise TypeError("scope must be WorkspaceScope")
+        if not isinstance(self.artifact_id, ArtifactId):
+            raise TypeError("artifact_id must be ArtifactId")
+        if not isinstance(self.source_reference, WorkspaceTransferReference):
+            raise TypeError("source_reference must be WorkspaceTransferReference")
+        if self.expected_version is not None and not isinstance(
+            self.expected_version, ArtifactVersion
+        ):
+            raise TypeError("expected_version must be ArtifactVersion")
+        _aware(self.created_at, label="created_at")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactExportRequest:
+    """One version-bound export within a server-owned destination configuration."""
+
+    scope: WorkspaceScope
+    artifact_id: ArtifactId
+    expected_version: ArtifactVersion
+    destination_reference: WorkspaceTransferReference
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, WorkspaceScope):
+            raise TypeError("scope must be WorkspaceScope")
+        if not isinstance(self.artifact_id, ArtifactId):
+            raise TypeError("artifact_id must be ArtifactId")
+        if not isinstance(self.expected_version, ArtifactVersion):
+            raise TypeError("expected_version must be ArtifactVersion")
+        if not isinstance(self.destination_reference, WorkspaceTransferReference):
+            raise TypeError("destination_reference must be WorkspaceTransferReference")
+        _aware(self.created_at, label="created_at")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceImportResult:
+    """Globally bounded untrusted data returned by a configured import adapter."""
+
+    content: bytes
+    logical_path: str
+    media_type: str = "application/octet-stream"
+    metadata: Mapping[str, str] = field(default_factory=dict)
+    external_digest: str | None = None
+    source_version: str | None = None
+    transfer_reference: WorkspaceTransferReference | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "content",
+            _bounded_bytes(
+                self.content,
+                label="imported content",
+                maximum_bytes=MAX_WORKSPACE_ARTIFACT_BYTES,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "logical_path",
+            _bounded_utf8_text(
+                self.logical_path,
+                label="imported logical path",
+                maximum_bytes=MAX_WORKSPACE_LOGICAL_PATH_BYTES,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "media_type",
+            _bounded_text(
+                self.media_type,
+                label="imported media type",
+                maximum_chars=MAX_WORKSPACE_MEDIA_TYPE_LENGTH,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            _freeze_text_mapping(
+                self.metadata,
+                label="imported metadata",
+                maximum_items=MAX_WORKSPACE_METADATA_ITEMS,
+            ),
+        )
+        if self.external_digest is not None:
+            object.__setattr__(
+                self,
+                "external_digest",
+                _bounded_text(
+                    self.external_digest,
+                    label="external digest",
+                    maximum_chars=len("sha256:") + 64,
+                ),
+            )
+        if self.source_version is not None:
+            object.__setattr__(
+                self,
+                "source_version",
+                _bounded_text(
+                    self.source_version,
+                    label="import source version",
+                    maximum_chars=MAX_WORKSPACE_SOURCE_VERSION_LENGTH,
+                ),
+            )
+        if self.transfer_reference is not None and not isinstance(
+            self.transfer_reference, WorkspaceTransferReference
+        ):
+            raise TypeError("transfer_reference must be WorkspaceTransferReference")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceExportPayload:
+    """Bounded exact artifact version disclosed to one configured export adapter."""
+
+    scope: WorkspaceScope
+    artifact_id: ArtifactId
+    version: ArtifactVersion
+    logical_path: ArtifactLogicalPath
+    media_type: ArtifactMediaType
+    content_digest: ArtifactDigest
+    content: bytes
+    destination_reference: WorkspaceTransferReference
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, WorkspaceScope):
+            raise TypeError("scope must be WorkspaceScope")
+        if not isinstance(self.artifact_id, ArtifactId):
+            raise TypeError("artifact_id must be ArtifactId")
+        if not isinstance(self.version, ArtifactVersion):
+            raise TypeError("version must be ArtifactVersion")
+        if not isinstance(self.logical_path, ArtifactLogicalPath):
+            raise TypeError("logical_path must be ArtifactLogicalPath")
+        if not isinstance(self.media_type, ArtifactMediaType):
+            raise TypeError("media_type must be ArtifactMediaType")
+        if not isinstance(self.content_digest, ArtifactDigest):
+            raise TypeError("content_digest must be ArtifactDigest")
+        content = _bounded_bytes(
+            self.content,
+            label="exported content",
+            maximum_bytes=MAX_WORKSPACE_ARTIFACT_BYTES,
+        )
+        if artifact_content_digest(content) != self.content_digest:
+            raise ValueError("exported content digest does not match authoritative digest")
+        object.__setattr__(self, "content", content)
+        if not isinstance(self.destination_reference, WorkspaceTransferReference):
+            raise TypeError("destination_reference must be WorkspaceTransferReference")
+
+    @property
+    def byte_length(self) -> int:
+        return len(self.content)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceExportResult:
+    """Bounded content-free completion evidence returned by an export adapter."""
+
+    transfer_reference: WorkspaceTransferReference | None = None
+
+    def __post_init__(self) -> None:
+        if self.transfer_reference is not None and not isinstance(
+            self.transfer_reference, WorkspaceTransferReference
+        ):
+            raise TypeError("transfer_reference must be WorkspaceTransferReference")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactTransferReceipt:
+    """Content-free descriptive evidence for one completed transfer."""
+
+    direction: ArtifactTransferDirection
+    scope: WorkspaceScope
+    artifact_id: ArtifactId
+    version: ArtifactVersion
+    content_digest: ArtifactDigest
+    byte_length: int
+    adapter_id: WorkspaceTransferAdapterId
+    completed_at: datetime
+    transfer_reference: WorkspaceTransferReference | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.direction, ArtifactTransferDirection):
+            raise TypeError("direction must be ArtifactTransferDirection")
+        if not isinstance(self.scope, WorkspaceScope):
+            raise TypeError("scope must be WorkspaceScope")
+        if not isinstance(self.artifact_id, ArtifactId):
+            raise TypeError("artifact_id must be ArtifactId")
+        if not isinstance(self.version, ArtifactVersion):
+            raise TypeError("version must be ArtifactVersion")
+        if not isinstance(self.content_digest, ArtifactDigest):
+            raise TypeError("content_digest must be ArtifactDigest")
+        _non_negative_int(
+            self.byte_length,
+            label="transferred byte_length",
+            maximum=MAX_WORKSPACE_ARTIFACT_BYTES,
+        )
+        if not isinstance(self.adapter_id, WorkspaceTransferAdapterId):
+            raise TypeError("adapter_id must be WorkspaceTransferAdapterId")
+        _aware(self.completed_at, label="completed_at")
+        if self.transfer_reference is not None and not isinstance(
+            self.transfer_reference, WorkspaceTransferReference
+        ):
+            raise TypeError("transfer_reference must be WorkspaceTransferReference")
 
 
 @runtime_checkable
