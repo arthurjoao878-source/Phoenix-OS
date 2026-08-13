@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+from bisect import bisect_left
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -642,6 +643,69 @@ class _MemoryBoundedStateReadTransaction:
 
         self._store._reads += 1
         return tuple(selected)
+
+    async def list_bounded_page(
+        self,
+        *,
+        namespace: str | None = None,
+        prefix: str | None = None,
+        after: str | None = None,
+        limit: int,
+    ) -> tuple[StateRecord[object], ...]:
+        """Return the lowest canonical keys after one opaque cursor."""
+
+        self._ensure_open()
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise TypeError("limit must be an integer")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        normalized_namespace = (
+            None if namespace is None else _normalize_name(namespace, label="namespace")
+        )
+        normalized_prefix = None if prefix is None else prefix.strip().lower()
+        if normalized_prefix == "":
+            raise ValueError("prefix must not be blank")
+        if after is None:
+            normalized_after = None
+        else:
+            if not isinstance(after, str):
+                raise TypeError("after must be a string or None")
+            normalized_after = after.strip().lower()
+            if not normalized_after:
+                raise ValueError("after must not be blank")
+
+        now = self._store._clock()
+        selected_keys: list[str] = []
+        selected: list[_StoredValue] = []
+
+        for scanned, stored in enumerate(self._store._records.values(), start=1):
+            if scanned % _BOUNDED_READ_YIELD_INTERVAL == 0:
+                await asyncio.sleep(0)
+            if stored.expires_at is not None and stored.expires_at <= now:
+                continue
+            if normalized_namespace is not None and stored.key.namespace != normalized_namespace:
+                continue
+            if normalized_prefix is not None and not stored.key.name.startswith(normalized_prefix):
+                continue
+
+            canonical = stored.key.canonical
+            if normalized_after is not None and canonical <= normalized_after:
+                continue
+
+            index = bisect_left(selected_keys, canonical)
+            if len(selected) < limit:
+                selected_keys.insert(index, canonical)
+                selected.insert(index, stored)
+                continue
+            if index >= limit:
+                continue
+            selected_keys.insert(index, canonical)
+            selected.insert(index, stored)
+            selected_keys.pop()
+            selected.pop()
+
+        self._store._reads += 1
+        return tuple(self._store._decode_record(item, item.key) for item in selected)
 
     async def commit(self) -> None:
         self._ensure_open()

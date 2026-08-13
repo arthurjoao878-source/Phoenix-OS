@@ -24,6 +24,7 @@ from phoenix_os.agent.workspace_backing import (
     workspace_backing_key,
 )
 from phoenix_os.agent.workspace_contracts import (
+    MAX_WORKSPACE_CLEANUP_RECORDS,
     MAX_WORKSPACE_RECOVERY_RECORDS,
     MAX_WORKSPACE_RECOVERY_SCOPES,
     ArtifactDeleteRequest,
@@ -150,8 +151,25 @@ class _BoundedWorkspaceStateReadTransaction(
 
 
 @runtime_checkable
+class _BoundedWorkspaceStatePagedReadTransaction(
+    _BoundedWorkspaceStateReadTransaction,
+    Protocol,
+):
+    """Recovery transaction that also supports deterministic bounded paging."""
+
+    async def list_bounded_page(
+        self,
+        *,
+        namespace: str | None = None,
+        prefix: str | None = None,
+        after: str | None = None,
+        limit: int,
+    ) -> tuple[StateRecord[object], ...]: ...
+
+
+@runtime_checkable
 class _BoundedWorkspaceStateStore(Protocol):
-    """Optional provider capability required only by startup recovery."""
+    """Optional provider capability required only by recovery/maintenance."""
 
     def bounded_read_transaction(
         self,
@@ -1110,6 +1128,166 @@ class StateStoreWorkspaceStore:
 
         assert result is not None
         return result
+
+    async def cleanup_expired_batch(
+        self,
+        *,
+        namespace: WorkspaceNamespace,
+        after: str | None,
+        max_records: int,
+    ) -> tuple[str | None, int, int]:
+        """Tombstone one deterministic bounded page of expired artifacts.
+
+        The tuple is (next_cursor, scanned_records, cleaned_records).
+        The cursor is internal Phoenix state identity and never a public
+        workspace contract.
+        """
+
+        if not isinstance(namespace, WorkspaceNamespace):
+            raise TypeError("namespace must be WorkspaceNamespace")
+        if after is not None:
+            if not isinstance(after, str):
+                raise TypeError("after must be a string or None")
+            if (
+                after != after.strip().lower()
+                or not after.startswith(f"{_WORKSPACE_STATE_NAMESPACE}:record.")
+                or len(after) > 512
+            ):
+                raise ValueError("after is not a valid workspace cleanup cursor")
+        if (
+            isinstance(max_records, bool)
+            or not isinstance(max_records, int)
+            or not 1 <= max_records <= MAX_WORKSPACE_CLEANUP_RECORDS
+        ):
+            raise ValueError("max_records is outside supported cleanup bounds")
+
+        self._ensure_open()
+        state_store = self._state_store
+        if not isinstance(state_store, _BoundedWorkspaceStateStore):
+            raise AgentServiceUnavailableError()
+
+        transaction = state_store.bounded_read_transaction()
+        if not isinstance(transaction, _BoundedWorkspaceStatePagedReadTransaction):
+            raise AgentServiceUnavailableError()
+
+        page: tuple[StateRecord[object], ...] = ()
+        now: datetime | None = None
+        try:
+            await transaction.__aenter__()
+            now = _now(self._clock)
+            page = await transaction.list_bounded_page(
+                namespace=_WORKSPACE_STATE_NAMESPACE,
+                prefix="record.",
+                after=after,
+                limit=max_records,
+            )
+            if not isinstance(page, tuple):
+                raise AgentCodecError("workspace cleanup page is invalid")
+            if len(page) > max_records:
+                raise AgentLimitExceededError()
+
+            previous_cursor = after
+            for page_item in page:
+                if not isinstance(page_item, StateRecord):
+                    raise AgentCodecError("workspace cleanup page is invalid")
+                canonical = page_item.key.canonical
+                if (
+                    not canonical.startswith(f"{_WORKSPACE_STATE_NAMESPACE}:record.")
+                    or len(canonical) > 512
+                    or (previous_cursor is not None and canonical <= previous_cursor)
+                ):
+                    raise AgentCodecError("workspace cleanup page is invalid")
+                previous_cursor = canonical
+
+            await transaction.commit()
+        except asyncio.CancelledError:
+            await self._rollback_after_cancellation(transaction)
+            raise
+        except Exception as exception:
+            if transaction.state is TransactionState.OPEN:
+                await self._best_effort_rollback(transaction)
+            raise _safe_failure(exception) from None
+
+        assert now is not None
+        next_cursor = page[-1].key.canonical if len(page) == max_records else None
+        cleaned = 0
+
+        for page_item in page:
+            try:
+                candidate, _candidate_backing = _decode_record(
+                    page_item.value,
+                    limits=self._limits,
+                    now=now,
+                )
+                _require_state_identity(candidate, state_key=page_item.key)
+                if (
+                    candidate.scope.namespace != namespace
+                    or candidate.status is not ArtifactStatus.ACTIVE
+                    or candidate.expires_at > now
+                ):
+                    continue
+
+                record_key = _record_key(candidate.scope, candidate.artifact_id)
+                current_stored = await state_store.get(record_key)
+                if current_stored is None:
+                    continue
+
+                current, current_backing = _decode_record(
+                    current_stored.value,
+                    limits=self._limits,
+                    now=now,
+                    expected_scope=candidate.scope,
+                    expected_artifact_id=candidate.artifact_id,
+                )
+                _require_state_identity(current, state_key=current_stored.key)
+                if (
+                    current.scope.namespace != namespace
+                    or current.status is not ArtifactStatus.ACTIVE
+                    or current.expires_at > now
+                ):
+                    continue
+                assert current_backing is not None
+
+                stored_ledger = await state_store.get(_ledger_key(current.scope))
+                if stored_ledger is None:
+                    raise AgentCodecError("workspace identity ledger is invalid")
+                ledger = _decode_ledger(
+                    stored_ledger.value,
+                    expected_scope=current.scope,
+                    limits=self._limits,
+                )
+                if current.artifact_id not in ledger:
+                    raise AgentCodecError("workspace identity ledger is invalid")
+
+                # Expired artifacts are already logically invisible. Delete their
+                # immutable old bytes first, then conditionally tombstone metadata.
+                # Every later artifact version has a distinct backing key.
+                try:
+                    await self._backing.delete(current_backing)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exception:
+                    raise _safe_backing_failure(exception) from None
+
+                tombstone = _tombstone(current, now=now, limits=self._limits)
+                try:
+                    await state_store.put(
+                        record_key,
+                        _encode_record(tombstone, None),
+                        expected_version=current_stored.version,
+                        ttl=self._limits.retention.tombstone_retention,
+                    )
+                except StateConflictError:
+                    # A concurrent exact mutation won. The removed backing key
+                    # belongs only to the stale immutable version.
+                    continue
+                cleaned += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as exception:
+                raise _safe_failure(exception) from None
+
+        return next_cursor, len(page), cleaned
 
     async def close(self) -> None:
         if self._closed:
