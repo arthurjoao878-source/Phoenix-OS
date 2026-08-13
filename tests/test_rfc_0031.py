@@ -194,7 +194,7 @@ def test_rfc_0031_proposes_provider_neutral_contracts() -> None:
     assert "process handle" in text
 
 
-def test_rfc_0031_slices_zero_and_one_complete_and_later_slices_pending() -> None:
+def test_rfc_0031_slices_zero_through_three_complete_and_later_slices_pending() -> None:
     text = _text()
     for slice_number in range(6):
         assert f"### Slice {slice_number} -" in text
@@ -221,8 +221,22 @@ def test_rfc_0031_slices_zero_and_one_complete_and_later_slices_pending() -> Non
         "Deterministic contract/path/authorization tests",
     ):
         assert f"- [x] {item}" in text
-    assert "- [ ] Reference authoritative workspace store" in text
-    assert "- [ ] Explicit bounded import contract and service path" in text
+    for item in (
+        "Reference authoritative workspace store",
+        "Bounded artifact bytes, metadata, counts, and total quota",
+        "Atomic writes and optimistic write/delete versions",
+        "Retention, expiry, deletion, and ID anti-reuse behavior",
+        "Provider-neutral backing adapter plus confined local reference adapter",
+        "Persistence, path-escape, quota-race, and recovery tests",
+        "Explicit bounded import contract and service path",
+        "Explicit bounded export contract and service path",
+        "Independent source/destination transfer authorization",
+        "Provenance-preserving untrusted `ArtifactContextBlock`",
+        "Agent-loop opt-in artifact context integration without authority promotion",
+        "Injection, binary-decoding, cross-scope, and transfer regressions",
+    ):
+        assert f"- [x] {item}" in text
+
     assert "- [ ] Fail-closed startup/recovery" in text
     assert "- [ ] Threat-model/security-invariant review" in text
     assert "- [ ] Tag, artifacts, and checksums" in text

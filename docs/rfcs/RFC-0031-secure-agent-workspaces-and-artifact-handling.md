@@ -382,21 +382,21 @@ behavior remains unchanged.
 
 ### Slice 2 - Authoritative store, quotas, and mutation safety
 
-- [ ] Reference authoritative workspace store
-- [ ] Bounded artifact bytes, metadata, counts, and total quota
-- [ ] Atomic writes and optimistic write/delete versions
-- [ ] Retention, expiry, deletion, and ID anti-reuse behavior
-- [ ] Provider-neutral backing adapter plus confined local reference adapter
-- [ ] Persistence, path-escape, quota-race, and recovery tests
+- [x] Reference authoritative workspace store
+- [x] Bounded artifact bytes, metadata, counts, and total quota
+- [x] Atomic writes and optimistic write/delete versions
+- [x] Retention, expiry, deletion, and ID anti-reuse behavior
+- [x] Provider-neutral backing adapter plus confined local reference adapter
+- [x] Persistence, path-escape, quota-race, and recovery tests
 
 ### Slice 3 - Transfers and agent context integration
 
-- [ ] Explicit bounded import contract and service path
-- [ ] Explicit bounded export contract and service path
-- [ ] Independent source/destination transfer authorization
-- [ ] Provenance-preserving untrusted `ArtifactContextBlock`
-- [ ] Agent-loop opt-in artifact context integration without authority promotion
-- [ ] Injection, binary-decoding, cross-scope, and transfer regressions
+- [x] Explicit bounded import contract and service path
+- [x] Explicit bounded export contract and service path
+- [x] Independent source/destination transfer authorization
+- [x] Provenance-preserving untrusted `ArtifactContextBlock`
+- [x] Agent-loop opt-in artifact context integration without authority promotion
+- [x] Injection, binary-decoding, cross-scope, and transfer regressions
 
 ### Slice 4 - Recovery, observability, administration, and Runtime ownership
 
