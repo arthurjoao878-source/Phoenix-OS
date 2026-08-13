@@ -33,8 +33,11 @@ MAX_WORKSPACE_ARTIFACTS_PER_SCOPE = 100_000
 MAX_WORKSPACE_ARTIFACT_ID_HISTORY_PER_SCOPE = 100_000
 MAX_WORKSPACE_SCOPE_TOTAL_BYTES = 10_737_418_240
 MAX_WORKSPACE_LIST_RESULTS = 256
+MAX_WORKSPACE_CONTEXT_ITEMS = 128
+MAX_WORKSPACE_CONTEXT_BYTES = 4_194_304
 MAX_WORKSPACE_RETENTION = timedelta(days=3650)
 MAX_WORKSPACE_TOMBSTONE_RETENTION = timedelta(days=3650)
+ARTIFACT_CONTEXT_TRUST_LABEL = "untrusted_artifact_data"
 
 _WORKSPACE_NAMESPACE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
 _WORKSPACE_SCOPE_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,191})$")
@@ -499,7 +502,10 @@ class WorkspaceRetentionPolicy:
         )
 
 
-@dataclass(frozen=True, slots=True)
+_DEFAULT_WORKSPACE_RETENTION_POLICY = WorkspaceRetentionPolicy()
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class WorkspaceLimits:
     """Finite limits for one configured workspace namespace/scope."""
 
@@ -511,6 +517,47 @@ class WorkspaceLimits:
     max_logical_path_segments: int = 32
     max_list_results: int = 100
     retention: WorkspaceRetentionPolicy = field(default_factory=WorkspaceRetentionPolicy)
+    max_context_items: int = 32
+    max_context_bytes: int = 1_048_576
+
+    def __init__(
+        self,
+        max_artifact_bytes: int = 16_777_216,
+        max_artifacts_per_scope: int = 10_000,
+        max_artifact_id_history_per_scope: int = 100_000,
+        max_total_bytes_per_scope: int = 1_073_741_824,
+        max_logical_path_bytes: int = 512,
+        max_logical_path_segments: int = 32,
+        max_list_results: int = 100,
+        retention: WorkspaceRetentionPolicy = _DEFAULT_WORKSPACE_RETENTION_POLICY,
+        max_context_items: int | None = None,
+        max_context_bytes: int | None = None,
+    ) -> None:
+        """Create limits, deriving omitted context defaults within structural quotas."""
+
+        resolved_context_items = (
+            min(32, max_artifacts_per_scope) if max_context_items is None else max_context_items
+        )
+        resolved_context_bytes = (
+            min(1_048_576, max_total_bytes_per_scope)
+            if max_context_bytes is None
+            else max_context_bytes
+        )
+        object.__setattr__(self, "max_artifact_bytes", max_artifact_bytes)
+        object.__setattr__(self, "max_artifacts_per_scope", max_artifacts_per_scope)
+        object.__setattr__(
+            self,
+            "max_artifact_id_history_per_scope",
+            max_artifact_id_history_per_scope,
+        )
+        object.__setattr__(self, "max_total_bytes_per_scope", max_total_bytes_per_scope)
+        object.__setattr__(self, "max_logical_path_bytes", max_logical_path_bytes)
+        object.__setattr__(self, "max_logical_path_segments", max_logical_path_segments)
+        object.__setattr__(self, "max_list_results", max_list_results)
+        object.__setattr__(self, "max_context_items", resolved_context_items)
+        object.__setattr__(self, "max_context_bytes", resolved_context_bytes)
+        object.__setattr__(self, "retention", retention)
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         limits = (
@@ -541,6 +588,16 @@ class WorkspaceLimits:
                 MAX_WORKSPACE_LOGICAL_PATH_SEGMENTS,
             ),
             ("max_list_results", self.max_list_results, MAX_WORKSPACE_LIST_RESULTS),
+            (
+                "max_context_items",
+                self.max_context_items,
+                MAX_WORKSPACE_CONTEXT_ITEMS,
+            ),
+            (
+                "max_context_bytes",
+                self.max_context_bytes,
+                MAX_WORKSPACE_CONTEXT_BYTES,
+            ),
         )
         for label, value, maximum in limits:
             _positive_int(value, label=label, maximum=maximum)
@@ -550,6 +607,10 @@ class WorkspaceLimits:
             raise ValueError(
                 "max_artifact_id_history_per_scope cannot be less than max_artifacts_per_scope"
             )
+        if self.max_context_items > self.max_artifacts_per_scope:
+            raise ValueError("max_context_items cannot exceed max_artifacts_per_scope")
+        if self.max_context_bytes > self.max_total_bytes_per_scope:
+            raise ValueError("max_context_bytes cannot exceed max_total_bytes_per_scope")
         if not isinstance(self.retention, WorkspaceRetentionPolicy):
             raise TypeError("retention must be WorkspaceRetentionPolicy")
 
@@ -674,6 +735,79 @@ class ArtifactReadResult:
         if artifact_content_digest(content) != self.record.content_digest:
             raise ValueError("artifact content digest does not match record")
         object.__setattr__(self, "content", content)
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactContextItem:
+    """Exact authoritative artifact text that carries data and never authority."""
+
+    record: ArtifactRecord
+    text: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.record, ArtifactRecord):
+            raise TypeError("record must be ArtifactRecord")
+        if self.record.status is not ArtifactStatus.ACTIVE:
+            raise ValueError("artifact context item requires an active record")
+        if not isinstance(self.text, str):
+            raise TypeError("text must be a string")
+        try:
+            encoded = self.text.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
+            raise ValueError("artifact context text is not valid Unicode") from None
+        if len(encoded) > MAX_WORKSPACE_CONTEXT_BYTES:
+            raise ValueError("artifact context item exceeds the maximum content bytes")
+        if len(encoded) != self.record.byte_length:
+            raise ValueError("artifact context text byte length does not match record")
+        if artifact_content_digest(encoded) != self.record.content_digest:
+            raise ValueError("artifact context text digest does not match record")
+
+    @property
+    def content_bytes(self) -> int:
+        return len(self.text.encode("utf-8"))
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactContextBlock:
+    """Bounded provenance-preserving artifact data that is explicitly untrusted."""
+
+    scope: WorkspaceScope
+    items: Sequence[ArtifactContextItem]
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope, WorkspaceScope):
+            raise TypeError("scope must be WorkspaceScope")
+        normalized = tuple(self.items)
+        if not normalized:
+            raise ValueError("artifact context block requires at least one item")
+        if len(normalized) > MAX_WORKSPACE_CONTEXT_ITEMS:
+            raise ValueError("artifact context block exceeds the maximum item count")
+        if any(not isinstance(item, ArtifactContextItem) for item in normalized):
+            raise TypeError("items must contain ArtifactContextItem values")
+        if any(item.record.scope != self.scope for item in normalized):
+            raise ValueError("artifact context block contains a mismatched scope")
+        artifact_ids = [item.record.artifact_id for item in normalized]
+        if len(artifact_ids) != len(set(artifact_ids)):
+            raise ValueError("artifact context block contains duplicate artifacts")
+        if sum(item.content_bytes for item in normalized) > MAX_WORKSPACE_CONTEXT_BYTES:
+            raise ValueError("artifact context block exceeds the maximum content bytes")
+        _aware(self.created_at, label="created_at")
+        if any(item.record.expired(now=self.created_at) for item in normalized):
+            raise ValueError("artifact context block contains an expired artifact")
+        object.__setattr__(
+            self,
+            "items",
+            tuple(sorted(normalized, key=lambda item: item.record.artifact_id.value.int)),
+        )
+
+    @property
+    def trust_label(self) -> str:
+        return ARTIFACT_CONTEXT_TRUST_LABEL
+
+    @property
+    def content_bytes(self) -> int:
+        return sum(item.content_bytes for item in self.items)
 
 
 @dataclass(frozen=True, slots=True)

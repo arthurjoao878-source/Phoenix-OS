@@ -73,6 +73,10 @@ from phoenix_os.agent.observer import (
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.state import AgentCancellationToken, AgentRunStateMachine
 from phoenix_os.agent.tools import ToolDescriptor
+from phoenix_os.agent.workspace_context import (
+    AgentArtifactContextProvider,
+    artifact_context_messages,
+)
 from phoenix_os.inference import (
     InferenceMessage,
     InferenceRequest,
@@ -157,6 +161,7 @@ class AgentLoop:
         admission: AgentAdmissionController | None = None,
         observer: AgentObserver | None = None,
         memory_context: AgentMemoryContextProvider | None = None,
+        artifact_context: AgentArtifactContextProvider | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(run_authorizer, AgentRunAuthorizer):
@@ -193,6 +198,10 @@ class AgentLoop:
             memory_context, AgentMemoryContextProvider
         ):
             raise TypeError("memory_context must implement AgentMemoryContextProvider")
+        if artifact_context is not None and not isinstance(
+            artifact_context, AgentArtifactContextProvider
+        ):
+            raise TypeError("artifact_context must implement AgentArtifactContextProvider")
         if not callable(clock):
             raise TypeError("clock must be callable")
 
@@ -208,6 +217,7 @@ class AgentLoop:
         self._approval_resolver = approval_resolver
         self._observer = resolved_observer
         self._memory_context = memory_context
+        self._artifact_context = artifact_context
         self._clock = clock
 
     async def run(
@@ -276,6 +286,12 @@ class AgentLoop:
                 memory_block = await self._memory_context.context_for_run(request, context)
                 if memory_block is not None:
                     messages.extend(memory_context_messages(memory_block))
+                    _require_prompt_limits(messages, request)
+
+            if self._artifact_context is not None:
+                artifact_block = await self._artifact_context.context_for_run(request, context)
+                if artifact_block is not None:
+                    messages.extend(artifact_context_messages(artifact_block))
                     _require_prompt_limits(messages, request)
 
             while True:
