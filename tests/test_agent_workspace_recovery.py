@@ -828,3 +828,62 @@ async def test_memory_recovery_scan_yields_to_cancellation_and_releases_lock() -
         ),
         timeout=1.0,
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_owner_close_is_bounded_when_store_suppresses_cancellation() -> None:
+    class _SlowCloseStore:
+        def __init__(self) -> None:
+            self._limits = WorkspaceLimits()
+            self._closed = False
+
+        @property
+        def closed(self) -> bool:
+            return self._closed
+
+        @property
+        def limits(self) -> WorkspaceLimits:
+            return self._limits
+
+        async def recover(
+            self,
+            *,
+            namespace: WorkspaceNamespace,
+            max_scopes: int,
+            max_records: int,
+        ) -> WorkspaceRecoverySnapshot:
+            del max_scopes, max_records
+            return WorkspaceRecoverySnapshot(
+                namespace=namespace,
+                scopes=0,
+                records=0,
+                active_artifacts=0,
+                active_bytes=0,
+                expired_artifacts=0,
+                tombstones=0,
+                created_at=_NOW,
+            )
+
+        async def close(self) -> None:
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                # Simulate a hostile provider that suppresses the first
+                # cancellation and keeps its close coroutine alive.
+                await asyncio.Future()
+
+    store = _SlowCloseStore()
+    owner = AgentWorkspaceRuntimeOwner(
+        configuration=AgentWorkspaceRuntimeConfiguration(
+            namespace=_NAMESPACE,
+            limits=store.limits,
+            operation_timeout=timedelta(milliseconds=1),
+        ),
+        store=store,
+    )
+    await owner.start(RuntimeContext(services={}))
+
+    await asyncio.wait_for(owner.close(), timeout=0.2)
+
+    assert owner.closed is True
+    assert owner.running is False

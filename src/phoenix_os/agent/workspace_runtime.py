@@ -35,6 +35,15 @@ def _consume_recovery_task_result(
         pass
 
 
+def _consume_close_task_result(task: asyncio.Task[None]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 @runtime_checkable
 class WorkspaceRecoverableStore(Protocol):
     """Runtime-only recovery capability; normal WorkspaceStore stays unchanged."""
@@ -214,4 +223,24 @@ class AgentWorkspaceRuntimeOwner:
         if self._closed:
             return
         self._closed = True
-        await self._store.close()
+
+        task = asyncio.create_task(
+            self._store.close(),
+            name="phoenix-agent-workspace-close",
+        )
+        try:
+            done, pending = await asyncio.wait(
+                {task},
+                timeout=self._configuration.operation_timeout.total_seconds(),
+            )
+        except asyncio.CancelledError:
+            task.cancel()
+            task.add_done_callback(_consume_close_task_result)
+            raise
+
+        if pending or task not in done:
+            task.cancel()
+            task.add_done_callback(_consume_close_task_result)
+            return
+
+        _consume_close_task_result(task)
