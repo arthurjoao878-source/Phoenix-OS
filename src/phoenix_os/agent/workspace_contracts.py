@@ -35,6 +35,9 @@ MAX_WORKSPACE_SCOPE_TOTAL_BYTES = 10_737_418_240
 MAX_WORKSPACE_LIST_RESULTS = 256
 MAX_WORKSPACE_CONTEXT_ITEMS = 128
 MAX_WORKSPACE_CONTEXT_BYTES = 4_194_304
+MAX_WORKSPACE_RECOVERY_SCOPES = 4_096
+MAX_WORKSPACE_RECOVERY_RECORDS = 1_000_000
+MAX_WORKSPACE_RECOVERY_BYTES = MAX_WORKSPACE_SCOPE_TOTAL_BYTES * MAX_WORKSPACE_RECOVERY_SCOPES
 MAX_WORKSPACE_RETENTION = timedelta(days=3650)
 MAX_WORKSPACE_TOMBSTONE_RETENTION = timedelta(days=3650)
 ARTIFACT_CONTEXT_TRUST_LABEL = "untrusted_artifact_data"
@@ -808,6 +811,48 @@ class ArtifactContextBlock:
     @property
     def content_bytes(self) -> int:
         return sum(item.content_bytes for item in self.items)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceRecoverySnapshot:
+    """Content-free evidence from one bounded authoritative recovery pass."""
+
+    namespace: WorkspaceNamespace
+    scopes: int
+    records: int
+    active_artifacts: int
+    active_bytes: int
+    expired_artifacts: int
+    tombstones: int
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.namespace, WorkspaceNamespace):
+            raise TypeError("namespace must be WorkspaceNamespace")
+        _non_negative_int(
+            self.scopes,
+            label="recovery scopes",
+            maximum=MAX_WORKSPACE_RECOVERY_SCOPES,
+        )
+        for label, value in (
+            ("recovery records", self.records),
+            ("active artifacts", self.active_artifacts),
+            ("expired artifacts", self.expired_artifacts),
+            ("tombstones", self.tombstones),
+        ):
+            _non_negative_int(
+                value,
+                label=label,
+                maximum=MAX_WORKSPACE_RECOVERY_RECORDS,
+            )
+        _non_negative_int(
+            self.active_bytes,
+            label="recovery active bytes",
+            maximum=MAX_WORKSPACE_RECOVERY_BYTES,
+        )
+        if self.active_artifacts + self.expired_artifacts + self.tombstones != self.records:
+            raise ValueError("recovery record counters are inconsistent")
+        _aware(self.created_at, label="created_at")
 
 
 @dataclass(frozen=True, slots=True)

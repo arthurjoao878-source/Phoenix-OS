@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from phoenix_os.agent.contracts import AgentId, AgentRunId
@@ -23,6 +24,8 @@ from phoenix_os.agent.workspace_backing import (
     workspace_backing_key,
 )
 from phoenix_os.agent.workspace_contracts import (
+    MAX_WORKSPACE_RECOVERY_RECORDS,
+    MAX_WORKSPACE_RECOVERY_SCOPES,
     ArtifactDeleteRequest,
     ArtifactDigest,
     ArtifactId,
@@ -40,6 +43,7 @@ from phoenix_os.agent.workspace_contracts import (
     ArtifactWriteRequest,
     WorkspaceLimits,
     WorkspaceNamespace,
+    WorkspaceRecoverySnapshot,
     WorkspaceScope,
     WorkspaceScopeId,
     WorkspaceScopeKind,
@@ -48,6 +52,7 @@ from phoenix_os.agent.workspace_contracts import (
 from phoenix_os.state.contracts import (
     ABSENT_VERSION,
     StateKey,
+    StateRecord,
     StateStore,
     StateTransaction,
     TransactionState,
@@ -110,6 +115,47 @@ _PROVENANCE_FIELDS = frozenset(
 
 type Clock = Callable[[], datetime]
 type WorkspaceStateDocument = dict[str, object]
+
+_MAX_WORKSPACE_RECOVERY_STATE_DOCUMENTS = (
+    MAX_WORKSPACE_RECOVERY_RECORDS + MAX_WORKSPACE_RECOVERY_SCOPES
+)
+_MAX_WORKSPACE_RECOVERY_IDENTITY_ENTRIES = MAX_WORKSPACE_RECOVERY_RECORDS
+
+
+class _WorkspaceRollbackTransaction(Protocol):
+    @property
+    def state(self) -> TransactionState: ...
+
+    def rollback(self) -> Awaitable[None]: ...
+
+
+@runtime_checkable
+class _BoundedWorkspaceStateReadTransaction(
+    _WorkspaceRollbackTransaction,
+    Protocol,
+):
+    """Recovery-only read transaction with bounded result materialization."""
+
+    def __aenter__(self) -> Awaitable[_BoundedWorkspaceStateReadTransaction]: ...
+
+    async def list_bounded(
+        self,
+        *,
+        namespace: str | None = None,
+        prefix: str | None = None,
+        limit: int,
+    ) -> tuple[StateRecord[object], ...]: ...
+
+    async def commit(self) -> None: ...
+
+
+@runtime_checkable
+class _BoundedWorkspaceStateStore(Protocol):
+    """Optional provider capability required only by startup recovery."""
+
+    def bounded_read_transaction(
+        self,
+    ) -> _BoundedWorkspaceStateReadTransaction: ...
 
 
 def _utc_now() -> datetime:
@@ -454,12 +500,11 @@ def _encode_ledger(
     }
 
 
-def _decode_ledger(
+def _decode_ledger_document(
     value: object,
     *,
-    expected_scope: WorkspaceScope,
     limits: WorkspaceLimits,
-) -> frozenset[ArtifactId]:
+) -> tuple[WorkspaceScope, frozenset[ArtifactId]]:
     if not isinstance(value, Mapping) or set(value) != _WORKSPACE_LEDGER_FIELDS:
         raise AgentCodecError("workspace identity ledger is invalid")
     if value["schema_version"] != _WORKSPACE_LEDGER_SCHEMA_VERSION:
@@ -495,7 +540,19 @@ def _decode_ledger(
         artifact_ids = frozenset(ArtifactId(UUID(hex=item)) for item in normalized_ids)
     except (TypeError, ValueError) as exception:
         raise AgentCodecError("workspace identity ledger is invalid") from exception
-    if scope != expected_scope or len(artifact_ids) != len(normalized_ids):
+    if len(artifact_ids) != len(normalized_ids):
+        raise AgentCodecError("workspace identity ledger is invalid")
+    return scope, artifact_ids
+
+
+def _decode_ledger(
+    value: object,
+    *,
+    expected_scope: WorkspaceScope,
+    limits: WorkspaceLimits,
+) -> frozenset[ArtifactId]:
+    scope, artifact_ids = _decode_ledger_document(value, limits=limits)
+    if scope != expected_scope:
         raise AgentCodecError("workspace identity ledger is invalid")
     return artifact_ids
 
@@ -910,6 +967,150 @@ class StateStoreWorkspaceStore:
         if previous_backing is not None:
             await self._delete_obsolete_backing_after_commit(previous_backing)
 
+    async def recover(
+        self,
+        *,
+        namespace: WorkspaceNamespace,
+        max_scopes: int,
+        max_records: int,
+    ) -> WorkspaceRecoverySnapshot:
+        """Validate one namespace against authoritative metadata and live backing."""
+
+        if not isinstance(namespace, WorkspaceNamespace):
+            raise TypeError("namespace must be WorkspaceNamespace")
+        if (
+            isinstance(max_scopes, bool)
+            or not isinstance(max_scopes, int)
+            or not 1 <= max_scopes <= MAX_WORKSPACE_RECOVERY_SCOPES
+        ):
+            raise ValueError("max_scopes is outside supported recovery bounds")
+        if (
+            isinstance(max_records, bool)
+            or not isinstance(max_records, int)
+            or not 1 <= max_records <= MAX_WORKSPACE_RECOVERY_RECORDS
+        ):
+            raise ValueError("max_records is outside supported recovery bounds")
+        self._ensure_open()
+        state_store = self._state_store
+        if not isinstance(state_store, _BoundedWorkspaceStateStore):
+            raise AgentServiceUnavailableError()
+        transaction = state_store.bounded_read_transaction()
+        if not isinstance(transaction, _BoundedWorkspaceStateReadTransaction):
+            raise AgentServiceUnavailableError()
+        result: WorkspaceRecoverySnapshot | None = None
+        try:
+            await transaction.__aenter__()
+            now = _now(self._clock)
+            stored_items = await transaction.list_bounded(
+                namespace=_WORKSPACE_STATE_NAMESPACE,
+                limit=_MAX_WORKSPACE_RECOVERY_STATE_DOCUMENTS + 1,
+            )
+            if len(stored_items) > _MAX_WORKSPACE_RECOVERY_STATE_DOCUMENTS:
+                raise AgentLimitExceededError()
+            ledgers: dict[WorkspaceScope, frozenset[ArtifactId]] = {}
+            records: list[tuple[ArtifactRecord, WorkspaceBackingKey | None]] = []
+            identity_entries = 0
+
+            for stored in stored_items:
+                if stored.key.name.startswith("ledger."):
+                    scope, artifact_ids = _decode_ledger_document(
+                        stored.value,
+                        limits=self._limits,
+                    )
+                    if stored.key.canonical != _ledger_key(scope).canonical:
+                        raise AgentCodecError("workspace identity ledger is invalid")
+                    if scope in ledgers:
+                        raise AgentCodecError("workspace identity ledger is invalid")
+                    ledgers[scope] = artifact_ids
+                    identity_entries += len(artifact_ids)
+                    if identity_entries > _MAX_WORKSPACE_RECOVERY_IDENTITY_ENTRIES:
+                        raise AgentLimitExceededError()
+                    continue
+                if stored.key.name.startswith("record."):
+                    record, backing_key = _decode_record(
+                        stored.value,
+                        limits=self._limits,
+                        now=now,
+                    )
+                    _require_state_identity(record, state_key=stored.key)
+                    records.append((record, backing_key))
+                    continue
+                raise AgentCodecError("workspace authoritative metadata is invalid")
+
+            for record, _backing_key in records:
+                ledger = ledgers.get(record.scope)
+                if ledger is None or record.artifact_id not in ledger:
+                    raise AgentCodecError("workspace identity ledger is invalid")
+
+            namespace_scopes = tuple(scope for scope in ledgers if scope.namespace == namespace)
+            if len(namespace_scopes) > max_scopes:
+                raise AgentLimitExceededError()
+
+            namespace_records = tuple(
+                item for item in records if item[0].scope.namespace == namespace
+            )
+            if len(namespace_records) > max_records:
+                raise AgentLimitExceededError()
+
+            active_by_scope: dict[WorkspaceScope, int] = {}
+            bytes_by_scope: dict[WorkspaceScope, int] = {}
+            paths_by_scope: dict[WorkspaceScope, set[ArtifactLogicalPath]] = {}
+            active_artifacts = 0
+            active_bytes = 0
+            expired_artifacts = 0
+            tombstones = 0
+
+            for record, backing_key in namespace_records:
+                if record.status is ArtifactStatus.TOMBSTONED:
+                    tombstones += 1
+                    continue
+                if record.expires_at <= now:
+                    expired_artifacts += 1
+                    continue
+
+                if record.logical_path is None or backing_key is None:
+                    raise AgentCodecError("workspace authoritative metadata is invalid")
+                paths = paths_by_scope.setdefault(record.scope, set())
+                if record.logical_path in paths:
+                    raise AgentCodecError("workspace authoritative metadata is invalid")
+                paths.add(record.logical_path)
+
+                scope_count = active_by_scope.get(record.scope, 0) + 1
+                scope_bytes = bytes_by_scope.get(record.scope, 0) + record.byte_length
+                if (
+                    scope_count > self._limits.max_artifacts_per_scope
+                    or scope_bytes > self._limits.max_total_bytes_per_scope
+                ):
+                    raise AgentCodecError("workspace authoritative metadata is invalid")
+                active_by_scope[record.scope] = scope_count
+                bytes_by_scope[record.scope] = scope_bytes
+
+                await self._read_verified_backing(backing_key, record=record)
+                active_artifacts += 1
+                active_bytes += record.byte_length
+
+            result = WorkspaceRecoverySnapshot(
+                namespace=namespace,
+                scopes=len(namespace_scopes),
+                records=len(namespace_records),
+                active_artifacts=active_artifacts,
+                active_bytes=active_bytes,
+                expired_artifacts=expired_artifacts,
+                tombstones=tombstones,
+                created_at=now,
+            )
+            await transaction.commit()
+        except asyncio.CancelledError:
+            await self._rollback_after_cancellation(transaction)
+            raise
+        except Exception as exception:
+            if transaction.state is TransactionState.OPEN:
+                await self._best_effort_rollback(transaction)
+            raise _safe_failure(exception) from None
+
+        assert result is not None
+        return result
+
     async def close(self) -> None:
         if self._closed:
             return
@@ -1025,7 +1226,9 @@ class StateStoreWorkspaceStore:
             pass
 
     @staticmethod
-    async def _best_effort_rollback(transaction: StateTransaction) -> None:
+    async def _best_effort_rollback(
+        transaction: _WorkspaceRollbackTransaction,
+    ) -> None:
         try:
             await transaction.rollback()
         except Exception:
@@ -1052,7 +1255,9 @@ class StateStoreWorkspaceStore:
             pass
 
     @staticmethod
-    async def _rollback_after_cancellation(transaction: StateTransaction) -> None:
+    async def _rollback_after_cancellation(
+        transaction: _WorkspaceRollbackTransaction,
+    ) -> None:
         """Finish pre-commit rollback before propagating cancellation."""
 
         if transaction.state is not TransactionState.OPEN:

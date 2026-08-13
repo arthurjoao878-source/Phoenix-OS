@@ -41,6 +41,8 @@ from phoenix_os.state.errors import (
 T = TypeVar("T")
 type Clock = Callable[[], datetime]
 
+_BOUNDED_READ_YIELD_INTERVAL = 256
+
 
 @dataclass(frozen=True, slots=True)
 class _StoredValue:
@@ -326,6 +328,12 @@ class MemoryStateStore:
         self._ensure_open()
         return MemoryStateTransaction(self, context=context)
 
+    def bounded_read_transaction(self) -> _MemoryBoundedStateReadTransaction:
+        """Return a lock-held bounded read transaction for recovery-style scans."""
+
+        self._ensure_open()
+        return _MemoryBoundedStateReadTransaction(self)
+
     async def snapshot(
         self,
         *,
@@ -573,6 +581,83 @@ class MemoryStateStore:
     def _ensure_open(self) -> None:
         if self._closed:
             raise StateStoreClosedError("state store is closed")
+
+
+class _MemoryBoundedStateReadTransaction:
+    """Read-only lock-held transaction with bounded matching-record materialization."""
+
+    def __init__(self, store: MemoryStateStore) -> None:
+        self._store = store
+        self._state = TransactionState.NEW
+
+    @property
+    def state(self) -> TransactionState:
+        return self._state
+
+    async def __aenter__(self) -> _MemoryBoundedStateReadTransaction:
+        if self._state is not TransactionState.NEW:
+            raise StateTransactionError("transaction instances cannot be entered more than once")
+        await self._store._lock.acquire()
+        try:
+            self._store._ensure_open()
+            self._state = TransactionState.OPEN
+        except BaseException:
+            self._store._lock.release()
+            raise
+        return self
+
+    async def list_bounded(
+        self,
+        *,
+        namespace: str | None = None,
+        prefix: str | None = None,
+        limit: int,
+    ) -> tuple[StateRecord[object], ...]:
+        self._ensure_open()
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise TypeError("limit must be an integer")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        normalized_namespace = (
+            None if namespace is None else _normalize_name(namespace, label="namespace")
+        )
+        normalized_prefix = None if prefix is None else prefix.strip().lower()
+        if normalized_prefix == "":
+            raise ValueError("prefix must not be blank")
+
+        now = self._store._clock()
+        selected: list[StateRecord[object]] = []
+        for scanned, stored in enumerate(self._store._records.values(), start=1):
+            if scanned % _BOUNDED_READ_YIELD_INTERVAL == 0:
+                await asyncio.sleep(0)
+            if stored.expires_at is not None and stored.expires_at <= now:
+                continue
+            if normalized_namespace is not None and stored.key.namespace != normalized_namespace:
+                continue
+            if normalized_prefix is not None and not stored.key.name.startswith(normalized_prefix):
+                continue
+            selected.append(self._store._decode_record(stored, stored.key))
+            if len(selected) >= limit:
+                break
+
+        self._store._reads += 1
+        return tuple(selected)
+
+    async def commit(self) -> None:
+        self._ensure_open()
+        self._store._transactions += 1
+        self._state = TransactionState.COMMITTED
+        self._store._lock.release()
+
+    async def rollback(self) -> None:
+        self._ensure_open()
+        self._store._transactions += 1
+        self._state = TransactionState.ROLLED_BACK
+        self._store._lock.release()
+
+    def _ensure_open(self) -> None:
+        if self._state is not TransactionState.OPEN:
+            raise StateTransactionError("transaction is not open")
 
 
 class MemoryStateTransaction:
