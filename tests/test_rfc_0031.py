@@ -194,7 +194,7 @@ def test_rfc_0031_proposes_provider_neutral_contracts() -> None:
     assert "process handle" in text
 
 
-def test_rfc_0031_slices_zero_through_four_and_slice_five_a_complete() -> None:
+def test_rfc_0031_slices_zero_through_four_and_slice_five_b_complete() -> None:
     text = _text()
     for slice_number in range(6):
         assert f"### Slice {slice_number} -" in text
@@ -253,10 +253,17 @@ def test_rfc_0031_slices_zero_through_four_and_slice_five_a_complete() -> None:
     for item in (
         "Named agent-workspace release gate",
         "Offline wheel/sdist validation",
+    ):
+        assert f"- [x] {item}" in text
+
+    for item in (
         "Release notes and package version 0.31.0",
         "Tag, artifacts, and checksums",
     ):
         assert f"- [ ] {item}" in text
+
+    assert "## Release validation" in text
+    assert "python scripts/check_agent_workspace_release.py" in text
 
 
 def test_rfc_0031_acceptance_keeps_host_authority_outside_workspace() -> None:

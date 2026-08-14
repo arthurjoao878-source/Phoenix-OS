@@ -360,6 +360,30 @@ artifact context injection is created.
 Existing Phoenix OS v0.30.0 inference, agent, durable-agent, multi-agent, and memory
 behavior remains unchanged.
 
+## Release validation
+
+RFC-0031 has a named agent-workspace release gate:
+
+```text
+python scripts/check_agent_workspace_release.py
+```
+
+The gate discovers the complete `test_agent_workspace*.py` regression surface plus
+the RFC-0031 executable specification. It validates package metadata, every shipped
+`workspace_*.py` module, the RFC, migration guide, threat review, ADR index and
+ADR-0056 through ADR-0059, archive paths, and sensitive-file exclusions.
+
+It builds and inspects wheel and sdist artifacts, rejects unsafe archive paths and
+unexpected links, rebuilds a wheel from the validated sdist, and installs both wheel
+forms with `--no-deps --no-index` in isolated environments. Packaged smoke execution
+runs in isolated Python mode without source-tree imports and validates exact workspace
+actions/resources, logical-path traversal rejection, and authoritative
+write/read/update/delete behavior.
+
+The gate derives the current package version from `pyproject.toml`; defining and
+running the gate does not itself bump the package version. The v0.31.0 version and
+release notes remain a later Slice 5 release-metadata step.
+
 ## Slice plan
 
 ### Slice 0 - RFC foundation and executable specification
@@ -412,8 +436,8 @@ behavior remains unchanged.
 - [x] Threat-model/security-invariant review
 - [x] ADRs for file authority, logical paths, authoritative stores, and transfer boundaries
 - [x] v0.30.0 to v0.31.0 migration guidance
-- [ ] Named agent-workspace release gate
-- [ ] Offline wheel/sdist validation
+- [x] Named agent-workspace release gate
+- [x] Offline wheel/sdist validation
 - [ ] Release notes and package version 0.31.0
 - [ ] Tag, artifacts, and checksums
 

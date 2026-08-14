@@ -236,6 +236,28 @@ rebuilds a wheel from the validated sdist; and installs both wheel forms with
 scope/resources, authoritative memory, deterministic retrieval, and deletion
 without source-tree imports.
 
+## Agent-workspace release gate
+
+RFC-0031 adds a named gate for exact workspace authority, host confinement,
+authoritative mutation, transfer boundaries, untrusted artifact context, recovery,
+bounded lifecycle, migration, security review, and packaging:
+
+```bash
+python scripts/check_agent_workspace_release.py
+```
+
+The gate reruns all `test_agent_workspace*.py` regressions plus the RFC-0031
+executable specification; validates package metadata, all shipped `workspace_*.py`
+modules, archive paths, sensitive-file exclusions, migration guidance, ADRs, and
+threat review; rebuilds a wheel from the validated sdist; and installs both wheel
+forms with `--no-deps --no-index` in isolated environments.
+
+The packaged smoke runs with isolated Python mode and without source-tree imports.
+It exercises exact workspace actions/resources, logical-path traversal rejection,
+and authoritative write/read/update/delete behavior. The gate derives the current
+package version from `pyproject.toml`, so this release-hardening slice can remain on
+v0.30.0 until the final v0.31.0 metadata step.
+
 ## Release notes
 
 - [Phoenix OS 0.30.0](docs/releases/v0.30.0.md)
@@ -316,6 +338,17 @@ Existing v0.29.0 behavior remains unchanged when memory configuration is omitted
 The [RFC-0030 agent-memory threat-model and security-invariant review](docs/security/RFC-0030-agent-memory-threat-model-review.md)
 records all fifty-four invariants, release evidence, and residual risks.
 
+The planned opt-in v0.31.0 secure agent-workspace subsystem has staged exact scopes,
+logical-path confinement, independent workspace policy, explicit bounded mutation,
+authoritative recovery, transfer boundaries, untrusted artifact context,
+content-free operations, and disable-first rollback guidance:
+
+- [Migrate v0.30.0 deployments to v0.31.0 agent workspaces](docs/migrations/v0.30.0-to-v0.31.0-agent-workspaces.md)
+
+Existing v0.30.0 behavior remains unchanged when workspace configuration is omitted.
+The [RFC-0031 agent-workspace threat-model and security-invariant review](docs/security/RFC-0031-agent-workspace-threat-model-review.md)
+records all seventy-one invariants, release-candidate evidence, and residual risks.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -349,6 +382,12 @@ exact scopes without implicit sharing, authoritative source records with derived
 indexes, and finite retention with Runtime-owned bounded lifecycle. The
 [RFC-0030 agent-memory threat-model and security-invariant review](docs/security/RFC-0030-agent-memory-threat-model-review.md)
 records all fifty-four memory invariants and release evidence.
+
+The RFC-0031 agent-workspace records cover files-without-authority, Phoenix-owned
+logical paths with host confinement, authoritative workspace records behind
+provider-neutral backing, and explicit independently authorized import/export. The
+[RFC-0031 agent-workspace threat-model and security-invariant review](docs/security/RFC-0031-agent-workspace-threat-model-review.md)
+records all seventy-one workspace invariants and release-candidate evidence.
 
 ## Local dashboard example
 

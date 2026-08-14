@@ -32,3 +32,6 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 python scripts/check_agent_memory_release.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+python scripts/check_agent_workspace_release.py
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

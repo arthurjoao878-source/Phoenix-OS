@@ -236,7 +236,7 @@ Evidence: `test_agent_workspace_backing.py`,
 The RFC-0031 threat model and all seventy-one security invariants are accepted for the
 Phoenix OS v0.31.0 agent-workspace release-candidate review.
 
-This review does not by itself publish v0.31.0. Final publication still requires the
-later Slice 5 named agent-workspace release gate, full project quality gates, offline
-wheel/sdist inspection and isolated execution, release metadata and version bump,
-final RFC acceptance, release commit, tag, artifacts, and checksums.
+This review does not by itself publish v0.31.0. Final publication still requires
+successful execution of `python scripts/check_agent_workspace_release.py`, the full
+project quality gates, release metadata and the v0.31.0 version bump, final RFC
+acceptance, release commit, tag, artifacts, and checksums.

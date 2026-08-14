@@ -28,6 +28,18 @@ def test_agent_workspace_migration_rejects_automatic_state_reinterpretation() ->
         "must not be converted into artifacts",
         "Do not reuse a user's project tree or personal directory",
         "workspace read does not perform an implicit remote network fetch",
-        "final RFC acceptance, tag, artifacts, and checksums remain separate",
+        (
+            "final RFC acceptance, release commit, tag, artifacts, and "
+            "checksums remain later Slice 5 work"
+        ),
     ):
         assert phrase in text
+
+
+def test_agent_workspace_migration_names_release_gate_and_offline_validation() -> None:
+    raw = _MIGRATION.read_text(encoding="utf-8")
+    text = " ".join(raw.split())
+    assert "python scripts/check_agent_workspace_release.py" in text
+    assert "--no-deps --no-index" in text
+    assert "without source-tree imports" in text
+    assert "derives the current package version from pyproject.toml" in text
