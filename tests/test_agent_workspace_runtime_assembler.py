@@ -20,6 +20,7 @@ from phoenix_os.agent import (
     AgentId,
     AgentServiceConfiguration,
     AgentServiceUnavailableError,
+    AgentWorkspaceAdministration,
     AgentWorkspaceCleanupRuntime,
     AgentWorkspaceCleanupRuntimeConfiguration,
     AgentWorkspaceRuntimeConfiguration,
@@ -123,6 +124,7 @@ class _TransferAdapter:
 
 _WORKSPACE_SERVICE_NAMES = (
     "agent.workspace",
+    "agent.workspace.administration",
     "agent.workspace.backing",
     "agent.workspace.cleanup",
     "agent.workspace.owner",
@@ -205,6 +207,7 @@ async def test_runtime_workspace_is_absent_when_configuration_is_omitted() -> No
 
     for name in (
         "agent.workspace",
+        "agent.workspace.administration",
         "agent.workspace.backing",
         "agent.workspace.cleanup",
         "agent.workspace.owner",
@@ -250,6 +253,7 @@ async def test_runtime_owns_workspace_and_stops_agent_before_workspace() -> None
     ).assemble()
 
     service = runtime.service("agent.workspace")
+    administration = runtime.service("agent.workspace.administration")
     owner = runtime.service("agent.workspace.owner")
     observer = runtime.service("agent.workspace.observer")
     store = runtime.service("agent.workspace.store")
@@ -257,6 +261,7 @@ async def test_runtime_owns_workspace_and_stops_agent_before_workspace() -> None
     cleanup = runtime.service("agent.workspace.cleanup")
 
     assert isinstance(service, AgentWorkspaceRuntimeService)
+    assert isinstance(administration, AgentWorkspaceAdministration)
     assert isinstance(owner, AgentWorkspaceRuntimeOwner)
     assert isinstance(observer, ContentFreeAgentWorkspaceObserver)
     assert isinstance(store, StateStoreWorkspaceStore)

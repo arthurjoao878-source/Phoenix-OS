@@ -59,6 +59,7 @@ class AgentWorkspaceOperation(StrEnum):
     TRANSFER_IMPORT = "transfer.import"
     TRANSFER_EXPORT = "transfer.export"
     CLEANUP = "cleanup"
+    ADMIN = "admin"
 
 
 class AgentWorkspaceOperationOutcome(StrEnum):

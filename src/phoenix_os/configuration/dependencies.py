@@ -232,6 +232,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
 _WORKSPACE_DEFINITION_NAMES = frozenset(
     {
         "agent.workspace",
+        "agent.workspace.administration",
         "agent.workspace.backing",
         "agent.workspace.cleanup",
         "agent.workspace.owner",
@@ -1549,6 +1550,7 @@ class RuntimeAssembler:
                 cleanup_configuration=self._agent_workspace_cleanup_configuration,
             )
             custom_services["agent.workspace"] = agent_workspace_stack.service
+            custom_services["agent.workspace.administration"] = agent_workspace_stack.administration
             custom_services["agent.workspace.owner"] = agent_workspace_stack.owner
             custom_services["agent.workspace.observer"] = agent_workspace_stack.observer
             custom_services["agent.workspace.store"] = agent_workspace_stack.store

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from phoenix_os.agent.errors import AgentServiceUnavailableError
+from phoenix_os.agent.workspace_administration import AgentWorkspaceAdministration
 from phoenix_os.agent.workspace_authorization import PolicyEngineWorkspaceAuthorizer
 from phoenix_os.agent.workspace_backing import (
     InMemoryWorkspaceBackingAdapter,
@@ -188,6 +189,7 @@ class AgentWorkspaceRuntimeStack:
     service: AgentWorkspaceRuntimeService
     owner: AgentWorkspaceRuntimeOwner
     observer: ContentFreeAgentWorkspaceObserver
+    administration: AgentWorkspaceAdministration
     cleanup: AgentWorkspaceCleanupRuntime
     transfer: AgentWorkspaceTransferRuntime | None
     components: tuple[ComponentSpec, ...]
@@ -264,9 +266,10 @@ def create_agent_workspace_runtime_stack(
         configuration=configuration,
         store=store,
     )
+    authorizer = PolicyEngineWorkspaceAuthorizer(policy)
     core = AgentWorkspaceService(
         store=store,
-        authorizer=PolicyEngineWorkspaceAuthorizer(policy),
+        authorizer=authorizer,
         transfer_adapter=transfer_adapter,
         limits=configuration.limits,
         observer=observer,
@@ -300,6 +303,13 @@ def create_agent_workspace_runtime_stack(
         owner=owner,
         transfer=transfer,
     )
+    administration = AgentWorkspaceAdministration(
+        runtime=service,
+        store=store,
+        authorizer=authorizer,
+        observer=observer,
+        operation_timeout=configuration.operation_timeout,
+    )
 
     components: tuple[ComponentSpec, ...] = (
         ComponentSpec("agent.workspace.owner", owner),
@@ -317,6 +327,7 @@ def create_agent_workspace_runtime_stack(
         service=service,
         owner=owner,
         observer=observer,
+        administration=administration,
         cleanup=cleanup,
         transfer=transfer,
         components=components,

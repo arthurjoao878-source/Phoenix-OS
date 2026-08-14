@@ -670,6 +670,13 @@ from phoenix_os.agent.tools import (
     tool_descriptor_from_record,
     tool_descriptor_to_record,
 )
+from phoenix_os.agent.workspace_administration import (
+    DEFAULT_WORKSPACE_ADMINISTRATION_RECORDS,
+    MAX_WORKSPACE_ADMINISTRATION_RECORDS,
+    AgentWorkspaceAdministration,
+    AgentWorkspaceAdministrationSnapshot,
+    WorkspaceAdministrationScan,
+)
 from phoenix_os.agent.workspace_authorization import (
     WORKSPACE_ADMIN_ACTION,
     WORKSPACE_DELETE_ACTION,
@@ -828,6 +835,7 @@ __all__ = [
     "DEFAULT_DURABLE_RECONCILIATION_PREPARATION_CAPACITY",
     "DEFAULT_DURABLE_RECONCILIATION_PREPARATION_TTL",
     "DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS",
+    "DEFAULT_WORKSPACE_ADMINISTRATION_RECORDS",
     "DURABLE_ADMINISTRATION_CLEANUP_RESOURCE",
     "DURABLE_ADMINISTRATION_HEALTH_RESOURCE",
     "DURABLE_CHECKPOINT_CODEC_SCHEMA_VERSION",
@@ -951,6 +959,7 @@ __all__ = [
     "MAX_TOOL_SCHEMA_PROPERTIES",
     "MAX_TOOL_SCHEMA_REQUIRED_PROPERTIES",
     "MAX_TOOL_SCHEMA_STRING_LENGTH",
+    "MAX_WORKSPACE_ADMINISTRATION_RECORDS",
     "MAX_WORKSPACE_ARTIFACTS_PER_SCOPE",
     "MAX_WORKSPACE_ARTIFACT_BYTES",
     "MAX_WORKSPACE_ARTIFACT_ID_HISTORY_PER_SCOPE",
@@ -1082,6 +1091,8 @@ __all__ = [
     "AgentTimeoutError",
     "AgentToolConfiguration",
     "AgentToolView",
+    "AgentWorkspaceAdministration",
+    "AgentWorkspaceAdministrationSnapshot",
     "AgentWorkspaceCleanupRuntime",
     "AgentWorkspaceCleanupRuntimeConfiguration",
     "AgentWorkspaceObserver",
@@ -1370,6 +1381,7 @@ __all__ = [
     "ToolResultStatus",
     "ToolSchema",
     "ToolSchemaType",
+    "WorkspaceAdministrationScan",
     "WorkspaceAuthorizer",
     "WorkspaceBackingAdapter",
     "WorkspaceBackingKey",

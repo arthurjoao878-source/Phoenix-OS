@@ -17,6 +17,10 @@ from phoenix_os.agent.errors import (
     AgentServiceUnavailableError,
     AgentStateConflictError,
 )
+from phoenix_os.agent.workspace_administration import (
+    MAX_WORKSPACE_ADMINISTRATION_RECORDS,
+    WorkspaceAdministrationScan,
+)
 from phoenix_os.agent.workspace_backing import (
     InMemoryWorkspaceBackingAdapter,
     WorkspaceBackingAdapter,
@@ -1288,6 +1292,132 @@ class StateStoreWorkspaceStore:
                 raise _safe_failure(exception) from None
 
         return next_cursor, len(page), cleaned
+
+    async def administration_scan(
+        self,
+        *,
+        scope: WorkspaceScope,
+        max_records: int,
+    ) -> WorkspaceAdministrationScan:
+        """Scan one exact scope through a finite content-free administration page."""
+
+        if not isinstance(scope, WorkspaceScope):
+            raise TypeError("scope must be WorkspaceScope")
+        if (
+            isinstance(max_records, bool)
+            or not isinstance(max_records, int)
+            or not 1 <= max_records <= MAX_WORKSPACE_ADMINISTRATION_RECORDS
+        ):
+            raise ValueError("max_records is outside supported administration bounds")
+        self._ensure_open()
+        state_store = self._state_store
+        if not isinstance(state_store, _BoundedWorkspaceStateStore):
+            raise AgentServiceUnavailableError()
+        transaction = state_store.bounded_read_transaction()
+        if not isinstance(transaction, _BoundedWorkspaceStatePagedReadTransaction):
+            raise AgentServiceUnavailableError()
+
+        result: WorkspaceAdministrationScan | None = None
+        try:
+            await transaction.__aenter__()
+            now = _now(self._clock)
+
+            ledger_key = _ledger_key(scope)
+            ledger_page = await transaction.list_bounded(
+                namespace=_WORKSPACE_STATE_NAMESPACE,
+                prefix=ledger_key.name,
+                limit=2,
+            )
+            if not isinstance(ledger_page, tuple) or len(ledger_page) > 1:
+                raise AgentCodecError("workspace administration ledger page is invalid")
+            if ledger_page:
+                stored_ledger = ledger_page[0]
+                if (
+                    not isinstance(stored_ledger, StateRecord)
+                    or stored_ledger.key.canonical != ledger_key.canonical
+                ):
+                    raise AgentCodecError("workspace administration ledger page is invalid")
+                ledger = _decode_ledger(
+                    stored_ledger.value,
+                    expected_scope=scope,
+                    limits=self._limits,
+                )
+            else:
+                ledger = frozenset()
+
+            page = await transaction.list_bounded_page(
+                namespace=_WORKSPACE_STATE_NAMESPACE,
+                prefix=_record_prefix(scope),
+                after=None,
+                limit=max_records + 1,
+            )
+            if not isinstance(page, tuple):
+                raise AgentCodecError("workspace administration page is invalid")
+            if len(page) > max_records + 1:
+                raise AgentLimitExceededError()
+
+            selected = page[:max_records]
+            expected_prefix = f"{_WORKSPACE_STATE_NAMESPACE}:{_record_prefix(scope)}"
+            previous_cursor: str | None = None
+            active_artifacts = 0
+            active_bytes = 0
+            expired_artifacts = 0
+            tombstones = 0
+            for stored in selected:
+                if not isinstance(stored, StateRecord):
+                    raise AgentCodecError("workspace administration page is invalid")
+                canonical = stored.key.canonical
+                if (
+                    not canonical.startswith(expected_prefix)
+                    or len(canonical) > 512
+                    or (previous_cursor is not None and canonical <= previous_cursor)
+                ):
+                    raise AgentCodecError("workspace administration page is invalid")
+                previous_cursor = canonical
+                record, _backing_key = _decode_record(
+                    stored.value,
+                    limits=self._limits,
+                    now=now,
+                    expected_scope=scope,
+                )
+                _require_state_identity(record, state_key=stored.key)
+                if record.artifact_id not in ledger:
+                    raise AgentCodecError("workspace identity ledger is invalid")
+                if record.status is ArtifactStatus.TOMBSTONED:
+                    tombstones += 1
+                    continue
+                if record.expires_at <= now:
+                    expired_artifacts += 1
+                    continue
+                active_artifacts += 1
+                active_bytes += record.byte_length
+                if (
+                    active_artifacts > self._limits.max_artifacts_per_scope
+                    or active_bytes > self._limits.max_total_bytes_per_scope
+                ):
+                    raise AgentCodecError("workspace administration evidence is invalid")
+
+            result = WorkspaceAdministrationScan(
+                scope=scope,
+                scanned_records=len(selected),
+                active_artifacts=active_artifacts,
+                active_bytes=active_bytes,
+                expired_artifacts=expired_artifacts,
+                tombstones=tombstones,
+                truncated=len(page) > max_records,
+                created_at=now,
+            )
+            await transaction.commit()
+        except asyncio.CancelledError:
+            await self._rollback_after_cancellation(transaction)
+            raise
+        except Exception as exception:
+            if transaction.state is TransactionState.OPEN:
+                await self._best_effort_rollback(transaction)
+            raise _safe_failure(exception) from None
+
+        assert result is not None
+        return result
 
     async def close(self) -> None:
         if self._closed:
