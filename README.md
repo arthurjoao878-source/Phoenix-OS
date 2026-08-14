@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.30.0` implements thirty accepted specifications:
+Version `0.31.0` implements thirty-one accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -85,6 +85,10 @@ Version `0.30.0` implements thirty accepted specifications:
   run/agent/principal memory with exact independent authorization, explicit bounded
   writes and provenance, authoritative retention/tombstones, deterministic retrieval,
   untrusted context assembly, optional semantic indexing, and Runtime-owned recovery.
+- **RFC-0031 — Secure Agent Workspaces and Artifact Handling:** opt-in bounded
+  run/agent/principal artifact workspaces with exact independent authorization,
+  Phoenix-owned logical paths, authoritative versioned storage, explicit transfers,
+  untrusted artifact context, fail-closed recovery, and Runtime-owned lifecycle.
 
 The core intentionally contains no AI model, remote database driver, external vector database,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -255,11 +259,12 @@ forms with `--no-deps --no-index` in isolated environments.
 The packaged smoke runs with isolated Python mode and without source-tree imports.
 It exercises exact workspace actions/resources, logical-path traversal rejection,
 and authoritative write/read/update/delete behavior. The gate derives the current
-package version from `pyproject.toml`, so this release-hardening slice can remain on
-v0.30.0 until the final v0.31.0 metadata step.
+package version from `pyproject.toml` and validates the v0.31.0 release-candidate
+metadata before final RFC acceptance, tag, artifacts, and checksums.
 
 ## Release notes
 
+- [Phoenix OS 0.31.0](docs/releases/v0.31.0.md)
 - [Phoenix OS 0.30.0](docs/releases/v0.30.0.md)
 - [Phoenix OS 0.29.0](docs/releases/v0.29.0.md)
 - [Phoenix OS 0.28.0](docs/releases/v0.28.0.md)
@@ -268,7 +273,7 @@ v0.30.0 until the final v0.31.0 metadata step.
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
+The release notes summarize agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
 security boundaries, compatibility, migration, architecture decisions,
 validation, and package artifacts.
 
@@ -338,7 +343,7 @@ Existing v0.29.0 behavior remains unchanged when memory configuration is omitted
 The [RFC-0030 agent-memory threat-model and security-invariant review](docs/security/RFC-0030-agent-memory-threat-model-review.md)
 records all fifty-four invariants, release evidence, and residual risks.
 
-The planned opt-in v0.31.0 secure agent-workspace subsystem has staged exact scopes,
+The opt-in v0.31.0 secure agent-workspace subsystem has staged exact scopes,
 logical-path confinement, independent workspace policy, explicit bounded mutation,
 authoritative recovery, transfer boundaries, untrusted artifact context,
 content-free operations, and disable-first rollback guidance:

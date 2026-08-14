@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.31.0] - 2026-08-14
+
+### Added
+- RFC-0031 secure agent workspaces with Phoenix-owned run/agent/principal scopes and exact independent `workspace.list`, `workspace.read`, `workspace.write`, `workspace.delete`, `workspace.import`, `workspace.export`, and `workspace.admin` authority.
+- Canonical bounded logical paths separated from opaque backing keys, with confined local reference backing and fail-closed traversal/link/special-object handling.
+- Authoritative versioned/digested artifact records with immutable provenance, bounded count/byte quotas, atomic admission, optimistic mutation, finite retention, tombstones, and restart-safe anti-resurrection semantics.
+- Explicit independently authorized bounded import/export adapters plus provenance-preserving untrusted `ArtifactContextBlock` agent integration.
+- Agent-workspace migration guidance, four architecture records, formal threat review, release metadata, and isolated offline wheel/sdist validation.
+
+### Security
+- Files carry data, never authority; artifact content, names, metadata, provenance, historical approvals, credentials, grants, and policy-like text never reconstruct current authority.
+- Logical paths remain Phoenix-owned relative identifiers and cannot select arbitrary native host paths; opaque backing identity remains separate from logical naming.
+- Symlink, hardlink, reparse, traversal, FIFO, socket, device, and other special-object escapes fail closed in the local reference backing.
+- Deleted, expired, wrong-scope, wrong-version, and digest-mismatched artifacts cannot resurrect through reads, context, transfer continuation, administration, or restart recovery.
+- Workspaces expose no generic shell, process, browser, desktop, network, host-filesystem, or operating-system authority.
+
+### Compatibility
+- Phoenix OS 0.30.0 behavior is preserved when workspace configuration is omitted.
+- Upgrade creates no artifact, workspace store, backing root, worker, transfer, permission, context attachment, host-directory mount, memory conversion, model call, tool call, delegation, or external access automatically.
+- Final publication is blocked on the full quality gate, all named subsystem gates, the agent-workspace gate, final RFC acceptance, and release artifact checksums.
+
+
 ## [0.30.0] - 2026-08-12
 
 ### Added

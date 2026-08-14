@@ -29,7 +29,7 @@ def test_agent_workspace_migration_rejects_automatic_state_reinterpretation() ->
         "Do not reuse a user's project tree or personal directory",
         "workspace read does not perform an implicit remote network fetch",
         (
-            "final RFC acceptance, release commit, tag, artifacts, and "
+            "Final RFC acceptance, release commit, tag, artifacts, and "
             "checksums remain later Slice 5 work"
         ),
     ):
@@ -42,4 +42,7 @@ def test_agent_workspace_migration_names_release_gate_and_offline_validation() -
     assert "python scripts/check_agent_workspace_release.py" in text
     assert "--no-deps --no-index" in text
     assert "without source-tree imports" in text
-    assert "derives the current package version from pyproject.toml" in text
+    assert "Slice 5C sets the package metadata to v0.31.0" in text
+    assert "release-candidate metadata" in text
+    assert "requires `docs/releases/v0.31.0.md` in the sdist" in text
+    assert "validates clean wheel/sdist artifacts" in text

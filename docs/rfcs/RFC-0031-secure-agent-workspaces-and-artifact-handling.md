@@ -380,9 +380,10 @@ runs in isolated Python mode without source-tree imports and validates exact wor
 actions/resources, logical-path traversal rejection, and authoritative
 write/read/update/delete behavior.
 
-The gate derives the current package version from `pyproject.toml`; defining and
-running the gate does not itself bump the package version. The v0.31.0 version and
-release notes remain a later Slice 5 release-metadata step.
+The package metadata now targets v0.31.0. The gate also validates
+`docs/releases/v0.31.0.md` and the v0.31.0 release-candidate executable
+specification. Final RFC acceptance, tag, artifacts, and checksums remain the
+publication step.
 
 ## Slice plan
 
@@ -438,7 +439,7 @@ release notes remain a later Slice 5 release-metadata step.
 - [x] v0.30.0 to v0.31.0 migration guidance
 - [x] Named agent-workspace release gate
 - [x] Offline wheel/sdist validation
-- [ ] Release notes and package version 0.31.0
+- [x] Release notes and package version 0.31.0
 - [ ] Tag, artifacts, and checksums
 
 ## Acceptance

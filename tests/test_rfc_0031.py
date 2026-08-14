@@ -194,7 +194,7 @@ def test_rfc_0031_proposes_provider_neutral_contracts() -> None:
     assert "process handle" in text
 
 
-def test_rfc_0031_slices_zero_through_four_and_slice_five_b_complete() -> None:
+def test_rfc_0031_slices_zero_through_four_and_slice_five_c_complete() -> None:
     text = _text()
     for slice_number in range(6):
         assert f"### Slice {slice_number} -" in text
@@ -256,11 +256,10 @@ def test_rfc_0031_slices_zero_through_four_and_slice_five_b_complete() -> None:
     ):
         assert f"- [x] {item}" in text
 
-    for item in (
-        "Release notes and package version 0.31.0",
-        "Tag, artifacts, and checksums",
-    ):
-        assert f"- [ ] {item}" in text
+    assert "- [x] Release notes and package version 0.31.0" in text
+    assert "- [ ] Tag, artifacts, and checksums" in text
+    assert "- Status: Draft" in text
+    assert "docs/releases/v0.31.0.md" in text
 
     assert "## Release validation" in text
     assert "python scripts/check_agent_workspace_release.py" in text

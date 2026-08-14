@@ -16,7 +16,10 @@ from pathlib import Path, PurePosixPath
 
 _ROOT = Path(__file__).resolve().parents[1]
 
-_COMPANION_TESTS = ("tests/test_rfc_0031.py",)
+_COMPANION_TESTS = (
+    "tests/test_rfc_0031.py",
+    "tests/test_v031_release.py",
+)
 
 _REQUIRED_WORKSPACE_TESTS = frozenset(
     {
@@ -65,6 +68,7 @@ _REQUIRED_SDIST_DOCUMENTS = (
     "CHANGELOG.md",
     "LICENSE",
     "pyproject.toml",
+    "docs/releases/v0.31.0.md",
     "docs/rfcs/RFC-0031-secure-agent-workspaces-and-artifact-handling.md",
     "docs/migrations/v0.30.0-to-v0.31.0-agent-workspaces.md",
     "docs/security/RFC-0031-agent-workspace-threat-model-review.md",

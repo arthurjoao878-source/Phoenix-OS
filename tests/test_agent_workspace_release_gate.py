@@ -15,6 +15,8 @@ def test_agent_workspace_release_gate_has_packaging_and_isolated_smoke_boundarie
         'glob("test_agent_workspace*.py")',
         'glob("workspace_*.py")',
         '"docs/rfcs/RFC-0031-secure-agent-workspaces-and-artifact-handling.md"',
+        '"docs/releases/v0.31.0.md"',
+        '"tests/test_v031_release.py"',
         '"docs/migrations/v0.30.0-to-v0.31.0-agent-workspaces.md"',
         '"docs/security/RFC-0031-agent-workspace-threat-model-review.md"',
         '"docs/adrs/ADR-0056-files-carry-data-never-authority.md"',

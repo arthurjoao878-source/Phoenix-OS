@@ -238,5 +238,5 @@ Phoenix OS v0.31.0 agent-workspace release-candidate review.
 
 This review does not by itself publish v0.31.0. Final publication still requires
 successful execution of `python scripts/check_agent_workspace_release.py`, the full
-project quality gates, release metadata and the v0.31.0 version bump, final RFC
-acceptance, release commit, tag, artifacts, and checksums.
+project quality gates, final RFC acceptance, release commit, tag, artifacts, and
+checksums.
