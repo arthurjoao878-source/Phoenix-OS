@@ -235,6 +235,7 @@ _WORKSPACE_DEFINITION_NAMES = frozenset(
         "agent.workspace.backing",
         "agent.workspace.cleanup",
         "agent.workspace.owner",
+        "agent.workspace.observer",
         "agent.workspace.service",
         "agent.workspace.store",
         "agent.workspace.transfer",
@@ -1538,6 +1539,9 @@ class RuntimeAssembler:
             agent_workspace_stack = create_agent_workspace_runtime_stack(
                 configuration=self._agent_workspace_configuration,
                 policy=self._policy,
+                events=self._events,
+                audit=self._audit,
+                observability=self._observability,
                 state_store=state_store,
                 backing=self._agent_workspace_backing,
                 transfer_adapter=self._agent_workspace_transfer_adapter,
@@ -1546,6 +1550,7 @@ class RuntimeAssembler:
             )
             custom_services["agent.workspace"] = agent_workspace_stack.service
             custom_services["agent.workspace.owner"] = agent_workspace_stack.owner
+            custom_services["agent.workspace.observer"] = agent_workspace_stack.observer
             custom_services["agent.workspace.store"] = agent_workspace_stack.store
             custom_services["agent.workspace.backing"] = agent_workspace_stack.backing
             custom_services["agent.workspace.cleanup"] = agent_workspace_stack.cleanup

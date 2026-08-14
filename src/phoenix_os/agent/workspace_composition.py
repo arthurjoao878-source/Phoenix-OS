@@ -29,6 +29,7 @@ from phoenix_os.agent.workspace_contracts import (
     ArtifactWriteRequest,
     WorkspaceLimits,
 )
+from phoenix_os.agent.workspace_observer import ContentFreeAgentWorkspaceObserver
 from phoenix_os.agent.workspace_runtime import (
     AgentWorkspaceRuntimeConfiguration,
     AgentWorkspaceRuntimeOwner,
@@ -40,6 +41,9 @@ from phoenix_os.agent.workspace_transfer_runtime import (
     AgentWorkspaceTransferRuntime,
     AgentWorkspaceTransferRuntimeConfiguration,
 )
+from phoenix_os.audit import AuditLedger
+from phoenix_os.events import EventBus
+from phoenix_os.observability import ObservabilityHub
 from phoenix_os.policy import PolicyEngine, SecurityContext
 from phoenix_os.runtime import ComponentSpec, RuntimeContext
 from phoenix_os.state import MemoryStateStore, StateStore
@@ -183,6 +187,7 @@ class AgentWorkspaceRuntimeStack:
     core: AgentWorkspaceService
     service: AgentWorkspaceRuntimeService
     owner: AgentWorkspaceRuntimeOwner
+    observer: ContentFreeAgentWorkspaceObserver
     cleanup: AgentWorkspaceCleanupRuntime
     transfer: AgentWorkspaceTransferRuntime | None
     components: tuple[ComponentSpec, ...]
@@ -192,6 +197,9 @@ def create_agent_workspace_runtime_stack(
     *,
     configuration: AgentWorkspaceRuntimeConfiguration,
     policy: PolicyEngine,
+    events: EventBus | None = None,
+    audit: AuditLedger | None = None,
+    observability: ObservabilityHub | None = None,
     state_store: StateStore | None = None,
     backing: WorkspaceBackingAdapter | None = None,
     transfer_adapter: WorkspaceTransferAdapter | None = None,
@@ -205,6 +213,12 @@ def create_agent_workspace_runtime_stack(
         raise TypeError("configuration must be AgentWorkspaceRuntimeConfiguration")
     if not isinstance(policy, PolicyEngine):
         raise TypeError("policy must be PolicyEngine")
+    if events is not None and not isinstance(events, EventBus):
+        raise TypeError("events must be EventBus or None")
+    if audit is not None and not isinstance(audit, AuditLedger):
+        raise TypeError("audit must be AuditLedger or None")
+    if observability is not None and not isinstance(observability, ObservabilityHub):
+        raise TypeError("observability must be ObservabilityHub or None")
     if backing is not None and not isinstance(backing, WorkspaceBackingAdapter):
         raise TypeError("backing must implement WorkspaceBackingAdapter")
     if transfer_adapter is not None and not isinstance(
@@ -232,6 +246,11 @@ def create_agent_workspace_runtime_stack(
     resolved_backing: WorkspaceBackingAdapter = (
         InMemoryWorkspaceBackingAdapter() if backing is None else backing
     )
+    observer = ContentFreeAgentWorkspaceObserver(
+        events=EventBus() if events is None else events,
+        audit=audit,
+        observability=observability,
+    )
 
     store = StateStoreWorkspaceStore(
         resolved_state,
@@ -250,6 +269,7 @@ def create_agent_workspace_runtime_stack(
         authorizer=PolicyEngineWorkspaceAuthorizer(policy),
         transfer_adapter=transfer_adapter,
         limits=configuration.limits,
+        observer=observer,
         clock=clock,
     )
     cleanup = AgentWorkspaceCleanupRuntime(
@@ -259,6 +279,8 @@ def create_agent_workspace_runtime_stack(
             else cleanup_configuration
         ),
         owner=owner,
+        namespace=configuration.namespace,
+        observer=observer,
     )
 
     transfer: AgentWorkspaceTransferRuntime | None = None
@@ -270,6 +292,7 @@ def create_agent_workspace_runtime_stack(
                 else transfer_configuration
             ),
             service=core,
+            observer=observer,
         )
 
     service = AgentWorkspaceRuntimeService(
@@ -280,6 +303,7 @@ def create_agent_workspace_runtime_stack(
 
     components: tuple[ComponentSpec, ...] = (
         ComponentSpec("agent.workspace.owner", owner),
+        ComponentSpec("agent.workspace.observer", observer),
         ComponentSpec("agent.workspace.cleanup", cleanup),
         *(() if transfer is None else (ComponentSpec("agent.workspace.transfer", transfer),)),
         ComponentSpec("agent.workspace.service", service),
@@ -292,6 +316,7 @@ def create_agent_workspace_runtime_stack(
         core=core,
         service=service,
         owner=owner,
+        observer=observer,
         cleanup=cleanup,
         transfer=transfer,
         components=components,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Protocol, cast, runtime_checkable
@@ -18,6 +19,14 @@ from phoenix_os.agent.workspace_contracts import (
     ArtifactTransferDirection,
     ArtifactTransferReceipt,
 )
+from phoenix_os.agent.workspace_observer import (
+    AgentWorkspaceObserver,
+    AgentWorkspaceOperation,
+    AgentWorkspaceOperationObservation,
+    AgentWorkspaceOperationOutcome,
+    NullAgentWorkspaceObserver,
+    workspace_observation_failure,
+)
 from phoenix_os.policy import SecurityContext
 from phoenix_os.runtime import RuntimeContext
 
@@ -25,6 +34,10 @@ MAX_WORKSPACE_TRANSFER_RUNTIME_OPERATION_TIMEOUT = timedelta(minutes=5)
 MAX_WORKSPACE_TRANSFER_RUNTIME_QUEUE_CAPACITY = 4_096
 MAX_WORKSPACE_TRANSFER_RUNTIME_SETTLEMENT_TIMEOUT = timedelta(seconds=30)
 MAX_WORKSPACE_TRANSFER_RUNTIME_WORKERS = 64
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1_000))
 
 
 def _consume_worker_task_result(task: asyncio.Task[None]) -> None:
@@ -148,6 +161,7 @@ class AgentWorkspaceTransferRuntime:
         *,
         configuration: AgentWorkspaceTransferRuntimeConfiguration,
         service: _WorkspaceTransferService,
+        observer: AgentWorkspaceObserver | None = None,
     ) -> None:
         if not isinstance(configuration, AgentWorkspaceTransferRuntimeConfiguration):
             raise TypeError("configuration must be AgentWorkspaceTransferRuntimeConfiguration")
@@ -161,9 +175,13 @@ class AgentWorkspaceTransferRuntime:
             raise TypeError("service closed state must be bool")
         if service_closed:
             raise AgentServiceUnavailableError()
+        resolved_observer = NullAgentWorkspaceObserver() if observer is None else observer
+        if not isinstance(resolved_observer, AgentWorkspaceObserver):
+            raise TypeError("observer must implement AgentWorkspaceObserver")
 
         self._configuration = configuration
         self._service = service
+        self._observer = resolved_observer
         self._queue: asyncio.Queue[_TransferJob] = asyncio.Queue(
             maxsize=configuration.queue_capacity
         )
@@ -213,19 +231,37 @@ class AgentWorkspaceTransferRuntime:
     ) -> ArtifactTransferReceipt:
         self._require_request_context(request, ArtifactImportRequest, context)
         self._ensure_running()
-
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[ArtifactTransferReceipt] = loop.create_future()
-        cancel_event = asyncio.Event()
-        self._admit(
-            _ImportJob(
+        started = time.perf_counter()
+        try:
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[ArtifactTransferReceipt] = loop.create_future()
+            cancel_event = asyncio.Event()
+            self._admit(
+                _ImportJob(
+                    request=request,
+                    context=context,
+                    future=future,
+                    cancel_event=cancel_event,
+                )
+            )
+            receipt = await self._wait_for_import(future, cancel_event)
+        except BaseException as exception:
+            self._observe_failure(
+                operation=AgentWorkspaceOperation.TRANSFER_IMPORT,
                 request=request,
                 context=context,
-                future=future,
-                cancel_event=cancel_event,
+                exception=exception,
+                started=started,
+                direction=ArtifactTransferDirection.IMPORT,
             )
+            raise
+        self._observe_receipt(
+            operation=AgentWorkspaceOperation.TRANSFER_IMPORT,
+            receipt=receipt,
+            context=context,
+            started=started,
         )
-        return await self._wait_for_import(future, cancel_event)
+        return receipt
 
     async def export_artifact(
         self,
@@ -234,25 +270,43 @@ class AgentWorkspaceTransferRuntime:
     ) -> ArtifactTransferReceipt:
         self._require_request_context(request, ArtifactExportRequest, context)
         self._ensure_running()
-
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[ArtifactTransferReceipt] = loop.create_future()
-        cancel_event = asyncio.Event()
-        started_event = asyncio.Event()
-        self._admit(
-            _ExportJob(
-                request=request,
-                context=context,
-                future=future,
+        started = time.perf_counter()
+        try:
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[ArtifactTransferReceipt] = loop.create_future()
+            cancel_event = asyncio.Event()
+            started_event = asyncio.Event()
+            self._admit(
+                _ExportJob(
+                    request=request,
+                    context=context,
+                    future=future,
+                    cancel_event=cancel_event,
+                    started_event=started_event,
+                )
+            )
+            receipt = await self._wait_for_export(
+                future,
                 cancel_event=cancel_event,
                 started_event=started_event,
             )
+        except BaseException as exception:
+            self._observe_failure(
+                operation=AgentWorkspaceOperation.TRANSFER_EXPORT,
+                request=request,
+                context=context,
+                exception=exception,
+                started=started,
+                direction=ArtifactTransferDirection.EXPORT,
+            )
+            raise
+        self._observe_receipt(
+            operation=AgentWorkspaceOperation.TRANSFER_EXPORT,
+            receipt=receipt,
+            context=context,
+            started=started,
         )
-        return await self._wait_for_export(
-            future,
-            cancel_event=cancel_event,
-            started_event=started_event,
-        )
+        return receipt
 
     async def close(self) -> None:
         if self._closed:
@@ -293,6 +347,65 @@ class AgentWorkspaceTransferRuntime:
             _consume_worker_task_result(worker)
         for worker in pending:
             worker.add_done_callback(_consume_worker_task_result)
+
+    def _observe(
+        self,
+        observation: AgentWorkspaceOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        try:
+            self._observer.record(observation, context)
+        except Exception:
+            pass
+
+    def _observe_failure(
+        self,
+        *,
+        operation: AgentWorkspaceOperation,
+        request: ArtifactImportRequest | ArtifactExportRequest,
+        context: SecurityContext,
+        exception: BaseException,
+        started: float,
+        direction: ArtifactTransferDirection,
+    ) -> None:
+        outcome, reason_code = workspace_observation_failure(exception)
+        self._observe(
+            AgentWorkspaceOperationObservation(
+                operation=operation,
+                outcome=outcome,
+                namespace=request.scope.namespace,
+                scope=request.scope,
+                artifact_id=request.artifact_id,
+                transfer_direction=direction,
+                duration_ms=_duration_ms(started),
+                reason_code=reason_code,
+            ),
+            context,
+        )
+
+    def _observe_receipt(
+        self,
+        *,
+        operation: AgentWorkspaceOperation,
+        receipt: ArtifactTransferReceipt,
+        context: SecurityContext,
+        started: float,
+    ) -> None:
+        try:
+            observation = AgentWorkspaceOperationObservation(
+                operation=operation,
+                outcome=AgentWorkspaceOperationOutcome.SUCCEEDED,
+                namespace=receipt.scope.namespace,
+                scope=receipt.scope,
+                artifact_id=receipt.artifact_id,
+                version=receipt.version,
+                byte_count=receipt.byte_length,
+                transfer_direction=receipt.direction,
+                duration_ms=_duration_ms(started),
+            )
+        except Exception:
+            return
+        self._observe(observation, context)
 
     def _admit(self, job: _TransferJob) -> None:
         try:

@@ -30,6 +30,7 @@ from phoenix_os.agent import (
     ArtifactId,
     ArtifactImportRequest,
     ArtifactReadRequest,
+    ContentFreeAgentWorkspaceObserver,
     DeterministicFinalTurn,
     DeterministicModelTurnAdapter,
     InMemoryWorkspaceBackingAdapter,
@@ -125,6 +126,7 @@ _WORKSPACE_SERVICE_NAMES = (
     "agent.workspace.backing",
     "agent.workspace.cleanup",
     "agent.workspace.owner",
+    "agent.workspace.observer",
     "agent.workspace.service",
     "agent.workspace.store",
     "agent.workspace.transfer",
@@ -206,6 +208,7 @@ async def test_runtime_workspace_is_absent_when_configuration_is_omitted() -> No
         "agent.workspace.backing",
         "agent.workspace.cleanup",
         "agent.workspace.owner",
+        "agent.workspace.observer",
         "agent.workspace.store",
         "agent.workspace.transfer",
     ):
@@ -248,12 +251,14 @@ async def test_runtime_owns_workspace_and_stops_agent_before_workspace() -> None
 
     service = runtime.service("agent.workspace")
     owner = runtime.service("agent.workspace.owner")
+    observer = runtime.service("agent.workspace.observer")
     store = runtime.service("agent.workspace.store")
     backing = runtime.service("agent.workspace.backing")
     cleanup = runtime.service("agent.workspace.cleanup")
 
     assert isinstance(service, AgentWorkspaceRuntimeService)
     assert isinstance(owner, AgentWorkspaceRuntimeOwner)
+    assert isinstance(observer, ContentFreeAgentWorkspaceObserver)
     assert isinstance(store, StateStoreWorkspaceStore)
     assert isinstance(backing, InMemoryWorkspaceBackingAdapter)
     assert isinstance(cleanup, AgentWorkspaceCleanupRuntime)
@@ -274,7 +279,10 @@ async def test_runtime_owns_workspace_and_stops_agent_before_workspace() -> None
         )
 
     components = (await runtime.snapshot()).components
-    assert components.index("agent.workspace.owner") < components.index("agent.workspace.cleanup")
+    assert components.index("agent.workspace.owner") < components.index("agent.workspace.observer")
+    assert components.index("agent.workspace.observer") < components.index(
+        "agent.workspace.cleanup"
+    )
     assert components.index("agent.workspace.cleanup") < components.index("agent.workspace.service")
     assert components.index("agent.workspace.service") < components.index("agent")
 
@@ -287,7 +295,8 @@ async def test_runtime_owns_workspace_and_stops_agent_before_workspace() -> None
     assert backing.closed is True
     assert stopped.index("agent") < stopped.index("agent.workspace.service")
     assert stopped.index("agent.workspace.service") < stopped.index("agent.workspace.cleanup")
-    assert stopped.index("agent.workspace.cleanup") < stopped.index("agent.workspace.owner")
+    assert stopped.index("agent.workspace.cleanup") < stopped.index("agent.workspace.observer")
+    assert stopped.index("agent.workspace.observer") < stopped.index("agent.workspace.owner")
 
 
 @pytest.mark.asyncio
@@ -331,7 +340,10 @@ async def test_runtime_transfer_workers_stop_before_cleanup_and_owner() -> None:
     assert isinstance(transfer, AgentWorkspaceTransferRuntime)
 
     components = (await runtime.snapshot()).components
-    assert components.index("agent.workspace.owner") < components.index("agent.workspace.cleanup")
+    assert components.index("agent.workspace.owner") < components.index("agent.workspace.observer")
+    assert components.index("agent.workspace.observer") < components.index(
+        "agent.workspace.cleanup"
+    )
     assert components.index("agent.workspace.cleanup") < components.index(
         "agent.workspace.transfer"
     )
@@ -348,7 +360,8 @@ async def test_runtime_transfer_workers_stop_before_cleanup_and_owner() -> None:
     assert stopped.index("agent") < stopped.index("agent.workspace.service")
     assert stopped.index("agent.workspace.service") < stopped.index("agent.workspace.transfer")
     assert stopped.index("agent.workspace.transfer") < stopped.index("agent.workspace.cleanup")
-    assert stopped.index("agent.workspace.cleanup") < stopped.index("agent.workspace.owner")
+    assert stopped.index("agent.workspace.cleanup") < stopped.index("agent.workspace.observer")
+    assert stopped.index("agent.workspace.observer") < stopped.index("agent.workspace.owner")
 
 
 @pytest.mark.asyncio

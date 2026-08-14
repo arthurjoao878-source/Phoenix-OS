@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Protocol, runtime_checkable
 
 from phoenix_os.agent.errors import AgentServiceUnavailableError
+from phoenix_os.agent.workspace_contracts import WorkspaceNamespace
+from phoenix_os.agent.workspace_observer import (
+    AgentWorkspaceObserver,
+    AgentWorkspaceOperation,
+    AgentWorkspaceOperationObservation,
+    AgentWorkspaceOperationOutcome,
+    NullAgentWorkspaceObserver,
+    workspace_observation_failure,
+)
 from phoenix_os.runtime import RuntimeContext
 
 MIN_WORKSPACE_CLEANUP_RUNTIME_INTERVAL = timedelta(milliseconds=10)
@@ -15,6 +25,10 @@ MAX_WORKSPACE_CLEANUP_RUNTIME_INTERVAL = timedelta(hours=24)
 MAX_WORKSPACE_CLEANUP_RUNTIME_SHUTDOWN_TIMEOUT = timedelta(minutes=5)
 WORKSPACE_CLEANUP_RUNTIME_QUEUE_CAPACITY = 1
 WORKSPACE_CLEANUP_RUNTIME_WORKERS = 1
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1_000))
 
 
 def _consume_cleanup_runtime_task_result(task: asyncio.Task[None]) -> None:
@@ -77,14 +91,25 @@ class AgentWorkspaceCleanupRuntime:
         *,
         configuration: AgentWorkspaceCleanupRuntimeConfiguration,
         owner: _WorkspaceCleanupOwner,
+        namespace: WorkspaceNamespace | None = None,
+        observer: AgentWorkspaceObserver | None = None,
     ) -> None:
         if not isinstance(configuration, AgentWorkspaceCleanupRuntimeConfiguration):
             raise TypeError("configuration must be AgentWorkspaceCleanupRuntimeConfiguration")
         if not isinstance(owner, _WorkspaceCleanupOwner):
             raise TypeError("owner must implement the workspace cleanup owner")
+        if namespace is not None and not isinstance(namespace, WorkspaceNamespace):
+            raise TypeError("namespace must be WorkspaceNamespace or None")
+        if observer is not None and namespace is None:
+            raise ValueError("observer requires namespace")
+        resolved_observer = NullAgentWorkspaceObserver() if observer is None else observer
+        if not isinstance(resolved_observer, AgentWorkspaceObserver):
+            raise TypeError("observer must implement AgentWorkspaceObserver")
 
         self._configuration = configuration
         self._owner = owner
+        self._namespace = namespace
+        self._observer = resolved_observer
         self._queue: asyncio.Queue[None] = asyncio.Queue(
             maxsize=WORKSPACE_CLEANUP_RUNTIME_QUEUE_CAPACITY
         )
@@ -195,16 +220,58 @@ class AgentWorkspaceCleanupRuntime:
             try:
                 if self._closed:
                     continue
+                started = time.perf_counter()
                 try:
-                    await self._owner.cleanup_once()
-                except asyncio.CancelledError:
+                    cleaned = await self._owner.cleanup_once()
+                except asyncio.CancelledError as exception:
+                    self._observe_cleanup_failure(exception, started=started)
                     raise
-                except Exception:
-                    # 4C adds content-free operational reporting. A failed
-                    # maintenance cycle never kills the finite Runtime worker.
+                except Exception as exception:
+                    self._observe_cleanup_failure(exception, started=started)
+                    # A failed maintenance cycle never kills the finite Runtime worker.
                     pass
+                else:
+                    self._observe_cleanup_success(cleaned, started=started)
             finally:
                 self._queue.task_done()
+
+    def _observe_cleanup_success(self, cleaned: int, *, started: float) -> None:
+        namespace = self._namespace
+        if namespace is None:
+            return
+        try:
+            observation = AgentWorkspaceOperationObservation(
+                operation=AgentWorkspaceOperation.CLEANUP,
+                outcome=AgentWorkspaceOperationOutcome.SUCCEEDED,
+                namespace=namespace,
+                item_count=cleaned,
+                duration_ms=_duration_ms(started),
+            )
+            self._observer.record(observation)
+        except Exception:
+            pass
+
+    def _observe_cleanup_failure(
+        self,
+        exception: BaseException,
+        *,
+        started: float,
+    ) -> None:
+        namespace = self._namespace
+        if namespace is None:
+            return
+        outcome, reason_code = workspace_observation_failure(exception)
+        try:
+            observation = AgentWorkspaceOperationObservation(
+                operation=AgentWorkspaceOperation.CLEANUP,
+                outcome=outcome,
+                namespace=namespace,
+                duration_ms=_duration_ms(started),
+                reason_code=reason_code,
+            )
+            self._observer.record(observation)
+        except Exception:
+            pass
 
     def _require_owner_running(self) -> None:
         try:

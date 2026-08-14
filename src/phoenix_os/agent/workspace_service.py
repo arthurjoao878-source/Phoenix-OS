@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from phoenix_os.agent.workspace_contracts import (
     ArtifactDeleteRequest,
     ArtifactDigest,
     ArtifactExportRequest,
+    ArtifactId,
     ArtifactImportRequest,
     ArtifactListRequest,
     ArtifactListResult,
@@ -36,10 +38,19 @@ from phoenix_os.agent.workspace_contracts import (
     WorkspaceExportResult,
     WorkspaceImportResult,
     WorkspaceLimits,
+    WorkspaceScope,
     WorkspaceStore,
     WorkspaceTransferAdapterId,
     WorkspaceTransferReference,
     artifact_content_digest,
+)
+from phoenix_os.agent.workspace_observer import (
+    AgentWorkspaceObserver,
+    AgentWorkspaceOperation,
+    AgentWorkspaceOperationObservation,
+    AgentWorkspaceOperationOutcome,
+    NullAgentWorkspaceObserver,
+    workspace_observation_failure,
 )
 from phoenix_os.agent.workspace_transfer import WorkspaceTransferAdapter
 from phoenix_os.policy import SecurityContext
@@ -68,6 +79,7 @@ class AgentWorkspaceService:
         authorizer: WorkspaceAuthorizer,
         transfer_adapter: WorkspaceTransferAdapter | None = None,
         limits: WorkspaceLimits | None = None,
+        observer: AgentWorkspaceObserver | None = None,
         clock: Clock = _utc_now,
     ) -> None:
         if not isinstance(store, WorkspaceStore):
@@ -80,6 +92,9 @@ class AgentWorkspaceService:
             raise TypeError("transfer_adapter must implement WorkspaceTransferAdapter")
         if limits is not None and not isinstance(limits, WorkspaceLimits):
             raise TypeError("limits must be WorkspaceLimits or None")
+        resolved_observer = NullAgentWorkspaceObserver() if observer is None else observer
+        if not isinstance(resolved_observer, AgentWorkspaceObserver):
+            raise TypeError("observer must implement AgentWorkspaceObserver")
         configured_limits = store.limits if limits is None else limits
         if not isinstance(configured_limits, WorkspaceLimits):
             raise TypeError("store limits must be WorkspaceLimits")
@@ -91,6 +106,7 @@ class AgentWorkspaceService:
         self._authorizer = authorizer
         self._transfer_adapter = transfer_adapter
         self._limits = configured_limits
+        self._observer = resolved_observer
         self._clock = clock
         self._closed = False
 
@@ -109,8 +125,27 @@ class AgentWorkspaceService:
     ) -> ArtifactListResult:
         self._require_request_context(request, ArtifactListRequest, context)
         self._ensure_open()
-        await self._authorizer.authorize_list(request, context)
-        return await self._store.list(request)
+        started = time.perf_counter()
+        try:
+            await self._authorizer.authorize_list(request, context)
+            result = await self._store.list(request)
+        except BaseException as exception:
+            self._observe_failure(
+                operation=AgentWorkspaceOperation.LIST,
+                scope=request.scope,
+                artifact_id=None,
+                context=context,
+                exception=exception,
+                started=started,
+            )
+            raise
+        self._observe_list_result(
+            request=request,
+            result=result,
+            context=context,
+            started=started,
+        )
+        return result
 
     async def read(
         self,
@@ -119,8 +154,27 @@ class AgentWorkspaceService:
     ) -> ArtifactReadResult | None:
         self._require_request_context(request, ArtifactReadRequest, context)
         self._ensure_open()
-        await self._authorizer.authorize_read(request, context)
-        return await self._store.read(request)
+        started = time.perf_counter()
+        try:
+            await self._authorizer.authorize_read(request, context)
+            result = await self._store.read(request)
+        except BaseException as exception:
+            self._observe_failure(
+                operation=AgentWorkspaceOperation.READ,
+                scope=request.scope,
+                artifact_id=request.artifact_id,
+                context=context,
+                exception=exception,
+                started=started,
+            )
+            raise
+        self._observe_read_result(
+            request=request,
+            result=result,
+            context=context,
+            started=started,
+        )
+        return result
 
     async def write(
         self,
@@ -129,8 +183,28 @@ class AgentWorkspaceService:
     ) -> ArtifactRecord:
         self._require_request_context(request, ArtifactWriteRequest, context)
         self._ensure_open()
-        await self._authorizer.authorize_write(request, context)
-        return await self._store.write(request)
+        started = time.perf_counter()
+        try:
+            await self._authorizer.authorize_write(request, context)
+            record = await self._store.write(request)
+        except BaseException as exception:
+            self._observe_failure(
+                operation=AgentWorkspaceOperation.WRITE,
+                scope=request.scope,
+                artifact_id=request.artifact_id,
+                context=context,
+                exception=exception,
+                started=started,
+                byte_count=len(request.content),
+            )
+            raise
+        self._observe_record(
+            operation=AgentWorkspaceOperation.WRITE,
+            record=record,
+            context=context,
+            started=started,
+        )
+        return record
 
     async def delete(
         self,
@@ -139,8 +213,31 @@ class AgentWorkspaceService:
     ) -> None:
         self._require_request_context(request, ArtifactDeleteRequest, context)
         self._ensure_open()
-        await self._authorizer.authorize_delete(request, context)
-        await self._store.delete(request)
+        started = time.perf_counter()
+        try:
+            await self._authorizer.authorize_delete(request, context)
+            await self._store.delete(request)
+        except BaseException as exception:
+            self._observe_failure(
+                operation=AgentWorkspaceOperation.DELETE,
+                scope=request.scope,
+                artifact_id=request.artifact_id,
+                context=context,
+                exception=exception,
+                started=started,
+            )
+            raise
+        self._observe(
+            AgentWorkspaceOperationObservation(
+                operation=AgentWorkspaceOperation.DELETE,
+                outcome=AgentWorkspaceOperationOutcome.SUCCEEDED,
+                namespace=request.scope.namespace,
+                scope=request.scope,
+                artifact_id=request.artifact_id,
+                duration_ms=_duration_ms(started),
+            ),
+            context,
+        )
 
     async def import_artifact(
         self,
@@ -150,66 +247,86 @@ class AgentWorkspaceService:
         self._require_request_context(request, ArtifactImportRequest, context)
         self._ensure_open()
         self._require_not_future(request.created_at)
+        started = time.perf_counter()
+        try:
+            # Import is its own authority. The source cannot be touched before the
+            # first exact policy decision and this path intentionally bypasses write().
+            await self._authorizer.authorize_import(
+                request.scope,
+                request.artifact_id,
+                context,
+                created_at=request.created_at,
+            )
+            adapter, adapter_id = self._require_transfer_adapter()
+            imported = await self._call_import_adapter(
+                adapter,
+                request.source_reference,
+                max_bytes=self._limits.max_artifact_bytes,
+            )
+            validated = self._validated_import_result(imported)
 
-        # Import is its own authority. The source cannot be touched before the
-        # first exact policy decision and this path intentionally bypasses write().
-        await self._authorizer.authorize_import(
-            request.scope,
-            request.artifact_id,
-            context,
-            created_at=request.created_at,
-        )
-        adapter, adapter_id = self._require_transfer_adapter()
-        imported = await self._call_import_adapter(
-            adapter,
-            request.source_reference,
-            max_bytes=self._limits.max_artifact_bytes,
-        )
-        validated = self._validated_import_result(imported)
-
-        mutation_time = self._now()
-        await self._authorizer.authorize_import(
-            request.scope,
-            request.artifact_id,
-            context,
-            created_at=mutation_time,
-        )
-        # Runtime shutdown may close this boundary while a cancellation-suppressing
-        # source adapter is still returning. Never begin an authoritative mutation
-        # after the service has been closed.
-        self._ensure_open()
-        write_request = ArtifactWriteRequest(
-            scope=request.scope,
-            artifact_id=request.artifact_id,
-            logical_path=validated.logical_path,
-            content=validated.content,
-            media_type=validated.media_type,
-            metadata=validated.metadata,
-            provenance=ArtifactProvenance(
-                origin=ArtifactOriginKind.IMPORT,
-                content_digest=validated.content_digest,
+            mutation_time = self._now()
+            await self._authorizer.authorize_import(
+                request.scope,
+                request.artifact_id,
+                context,
                 created_at=mutation_time,
-                source_version=validated.source_version,
-                attributes={"transfer_adapter_id": adapter_id.value},
-            ),
-            expected_version=request.expected_version,
-            created_at=mutation_time,
+            )
+            # Runtime shutdown may close this boundary while a cancellation-suppressing
+            # source adapter is still returning. Never begin an authoritative mutation
+            # after the service has been closed.
+            self._ensure_open()
+            write_request = ArtifactWriteRequest(
+                scope=request.scope,
+                artifact_id=request.artifact_id,
+                logical_path=validated.logical_path,
+                content=validated.content,
+                media_type=validated.media_type,
+                metadata=validated.metadata,
+                provenance=ArtifactProvenance(
+                    origin=ArtifactOriginKind.IMPORT,
+                    content_digest=validated.content_digest,
+                    created_at=mutation_time,
+                    source_version=validated.source_version,
+                    attributes={"transfer_adapter_id": adapter_id.value},
+                ),
+                expected_version=request.expected_version,
+                created_at=mutation_time,
+            )
+            record = await self._store.write(write_request)
+            self._require_exact_written_record(record, write_request)
+            receipt = ArtifactTransferReceipt(
+                direction=ArtifactTransferDirection.IMPORT,
+                scope=record.scope,
+                artifact_id=record.artifact_id,
+                version=record.version,
+                content_digest=record.content_digest,
+                byte_length=record.byte_length,
+                adapter_id=adapter_id,
+                completed_at=record.updated_at,
+                transfer_reference=validated.transfer_reference,
+            )
+        except BaseException as exception:
+            self._observe_failure(
+                operation=AgentWorkspaceOperation.IMPORT,
+                scope=request.scope,
+                artifact_id=request.artifact_id,
+                context=context,
+                exception=exception,
+                started=started,
+                transfer_direction=ArtifactTransferDirection.IMPORT,
+            )
+            raise
+
+        # WorkspaceStore.write owns the authoritative cancellation boundary. Observer
+        # admission is synchronous and non-blocking, so no await follows commit.
+        self._observe_receipt(
+            operation=AgentWorkspaceOperation.IMPORT,
+            receipt=receipt,
+            context=context,
+            started=started,
         )
-        record = await self._store.write(write_request)
-        self._require_exact_written_record(record, write_request)
-        # WorkspaceStore.write owns the authoritative cancellation boundary. No
-        # await occurs after it returns a committed record.
-        return ArtifactTransferReceipt(
-            direction=ArtifactTransferDirection.IMPORT,
-            scope=record.scope,
-            artifact_id=record.artifact_id,
-            version=record.version,
-            content_digest=record.content_digest,
-            byte_length=record.byte_length,
-            adapter_id=adapter_id,
-            completed_at=record.updated_at,
-            transfer_reference=validated.transfer_reference,
-        )
+        return receipt
 
     async def export_artifact(
         self,
@@ -219,101 +336,268 @@ class AgentWorkspaceService:
         self._require_request_context(request, ArtifactExportRequest, context)
         self._ensure_open()
         self._require_not_future(request.created_at)
-
-        # Export authority permits this one transfer but never exposes read() as
-        # a public capability. Denial occurs before the store or adapter is used.
-        await self._authorizer.authorize_export(
-            request.scope,
-            request.artifact_id,
-            context,
-            created_at=request.created_at,
-        )
-        adapter, adapter_id = self._require_transfer_adapter()
-        loaded = await self._store.read(
-            ArtifactReadRequest(
-                scope=request.scope,
-                artifact_id=request.artifact_id,
+        started = time.perf_counter()
+        try:
+            # Export authority permits this one transfer but never exposes read() as
+            # a public capability. Denial occurs before the store or adapter is used.
+            await self._authorizer.authorize_export(
+                request.scope,
+                request.artifact_id,
+                context,
                 created_at=request.created_at,
             )
-        )
-        if loaded is None:
-            raise AgentStateConflictError()
-        initial_record, initial_content = self._require_exact_read_result(loaded, request)
-        if initial_record.version != request.expected_version:
-            raise AgentStateConflictError()
-
-        side_effect_time = self._now()
-        await self._authorizer.authorize_export(
-            request.scope,
-            request.artifact_id,
-            context,
-            created_at=side_effect_time,
-        )
-        admission_time = self._now()
-        admitted = await self._store.read(
-            ArtifactReadRequest(
-                scope=request.scope,
-                artifact_id=request.artifact_id,
-                created_at=admission_time,
+            adapter, adapter_id = self._require_transfer_adapter()
+            loaded = await self._store.read(
+                ArtifactReadRequest(
+                    scope=request.scope,
+                    artifact_id=request.artifact_id,
+                    created_at=request.created_at,
+                )
             )
-        )
-        if admitted is None:
-            raise AgentStateConflictError()
-        record, content = self._require_exact_read_result(admitted, request)
-        if record.version != request.expected_version:
-            raise AgentStateConflictError()
-        if (
-            record.version != initial_record.version
-            or record.content_digest != initial_record.content_digest
-            or record.byte_length != initial_record.byte_length
-            or content != initial_content
-        ):
-            raise AgentStateConflictError()
+            if loaded is None:
+                raise AgentStateConflictError()
+            initial_record, initial_content = self._require_exact_read_result(loaded, request)
+            if initial_record.version != request.expected_version:
+                raise AgentStateConflictError()
 
-        # This second authoritative read is the export admission point. It occurs
-        # after fresh authorization and no await separates its result from entry
-        # into the adapter. No StateStore transaction spans provider I/O.
-        # The second authoritative read is complete. Re-check the service
-        # boundary immediately before admitting the external export side effect so
-        # Runtime shutdown cannot start a new transfer after admission closes.
-        self._ensure_open()
-        assert record.logical_path is not None
-        assert record.media_type is not None
-        exported = await self._call_export_adapter(
-            adapter,
-            WorkspaceExportPayload(
+            side_effect_time = self._now()
+            await self._authorizer.authorize_export(
+                request.scope,
+                request.artifact_id,
+                context,
+                created_at=side_effect_time,
+            )
+            admission_time = self._now()
+            admitted = await self._store.read(
+                ArtifactReadRequest(
+                    scope=request.scope,
+                    artifact_id=request.artifact_id,
+                    created_at=admission_time,
+                )
+            )
+            if admitted is None:
+                raise AgentStateConflictError()
+            record, content = self._require_exact_read_result(admitted, request)
+            if record.version != request.expected_version:
+                raise AgentStateConflictError()
+            if (
+                record.version != initial_record.version
+                or record.content_digest != initial_record.content_digest
+                or record.byte_length != initial_record.byte_length
+                or content != initial_content
+            ):
+                raise AgentStateConflictError()
+
+            # This second authoritative read is the export admission point. It occurs
+            # after fresh authorization and no await separates its result from entry
+            # into the adapter. No StateStore transaction spans provider I/O.
+            # The second authoritative read is complete. Re-check the service
+            # boundary immediately before admitting the external export side effect so
+            # Runtime shutdown cannot start a new transfer after admission closes.
+            self._ensure_open()
+            assert record.logical_path is not None
+            assert record.media_type is not None
+            exported = await self._call_export_adapter(
+                adapter,
+                WorkspaceExportPayload(
+                    scope=record.scope,
+                    artifact_id=record.artifact_id,
+                    version=record.version,
+                    logical_path=record.logical_path,
+                    media_type=record.media_type,
+                    content_digest=record.content_digest,
+                    content=content,
+                    destination_reference=request.destination_reference,
+                ),
+            )
+            # A malformed post-side-effect result is a server-owned adapter contract
+            # failure. Fail closed and never retry it automatically in this service.
+            transfer_reference = self._validated_export_result(exported)
+            receipt = ArtifactTransferReceipt(
+                direction=ArtifactTransferDirection.EXPORT,
                 scope=record.scope,
                 artifact_id=record.artifact_id,
                 version=record.version,
-                logical_path=record.logical_path,
-                media_type=record.media_type,
                 content_digest=record.content_digest,
-                content=content,
-                destination_reference=request.destination_reference,
-            ),
+                byte_length=record.byte_length,
+                adapter_id=adapter_id,
+                completed_at=self._now(),
+                transfer_reference=transfer_reference,
+            )
+        except BaseException as exception:
+            self._observe_failure(
+                operation=AgentWorkspaceOperation.EXPORT,
+                scope=request.scope,
+                artifact_id=request.artifact_id,
+                context=context,
+                exception=exception,
+                started=started,
+                transfer_direction=ArtifactTransferDirection.EXPORT,
+            )
+            raise
+
+        # A compliant adapter has already returned post-commit completion evidence.
+        # Observer admission is synchronous and non-blocking, preserving the no-await
+        # post-side-effect rule.
+        self._observe_receipt(
+            operation=AgentWorkspaceOperation.EXPORT,
+            receipt=receipt,
+            context=context,
+            started=started,
         )
-        # A malformed post-side-effect result is a server-owned adapter contract
-        # failure. Fail closed and never retry it automatically in this service.
-        transfer_reference = self._validated_export_result(exported)
-        # A compliant adapter propagates cancellation only before its side effect
-        # commits and returns completion after commit. There is no await between a
-        # successful adapter result and this content-free receipt.
-        return ArtifactTransferReceipt(
-            direction=ArtifactTransferDirection.EXPORT,
-            scope=record.scope,
-            artifact_id=record.artifact_id,
-            version=record.version,
-            content_digest=record.content_digest,
-            byte_length=record.byte_length,
-            adapter_id=adapter_id,
-            completed_at=self._now(),
-            transfer_reference=transfer_reference,
-        )
+        return receipt
 
     async def close(self) -> None:
         """Close only this boundary; dependency ownership remains server-side."""
 
         self._closed = True
+
+    def _observe(
+        self,
+        observation: AgentWorkspaceOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        try:
+            self._observer.record(observation, context)
+        except Exception:
+            pass
+
+    def _observe_failure(
+        self,
+        *,
+        operation: AgentWorkspaceOperation,
+        scope: WorkspaceScope,
+        artifact_id: ArtifactId | None,
+        context: SecurityContext,
+        exception: BaseException,
+        started: float,
+        byte_count: int | None = None,
+        transfer_direction: ArtifactTransferDirection | None = None,
+    ) -> None:
+        outcome, reason_code = workspace_observation_failure(exception)
+        self._observe(
+            AgentWorkspaceOperationObservation(
+                operation=operation,
+                outcome=outcome,
+                namespace=scope.namespace,
+                scope=scope,
+                artifact_id=artifact_id,
+                byte_count=byte_count,
+                transfer_direction=transfer_direction,
+                duration_ms=_duration_ms(started),
+                reason_code=reason_code,
+            ),
+            context,
+        )
+
+    def _observe_list_result(
+        self,
+        *,
+        request: ArtifactListRequest,
+        result: ArtifactListResult,
+        context: SecurityContext,
+        started: float,
+    ) -> None:
+        try:
+            observation = AgentWorkspaceOperationObservation(
+                operation=AgentWorkspaceOperation.LIST,
+                outcome=AgentWorkspaceOperationOutcome.SUCCEEDED,
+                namespace=request.scope.namespace,
+                scope=request.scope,
+                item_count=len(result.artifacts),
+                truncated=result.truncated,
+                duration_ms=_duration_ms(started),
+            )
+        except Exception:
+            return
+        self._observe(observation, context)
+
+    def _observe_read_result(
+        self,
+        *,
+        request: ArtifactReadRequest,
+        result: ArtifactReadResult | None,
+        context: SecurityContext,
+        started: float,
+    ) -> None:
+        try:
+            if result is None:
+                observation = AgentWorkspaceOperationObservation(
+                    operation=AgentWorkspaceOperation.READ,
+                    outcome=AgentWorkspaceOperationOutcome.SUCCEEDED,
+                    namespace=request.scope.namespace,
+                    scope=request.scope,
+                    artifact_id=request.artifact_id,
+                    item_count=0,
+                    duration_ms=_duration_ms(started),
+                )
+            else:
+                record = result.record
+                observation = AgentWorkspaceOperationObservation(
+                    operation=AgentWorkspaceOperation.READ,
+                    outcome=AgentWorkspaceOperationOutcome.SUCCEEDED,
+                    namespace=record.scope.namespace,
+                    scope=record.scope,
+                    artifact_id=record.artifact_id,
+                    version=record.version,
+                    byte_count=record.byte_length,
+                    status=record.status,
+                    expires_at=record.expires_at,
+                    item_count=1,
+                    duration_ms=_duration_ms(started),
+                )
+        except Exception:
+            return
+        self._observe(observation, context)
+
+    def _observe_record(
+        self,
+        *,
+        operation: AgentWorkspaceOperation,
+        record: ArtifactRecord,
+        context: SecurityContext,
+        started: float,
+    ) -> None:
+        try:
+            observation = AgentWorkspaceOperationObservation(
+                operation=operation,
+                outcome=AgentWorkspaceOperationOutcome.SUCCEEDED,
+                namespace=record.scope.namespace,
+                scope=record.scope,
+                artifact_id=record.artifact_id,
+                version=record.version,
+                byte_count=record.byte_length,
+                status=record.status,
+                expires_at=record.expires_at,
+                duration_ms=_duration_ms(started),
+            )
+        except Exception:
+            return
+        self._observe(observation, context)
+
+    def _observe_receipt(
+        self,
+        *,
+        operation: AgentWorkspaceOperation,
+        receipt: ArtifactTransferReceipt,
+        context: SecurityContext,
+        started: float,
+    ) -> None:
+        try:
+            observation = AgentWorkspaceOperationObservation(
+                operation=operation,
+                outcome=AgentWorkspaceOperationOutcome.SUCCEEDED,
+                namespace=receipt.scope.namespace,
+                scope=receipt.scope,
+                artifact_id=receipt.artifact_id,
+                version=receipt.version,
+                byte_count=receipt.byte_length,
+                transfer_direction=receipt.direction,
+                duration_ms=_duration_ms(started),
+            )
+        except Exception:
+            return
+        self._observe(observation, context)
 
     @staticmethod
     def _require_request_context(
@@ -503,6 +787,10 @@ class AgentWorkspaceService:
         ):
             raise AgentCodecError("workspace authoritative result is invalid")
         return record, content
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1_000))
 
 
 @dataclass(frozen=True, slots=True)

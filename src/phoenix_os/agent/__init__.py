@@ -777,6 +777,14 @@ from phoenix_os.agent.workspace_contracts import (
     artifact_content_digest,
     canonical_artifact_path_digest,
 )
+from phoenix_os.agent.workspace_observer import (
+    AgentWorkspaceObserver,
+    AgentWorkspaceOperation,
+    AgentWorkspaceOperationObservation,
+    AgentWorkspaceOperationOutcome,
+    ContentFreeAgentWorkspaceObserver,
+    NullAgentWorkspaceObserver,
+)
 from phoenix_os.agent.workspace_runtime import (
     MAX_WORKSPACE_RUNTIME_OPERATION_TIMEOUT,
     AgentWorkspaceRuntimeConfiguration,
@@ -1076,6 +1084,10 @@ __all__ = [
     "AgentToolView",
     "AgentWorkspaceCleanupRuntime",
     "AgentWorkspaceCleanupRuntimeConfiguration",
+    "AgentWorkspaceObserver",
+    "AgentWorkspaceOperation",
+    "AgentWorkspaceOperationObservation",
+    "AgentWorkspaceOperationOutcome",
     "AgentWorkspaceRuntimeConfiguration",
     "AgentWorkspaceRuntimeOwner",
     "AgentWorkspaceRuntimeService",
@@ -1123,6 +1135,7 @@ __all__ = [
     "CompatibilityDigests",
     "ContentFreeAgentCoordinationObserver",
     "ContentFreeAgentObserver",
+    "ContentFreeAgentWorkspaceObserver",
     "ContentFreeDurableRunObserver",
     "ContentFreeMemoryObserver",
     "CoordinationNamespace",
@@ -1290,6 +1303,7 @@ __all__ = [
     "MemoryWriteRequest",
     "NullAgentCoordinationObserver",
     "NullAgentObserver",
+    "NullAgentWorkspaceObserver",
     "NullDurableRunObserver",
     "PolicyEngineAgentRunAuthorizer",
     "PolicyEngineDelegationAuthorizer",
