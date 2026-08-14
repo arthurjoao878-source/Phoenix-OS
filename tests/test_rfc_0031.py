@@ -194,7 +194,7 @@ def test_rfc_0031_proposes_provider_neutral_contracts() -> None:
     assert "process handle" in text
 
 
-def test_rfc_0031_slices_zero_through_three_complete_and_later_slices_pending() -> None:
+def test_rfc_0031_slices_zero_through_four_and_slice_five_a_complete() -> None:
     text = _text()
     for slice_number in range(6):
         assert f"### Slice {slice_number} -" in text
@@ -237,9 +237,26 @@ def test_rfc_0031_slices_zero_through_three_complete_and_later_slices_pending() 
     ):
         assert f"- [x] {item}" in text
 
-    assert "- [ ] Fail-closed startup/recovery" in text
-    assert "- [ ] Threat-model/security-invariant review" in text
-    assert "- [ ] Tag, artifacts, and checksums" in text
+    for item in (
+        "Fail-closed startup/recovery for corrupt or inconsistent backing state",
+        "Runtime-owned bounded cleanup, transfer workers, cancellation, and shutdown",
+        "Content-free observer events and safe public errors",
+        "Content-free bounded administration",
+        "Restart recovery without deleted/expired artifact resurrection",
+        "Runtime assembler ownership and disabled-by-default compatibility tests",
+        "Threat-model/security-invariant review",
+        "ADRs for file authority, logical paths, authoritative stores, and transfer boundaries",
+        "v0.30.0 to v0.31.0 migration guidance",
+    ):
+        assert f"- [x] {item}" in text
+
+    for item in (
+        "Named agent-workspace release gate",
+        "Offline wheel/sdist validation",
+        "Release notes and package version 0.31.0",
+        "Tag, artifacts, and checksums",
+    ):
+        assert f"- [ ] {item}" in text
 
 
 def test_rfc_0031_acceptance_keeps_host_authority_outside_workspace() -> None:

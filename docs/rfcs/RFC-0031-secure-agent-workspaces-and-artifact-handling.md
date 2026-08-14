@@ -400,18 +400,18 @@ behavior remains unchanged.
 
 ### Slice 4 - Recovery, observability, administration, and Runtime ownership
 
-- [ ] Fail-closed startup/recovery for corrupt or inconsistent backing state
-- [ ] Runtime-owned bounded cleanup, transfer workers, cancellation, and shutdown
-- [ ] Content-free observer events and safe public errors
-- [ ] Content-free bounded administration
-- [ ] Restart recovery without deleted/expired artifact resurrection
-- [ ] Runtime assembler ownership and disabled-by-default compatibility tests
+- [x] Fail-closed startup/recovery for corrupt or inconsistent backing state
+- [x] Runtime-owned bounded cleanup, transfer workers, cancellation, and shutdown
+- [x] Content-free observer events and safe public errors
+- [x] Content-free bounded administration
+- [x] Restart recovery without deleted/expired artifact resurrection
+- [x] Runtime assembler ownership and disabled-by-default compatibility tests
 
 ### Slice 5 - Security review, migration, and release hardening
 
-- [ ] Threat-model/security-invariant review
-- [ ] ADRs for file authority, logical paths, authoritative stores, and transfer boundaries
-- [ ] v0.30.0 to v0.31.0 migration guidance
+- [x] Threat-model/security-invariant review
+- [x] ADRs for file authority, logical paths, authoritative stores, and transfer boundaries
+- [x] v0.30.0 to v0.31.0 migration guidance
 - [ ] Named agent-workspace release gate
 - [ ] Offline wheel/sdist validation
 - [ ] Release notes and package version 0.31.0

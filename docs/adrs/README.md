@@ -54,6 +54,10 @@ the decision requires a new ADR that explicitly supersedes the previous one.
 | [ADR-0053](ADR-0053-phoenix-owned-exact-memory-scopes.md) | Accepted | Keep exact run/agent/principal memory scopes Phoenix-owned with no implicit sharing. |
 | [ADR-0054](ADR-0054-authoritative-memory-records-derived-indexes.md) | Accepted | Keep source records authoritative and treat lexical/semantic indexes as derived candidate selectors. |
 | [ADR-0055](ADR-0055-finite-retention-runtime-owned-memory-lifecycle.md) | Accepted | Keep memory retention finite and recovery/cleanup/shutdown Runtime-owned and bounded. |
+| [ADR-0056](ADR-0056-files-carry-data-never-authority.md) | Accepted | Keep artifact bytes, names, metadata, provenance, and stored instructions as data that never grant Phoenix authority. |
+| [ADR-0057](ADR-0057-phoenix-owned-logical-paths-and-host-confinement.md) | Accepted | Keep canonical logical artifact paths separate from native host paths and confine local backing fail closed. |
+| [ADR-0058](ADR-0058-authoritative-workspace-store-and-backing-boundary.md) | Accepted | Keep workspace records authoritative while backing adapters persist only digest-validated bytes behind opaque keys. |
+| [ADR-0059](ADR-0059-explicit-workspace-import-export-boundaries.md) | Accepted | Keep import and export explicit, independently authorized, provider-neutral bounded transfer boundaries. |
 
 ## Related specifications
 
@@ -72,3 +76,5 @@ the decision requires a new ADR that explicitly supersedes the previous one.
   [RFC-0029 — Secure Multi-Agent Coordination and Delegation](../rfcs/RFC-0029-secure-multi-agent-coordination-and-delegation.md).
 - ADR-0052 through ADR-0055 record the principal durable choices implemented by
   [RFC-0030 — Secure Agent Memory and Context Retrieval](../rfcs/RFC-0030-secure-agent-memory-and-context-retrieval.md).
+- ADR-0056 through ADR-0059 record the principal durable choices implemented by
+  [RFC-0031 — Secure Agent Workspaces and Artifact Handling](../rfcs/RFC-0031-secure-agent-workspaces-and-artifact-handling.md).
