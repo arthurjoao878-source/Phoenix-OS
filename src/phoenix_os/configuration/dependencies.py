@@ -38,6 +38,9 @@ if TYPE_CHECKING:
         AgentMemoryRuntimeConfiguration,
         AgentModelTurnAdapter,
         AgentServiceConfiguration,
+        AgentWorkspaceCleanupRuntimeConfiguration,
+        AgentWorkspaceRuntimeConfiguration,
+        AgentWorkspaceTransferRuntimeConfiguration,
         CheckpointProtector,
         DurableAdministrationConfiguration,
         DurableApprovalRevalidator,
@@ -54,6 +57,8 @@ if TYPE_CHECKING:
         ToolApprovalResolver,
         ToolApprovalService,
         ToolResourceResolver,
+        WorkspaceBackingAdapter,
+        WorkspaceTransferAdapter,
     )
     from phoenix_os.agent.durable_cleanup_administration import (
         DurableCleanupAdministration,
@@ -221,6 +226,18 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "webhooks.subscriptions",
         "webhooks.transport",
         "workflows",
+    }
+)
+
+_WORKSPACE_DEFINITION_NAMES = frozenset(
+    {
+        "agent.workspace",
+        "agent.workspace.backing",
+        "agent.workspace.cleanup",
+        "agent.workspace.owner",
+        "agent.workspace.service",
+        "agent.workspace.store",
+        "agent.workspace.transfer",
     }
 )
 
@@ -655,6 +672,15 @@ class RuntimeAssembler:
         agent_memory_configuration: AgentMemoryRuntimeConfiguration | None = None,
         agent_memory_embedding_provider: MemoryEmbeddingProvider | None = None,
         agent_memory_index: MemoryDerivedIndex | None = None,
+        agent_workspace_configuration: AgentWorkspaceRuntimeConfiguration | None = None,
+        agent_workspace_backing: WorkspaceBackingAdapter | None = None,
+        agent_workspace_transfer_adapter: WorkspaceTransferAdapter | None = None,
+        agent_workspace_transfer_configuration: (
+            AgentWorkspaceTransferRuntimeConfiguration | None
+        ) = None,
+        agent_workspace_cleanup_configuration: (
+            AgentWorkspaceCleanupRuntimeConfiguration | None
+        ) = None,
         agent_durable_enabled: bool = False,
         agent_durable_store: DurableRunStore | None = None,
         agent_durable_lease_manager: DurableLeaseManager | None = None,
@@ -786,6 +812,11 @@ class RuntimeAssembler:
         self._agent_memory_configuration = agent_memory_configuration
         self._agent_memory_embedding_provider = agent_memory_embedding_provider
         self._agent_memory_index = agent_memory_index
+        self._agent_workspace_configuration = agent_workspace_configuration
+        self._agent_workspace_backing = agent_workspace_backing
+        self._agent_workspace_transfer_adapter = agent_workspace_transfer_adapter
+        self._agent_workspace_transfer_configuration = agent_workspace_transfer_configuration
+        self._agent_workspace_cleanup_configuration = agent_workspace_cleanup_configuration
         self._agent_durable_enabled = agent_durable_enabled
         self._agent_durable_store = agent_durable_store
         self._agent_durable_lease_manager = agent_durable_lease_manager
@@ -987,6 +1018,67 @@ class RuntimeAssembler:
                     raise TypeError("agent memory index has an invalid type")
             elif agent_memory_embedding_provider is not None or agent_memory_index is not None:
                 raise ValueError("agent memory semantic provider/index require semantic_enabled")
+        workspace_options_supplied = any(
+            (
+                agent_workspace_configuration is not None,
+                agent_workspace_backing is not None,
+                agent_workspace_transfer_adapter is not None,
+                agent_workspace_transfer_configuration is not None,
+                agent_workspace_cleanup_configuration is not None,
+            )
+        )
+        if workspace_options_supplied and agent_workspace_configuration is None:
+            raise ValueError("agent workspace options require workspace configuration")
+        if agent_workspace_configuration is not None:
+            from phoenix_os.agent.workspace_backing import (
+                WorkspaceBackingAdapter as RuntimeWorkspaceBackingAdapter,
+            )
+            from phoenix_os.agent.workspace_cleanup_runtime import (
+                AgentWorkspaceCleanupRuntimeConfiguration as RuntimeWorkspaceCleanupConfiguration,
+            )
+            from phoenix_os.agent.workspace_runtime import (
+                AgentWorkspaceRuntimeConfiguration as RuntimeWorkspaceConfiguration,
+            )
+            from phoenix_os.agent.workspace_transfer import (
+                WorkspaceTransferAdapter as RuntimeWorkspaceTransferAdapter,
+            )
+            from phoenix_os.agent.workspace_transfer_runtime import (
+                AgentWorkspaceTransferRuntimeConfiguration as RuntimeWorkspaceTransferConfiguration,
+            )
+
+            if not isinstance(
+                agent_workspace_configuration,
+                RuntimeWorkspaceConfiguration,
+            ):
+                raise TypeError("agent workspace configuration has an invalid type")
+            if not agent_enabled:
+                raise ValueError("agent workspace configuration requires agent_enabled")
+            if agent_workspace_backing is not None and not isinstance(
+                agent_workspace_backing,
+                RuntimeWorkspaceBackingAdapter,
+            ):
+                raise TypeError("agent workspace backing has an invalid type")
+            if agent_workspace_transfer_adapter is not None and not isinstance(
+                agent_workspace_transfer_adapter,
+                RuntimeWorkspaceTransferAdapter,
+            ):
+                raise TypeError("agent workspace transfer adapter has an invalid type")
+            if agent_workspace_transfer_configuration is not None:
+                if not isinstance(
+                    agent_workspace_transfer_configuration,
+                    RuntimeWorkspaceTransferConfiguration,
+                ):
+                    raise TypeError("agent workspace transfer configuration has an invalid type")
+                if agent_workspace_transfer_adapter is None:
+                    raise ValueError(
+                        "agent workspace transfer configuration requires transfer adapter"
+                    )
+            if agent_workspace_cleanup_configuration is not None and not isinstance(
+                agent_workspace_cleanup_configuration,
+                RuntimeWorkspaceCleanupConfiguration,
+            ):
+                raise TypeError("agent workspace cleanup configuration has an invalid type")
+
         if not isinstance(agent_durable_enabled, bool):
             raise TypeError("agent durable enabled flag must be bool")
         if not isinstance(agent_durable_reconciliation_administration_enabled, bool):
@@ -1323,7 +1415,17 @@ class RuntimeAssembler:
             raise ValueError("durable session retention poll interval must be positive")
         self._observe_events = observe_events
         self._journal_events = journal_events
-        self._composer = ServiceComposer(definitions)
+        definitions_tuple = tuple(definitions)
+        if agent_workspace_configuration is not None:
+            workspace_conflicts = sorted(
+                definition.name
+                for definition in definitions_tuple
+                if definition.name in _WORKSPACE_DEFINITION_NAMES
+            )
+            if workspace_conflicts:
+                names = ", ".join(workspace_conflicts)
+                raise ValueError(f"agent workspace services conflict with definitions: {names}")
+        self._composer = ServiceComposer(definitions_tuple)
         self._metadata = {} if metadata is None else dict(metadata)
         self._source = source
 
@@ -1427,6 +1529,29 @@ class RuntimeAssembler:
             custom_services["inference.registry"] = inference_stack.registry
             custom_services["inference.administration"] = inference_stack.administration
             components.append(ComponentSpec("inference", inference_stack.service))
+
+        agent_workspace_stack = None
+        if self._agent_workspace_configuration is not None:
+            from phoenix_os.agent import create_agent_workspace_runtime_stack
+
+            assert self._policy is not None
+            agent_workspace_stack = create_agent_workspace_runtime_stack(
+                configuration=self._agent_workspace_configuration,
+                policy=self._policy,
+                state_store=state_store,
+                backing=self._agent_workspace_backing,
+                transfer_adapter=self._agent_workspace_transfer_adapter,
+                transfer_configuration=self._agent_workspace_transfer_configuration,
+                cleanup_configuration=self._agent_workspace_cleanup_configuration,
+            )
+            custom_services["agent.workspace"] = agent_workspace_stack.service
+            custom_services["agent.workspace.owner"] = agent_workspace_stack.owner
+            custom_services["agent.workspace.store"] = agent_workspace_stack.store
+            custom_services["agent.workspace.backing"] = agent_workspace_stack.backing
+            custom_services["agent.workspace.cleanup"] = agent_workspace_stack.cleanup
+            if agent_workspace_stack.transfer is not None:
+                custom_services["agent.workspace.transfer"] = agent_workspace_stack.transfer
+            components.extend(agent_workspace_stack.components)
 
         agent_memory_stack = None
         if self._agent_memory_configuration is not None:

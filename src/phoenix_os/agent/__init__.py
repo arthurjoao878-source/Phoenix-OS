@@ -702,6 +702,11 @@ from phoenix_os.agent.workspace_cleanup_runtime import (
     AgentWorkspaceCleanupRuntime,
     AgentWorkspaceCleanupRuntimeConfiguration,
 )
+from phoenix_os.agent.workspace_composition import (
+    AgentWorkspaceRuntimeService,
+    AgentWorkspaceRuntimeStack,
+    create_agent_workspace_runtime_stack,
+)
 from phoenix_os.agent.workspace_context import (
     AgentArtifactContextProvider,
     ServerOwnedAgentArtifactContextProvider,
@@ -1073,6 +1078,8 @@ __all__ = [
     "AgentWorkspaceCleanupRuntimeConfiguration",
     "AgentWorkspaceRuntimeConfiguration",
     "AgentWorkspaceRuntimeOwner",
+    "AgentWorkspaceRuntimeService",
+    "AgentWorkspaceRuntimeStack",
     "AgentWorkspaceService",
     "AgentWorkspaceTransferRuntime",
     "AgentWorkspaceTransferRuntimeConfiguration",
@@ -1399,6 +1406,7 @@ __all__ = [
     "create_agent_coordination_runtime_stack",
     "create_agent_memory_runtime_stack",
     "create_agent_runtime_stack",
+    "create_agent_workspace_runtime_stack",
     "create_durable_agent_coordination_runtime_stack",
     "create_durable_agent_runtime_stack",
     "decode_agent_run_request",

@@ -174,6 +174,10 @@ class AgentWorkspaceService:
             context,
             created_at=mutation_time,
         )
+        # Runtime shutdown may close this boundary while a cancellation-suppressing
+        # source adapter is still returning. Never begin an authoritative mutation
+        # after the service has been closed.
+        self._ensure_open()
         write_request = ArtifactWriteRequest(
             scope=request.scope,
             artifact_id=request.artifact_id,
@@ -269,6 +273,10 @@ class AgentWorkspaceService:
         # This second authoritative read is the export admission point. It occurs
         # after fresh authorization and no await separates its result from entry
         # into the adapter. No StateStore transaction spans provider I/O.
+        # The second authoritative read is complete. Re-check the service
+        # boundary immediately before admitting the external export side effect so
+        # Runtime shutdown cannot start a new transfer after admission closes.
+        self._ensure_open()
         assert record.logical_path is not None
         assert record.media_type is not None
         exported = await self._call_export_adapter(
