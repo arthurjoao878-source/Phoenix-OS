@@ -445,7 +445,7 @@ workspace behavior remains unchanged.
 - [x] Define no-shell/no-keyboard/no-mouse/no-force-kill authority boundary
 - [x] Define independent tool and host authorization
 - [x] Define compatibility-by-omission contract
-- [ ] Add RFC structure and regression tests
+- [x] Add RFC structure and regression tests
 
 ### Slice 1 - Core contracts, identities, authorization, and fake adapter
 
