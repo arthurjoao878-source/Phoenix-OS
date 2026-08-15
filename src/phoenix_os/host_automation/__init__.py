@@ -69,6 +69,7 @@ from phoenix_os.host_automation.errors import (
     HostAutomationUnsupportedPlatformError,
 )
 from phoenix_os.host_automation.fake import DeterministicHostAutomationAdapter
+from phoenix_os.host_automation.windows import WindowsHostAutomationAdapter
 
 __all__ = [
     "HOST_APPLICATION_CLOSE_ACTION",
@@ -127,6 +128,7 @@ __all__ = [
     "HostWindowListRequest",
     "HostWindowListResult",
     "PolicyEngineHostAutomationAuthorizer",
+    "WindowsHostAutomationAdapter",
     "host_application_resource",
     "host_clipboard_resource",
     "host_process_collection_resource",
