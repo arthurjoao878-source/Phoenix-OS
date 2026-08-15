@@ -1,4 +1,4 @@
-"""Windows-specific configured application launch and side-effect admission helpers."""
+"""Windows-specific configured application launch, focus, and effect helpers."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from threading import Lock
 from typing import Any, Protocol
 
 from phoenix_os.host_automation.contracts import HostApplicationId
+
+_WINDOWS_MAX_DESKTOP_NAME_CHARS = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +66,25 @@ class _WindowsLaunchedProcess:
             raise TypeError("launched process label must be a string")
 
 
+@dataclass(frozen=True, slots=True)
+class _WindowsFocusTarget:
+    hwnd: int
+    pid: int
+    creation_time: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.hwnd, bool) or not isinstance(self.hwnd, int) or self.hwnd <= 0:
+            raise ValueError("focus target hwnd must be a positive integer")
+        if isinstance(self.pid, bool) or not isinstance(self.pid, int) or self.pid <= 0:
+            raise ValueError("focus target pid must be a positive integer")
+        if (
+            isinstance(self.creation_time, bool)
+            or not isinstance(self.creation_time, int)
+            or self.creation_time < 0
+        ):
+            raise ValueError("focus target creation_time must be non-negative")
+
+
 class _WindowsEffectPreventedError(RuntimeError):
     pass
 
@@ -73,6 +94,14 @@ class _WindowsEffectTimedOutError(RuntimeError):
 
 
 class _WindowsEffectIndeterminateError(RuntimeError):
+    pass
+
+
+class _WindowsEffectStaleIdentityError(RuntimeError):
+    pass
+
+
+class _WindowsEffectUnsafeDesktopError(RuntimeError):
     pass
 
 
@@ -107,6 +136,13 @@ class _WindowsEffectsBackend(Protocol):
         attempt: _WindowsEffectAttempt,
     ) -> _WindowsLaunchedProcess: ...
 
+    def focus_window(
+        self,
+        target: _WindowsFocusTarget,
+        *,
+        attempt: _WindowsEffectAttempt,
+    ) -> None: ...
+
 
 class _CtypesWindowsEffectsBackend:
     """Launch configured executables with CreateProcessW and no model command line."""
@@ -125,6 +161,7 @@ class _CtypesWindowsEffectsBackend:
         self._ctypes: Any = ctypes
         self._wintypes: Any = wintypes
         self._kernel32: Any = win_dll("kernel32", use_last_error=True)
+        self._user32: Any = win_dll("user32", use_last_error=True)
 
         class STARTUPINFOW(ctypes.Structure):
             _fields_ = [
@@ -211,6 +248,129 @@ class _CtypesWindowsEffectsBackend:
             if process_info.hProcess:
                 self._kernel32.CloseHandle(process_info.hProcess)
 
+    def focus_window(
+        self,
+        target: _WindowsFocusTarget,
+        *,
+        attempt: _WindowsEffectAttempt,
+    ) -> None:
+        if not isinstance(target, _WindowsFocusTarget):
+            raise TypeError("target must be _WindowsFocusTarget")
+        if not isinstance(attempt, _WindowsEffectAttempt):
+            raise TypeError("attempt must be _WindowsEffectAttempt")
+
+        before = self._current_desktop_context()
+        self._revalidate_focus_target(target, expected_session_id=before[0])
+        after = self._current_desktop_context()
+        if after != before:
+            raise _WindowsEffectUnsafeDesktopError()
+
+        # Revalidate again immediately before the exact effect admission boundary.
+        self._revalidate_focus_target(target, expected_session_id=before[0])
+        if not attempt.begin_effect():
+            raise _WindowsEffectPreventedError()
+        if not bool(self._user32.SetForegroundWindow(target.hwnd)):
+            raise RuntimeError("configured Windows window focus failed")
+
+    def _revalidate_focus_target(
+        self,
+        target: _WindowsFocusTarget,
+        *,
+        expected_session_id: int,
+    ) -> None:
+        if not bool(self._user32.IsWindow(target.hwnd)):
+            raise _WindowsEffectStaleIdentityError()
+        if not bool(self._user32.IsWindowVisible(target.hwnd)):
+            raise _WindowsEffectStaleIdentityError()
+
+        pid_before = self._window_process_id(target.hwnd)
+        if pid_before != target.pid:
+            raise _WindowsEffectStaleIdentityError()
+        if self._process_session_id(pid_before) != expected_session_id:
+            raise _WindowsEffectUnsafeDesktopError()
+        creation_before = self._read_process_creation_time(pid_before)
+        if creation_before != target.creation_time:
+            raise _WindowsEffectStaleIdentityError()
+
+        if not bool(self._user32.IsWindow(target.hwnd)):
+            raise _WindowsEffectStaleIdentityError()
+        pid_after = self._window_process_id(target.hwnd)
+        if pid_after != target.pid:
+            raise _WindowsEffectStaleIdentityError()
+        creation_after = self._read_process_creation_time(pid_after)
+        if creation_after != target.creation_time:
+            raise _WindowsEffectStaleIdentityError()
+        if self._process_session_id(pid_after) != expected_session_id:
+            raise _WindowsEffectUnsafeDesktopError()
+
+    def _current_desktop_context(self) -> tuple[int, str]:
+        current_pid = int(self._kernel32.GetCurrentProcessId())
+        session_id = self._process_session_id(current_pid)
+        if session_id is None:
+            raise _WindowsEffectUnsafeDesktopError()
+
+        input_desktop = self._user32.OpenInputDesktop(0, False, 0x0001)
+        if not input_desktop:
+            raise _WindowsEffectUnsafeDesktopError()
+        try:
+            input_name = self._desktop_name(input_desktop)
+        finally:
+            self._user32.CloseDesktop(input_desktop)
+
+        thread_desktop = self._user32.GetThreadDesktop(self._kernel32.GetCurrentThreadId())
+        if not thread_desktop:
+            raise _WindowsEffectUnsafeDesktopError()
+        thread_name = self._desktop_name(thread_desktop)
+        if input_name.casefold() != thread_name.casefold():
+            raise _WindowsEffectUnsafeDesktopError()
+        return session_id, input_name
+
+    def _desktop_name(self, desktop: object) -> str:
+        buffer = self._ctypes.create_unicode_buffer(_WINDOWS_MAX_DESKTOP_NAME_CHARS + 1)
+        needed = self._wintypes.DWORD()
+        success = bool(
+            self._user32.GetUserObjectInformationW(
+                desktop,
+                2,
+                buffer,
+                self._ctypes.sizeof(buffer),
+                self._ctypes.byref(needed),
+            )
+        )
+        if not success:
+            raise _WindowsEffectUnsafeDesktopError()
+        name = str(buffer.value).strip()
+        if not name:
+            raise _WindowsEffectUnsafeDesktopError()
+        return name
+
+    def _window_process_id(self, hwnd: int) -> int | None:
+        pid = self._wintypes.DWORD()
+        thread_id = self._user32.GetWindowThreadProcessId(hwnd, self._ctypes.byref(pid))
+        if not thread_id or not pid.value:
+            return None
+        return int(pid.value)
+
+    def _process_session_id(self, pid: int | None) -> int | None:
+        if pid is None:
+            return None
+        session_id = self._wintypes.DWORD()
+        success = bool(self._kernel32.ProcessIdToSessionId(pid, self._ctypes.byref(session_id)))
+        if not success:
+            return None
+        return int(session_id.value)
+
+    def _read_process_creation_time(self, pid: int | None) -> int | None:
+        if pid is None:
+            return None
+        process = self._kernel32.OpenProcess(0x1000, False, pid)
+        if not process:
+            return None
+        try:
+            return self._read_creation_time(process)
+        finally:
+            self._kernel32.CloseHandle(process)
+
     def _read_creation_time(self, process: object) -> int | None:
         creation = self._wintypes.FILETIME()
         exit_time = self._wintypes.FILETIME()
@@ -245,6 +405,17 @@ class _CtypesWindowsEffectsBackend:
             ctypes.POINTER(self._process_information_type),
         ]
         self._kernel32.CreateProcessW.restype = wintypes.BOOL
+        self._kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        self._kernel32.OpenProcess.restype = wintypes.HANDLE
+        self._kernel32.GetCurrentProcessId.argtypes = []
+        self._kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+        self._kernel32.GetCurrentThreadId.argtypes = []
+        self._kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        self._kernel32.ProcessIdToSessionId.argtypes = [
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
         filetime_pointer = ctypes.POINTER(wintypes.FILETIME)
         self._kernel32.GetProcessTimes.argtypes = [
             wintypes.HANDLE,
@@ -256,6 +427,36 @@ class _CtypesWindowsEffectsBackend:
         self._kernel32.GetProcessTimes.restype = wintypes.BOOL
         self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         self._kernel32.CloseHandle.restype = wintypes.BOOL
+
+        self._user32.IsWindow.argtypes = [wintypes.HWND]
+        self._user32.IsWindow.restype = wintypes.BOOL
+        self._user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        self._user32.IsWindowVisible.restype = wintypes.BOOL
+        self._user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        self._user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        self._user32.SetForegroundWindow.restype = wintypes.BOOL
+        self._user32.OpenInputDesktop.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        self._user32.OpenInputDesktop.restype = wintypes.HANDLE
+        self._user32.GetThreadDesktop.argtypes = [wintypes.DWORD]
+        self._user32.GetThreadDesktop.restype = wintypes.HANDLE
+        self._user32.GetUserObjectInformationW.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._user32.GetUserObjectInformationW.restype = wintypes.BOOL
+        self._user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+        self._user32.CloseDesktop.restype = wintypes.BOOL
 
 
 def _normalize_windows_application_profiles(

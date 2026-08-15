@@ -39,6 +39,8 @@ from phoenix_os.host_automation.errors import (
     HostAutomationLimitExceededError,
     HostAutomationOperationDisabledError,
     HostAutomationServiceUnavailableError,
+    HostAutomationStaleIdentityError,
+    HostAutomationTargetNotFoundError,
     HostAutomationTimeoutError,
     HostAutomationUnsafeDesktopError,
     HostAutomationUnsupportedPlatformError,
@@ -50,7 +52,10 @@ from phoenix_os.host_automation.windows_effects import (
     _run_windows_effect,
     _WindowsEffectIndeterminateError,
     _WindowsEffectsBackend,
+    _WindowsEffectStaleIdentityError,
     _WindowsEffectTimedOutError,
+    _WindowsEffectUnsafeDesktopError,
+    _WindowsFocusTarget,
 )
 
 _DEFAULT_WINDOWS_HOST_AUTOMATION_LIMITS = HostAutomationLimits()
@@ -800,8 +805,60 @@ class WindowsHostAutomationAdapter:
         if not isinstance(request, HostWindowFocusRequest):
             raise TypeError("request must be HostWindowFocusRequest")
         self._require_host(request.host_id)
-        self._ensure_open()
-        raise HostAutomationOperationDisabledError()
+
+        async with self._lock:
+            self._ensure_open()
+            if request.host_epoch != self._host_epoch:
+                raise HostAutomationStaleIdentityError()
+
+            native_window = self._native_windows.get(request.window_id)
+            if native_window is None:
+                raise HostAutomationTargetNotFoundError()
+
+            native_key = (native_window.pid, native_window.creation_time)
+            process_id = self._process_ids.get(native_key)
+            if process_id != request.process_id:
+                raise HostAutomationStaleIdentityError()
+
+            application_id = self._application_ids_by_native_process.get(native_key)
+            if request.application_id is not None and application_id != request.application_id:
+                raise HostAutomationStaleIdentityError()
+
+            backend = self._effects_backend_for_operation()
+            target = _WindowsFocusTarget(
+                hwnd=native_window.hwnd,
+                pid=native_window.pid,
+                creation_time=native_window.creation_time,
+            )
+            try:
+                await _run_windows_effect(
+                    lambda attempt: backend.focus_window(
+                        target,
+                        attempt=attempt,
+                    ),
+                    timeout_seconds=self._limits.operation_timeout.total_seconds(),
+                )
+            except asyncio.CancelledError:
+                raise
+            except _WindowsEffectTimedOutError as exception:
+                raise HostAutomationTimeoutError() from exception
+            except _WindowsEffectIndeterminateError as exception:
+                raise HostAutomationIndeterminateEffectError() from exception
+            except _WindowsEffectStaleIdentityError as exception:
+                raise HostAutomationStaleIdentityError() from exception
+            except _WindowsEffectUnsafeDesktopError as exception:
+                raise HostAutomationUnsafeDesktopError() from exception
+            except Exception as exception:
+                raise HostAutomationAdapterError() from exception
+
+            return HostWindowFocusResult(
+                request_id=request.request_id,
+                host_id=self._host_id,
+                host_epoch=self._host_epoch,
+                window_id=request.window_id,
+                process_id=request.process_id,
+                created_at=request.created_at,
+            )
 
     async def close_application(
         self,
