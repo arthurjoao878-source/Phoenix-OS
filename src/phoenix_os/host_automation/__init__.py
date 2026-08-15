@@ -1,5 +1,23 @@
 """OS-neutral secure host-automation contracts and adapters."""
 
+from phoenix_os.host_automation.authorization import (
+    HOST_APPLICATION_CLOSE_ACTION,
+    HOST_APPLICATION_LAUNCH_ACTION,
+    HOST_CLIPBOARD_READ_ACTION,
+    HOST_CLIPBOARD_WRITE_ACTION,
+    HOST_PROCESS_LIST_ACTION,
+    HOST_WINDOW_FOCUS_ACTION,
+    HOST_WINDOW_LIST_ACTION,
+    HostAutomationAuthorizer,
+    PolicyEngineHostAutomationAuthorizer,
+    host_application_resource,
+    host_clipboard_resource,
+    host_process_collection_resource,
+    host_process_resource,
+    host_resource,
+    host_window_collection_resource,
+    host_window_resource,
+)
 from phoenix_os.host_automation.contracts import (
     MAX_HOST_CLIPBOARD_TEXT_BYTES,
     MAX_HOST_CLIPBOARD_TEXT_CHARS,
@@ -52,6 +70,13 @@ from phoenix_os.host_automation.errors import (
 )
 
 __all__ = [
+    "HOST_APPLICATION_CLOSE_ACTION",
+    "HOST_APPLICATION_LAUNCH_ACTION",
+    "HOST_CLIPBOARD_READ_ACTION",
+    "HOST_CLIPBOARD_WRITE_ACTION",
+    "HOST_PROCESS_LIST_ACTION",
+    "HOST_WINDOW_FOCUS_ACTION",
+    "HOST_WINDOW_LIST_ACTION",
     "MAX_HOST_CLIPBOARD_TEXT_BYTES",
     "MAX_HOST_CLIPBOARD_TEXT_CHARS",
     "MAX_HOST_IDENTIFIER_LENGTH",
@@ -69,6 +94,7 @@ __all__ = [
     "HostAutomationAdapterError",
     "HostAutomationApprovalRejectedError",
     "HostAutomationAuthorizationRejectedError",
+    "HostAutomationAuthorizer",
     "HostAutomationCancelledError",
     "HostAutomationError",
     "HostAutomationErrorCode",
@@ -98,4 +124,12 @@ __all__ = [
     "HostWindowId",
     "HostWindowListRequest",
     "HostWindowListResult",
+    "PolicyEngineHostAutomationAuthorizer",
+    "host_application_resource",
+    "host_clipboard_resource",
+    "host_process_collection_resource",
+    "host_process_resource",
+    "host_resource",
+    "host_window_collection_resource",
+    "host_window_resource",
 ]
