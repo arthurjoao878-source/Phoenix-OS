@@ -121,7 +121,7 @@ class _CtypesWindowsDiscoveryBackend:
                 ("szExeFile", wintypes.WCHAR * 260),
             ]
 
-        self._process_entry_type = PROCESSENTRY32W
+        self._process_entry_type: type[Any] = PROCESSENTRY32W
         self._configure_signatures()
 
     def enumerate_processes(
@@ -265,17 +265,17 @@ class WindowsHostAutomationAdapter:
     ) -> None:
         if sys.platform != "win32":
             raise HostAutomationUnsupportedPlatformError()
-        self._host_id = host_id if isinstance(host_id, HostId) else HostId(host_id)
+        self._host_id: HostId = host_id if isinstance(host_id, HostId) else HostId(host_id)
         if not isinstance(limits, HostAutomationLimits):
             raise TypeError("limits must be HostAutomationLimits")
 
-        self._limits = limits
-        self._host_epoch = HostEpoch()
+        self._limits: HostAutomationLimits = limits
+        self._host_epoch: HostEpoch = HostEpoch()
         self._backend: _WindowsDiscoveryBackend = _CtypesWindowsDiscoveryBackend()
         self._process_ids: dict[tuple[int, int], HostProcessId] = {}
         self._native_processes: dict[HostProcessId, _NativeProcessRecord] = {}
-        self._closed = False
-        self._lock = asyncio.Lock()
+        self._closed: bool = False
+        self._lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def host_id(self) -> HostId:
