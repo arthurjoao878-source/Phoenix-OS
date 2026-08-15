@@ -29,14 +29,14 @@ def test_readme_announces_thirty_one_specs_and_agent_workspace_gate() -> None:
     assert "## Agent-workspace release gate" in readme
 
 
-def test_changelog_starts_with_v0310_release_candidate() -> None:
+def test_changelog_starts_with_v0310_release() -> None:
     changelog = _CHANGELOG.read_text(encoding="utf-8")
     current = "## [0.31.0] - 2026-08-14"
     previous = "## [0.30.0] - 2026-08-12"
     assert changelog.count(current) == 1
     assert changelog.index(current) < changelog.index(previous)
     for phrase in (
-        "RFC-0031 secure agent workspaces",
+        "Accepted RFC-0031 secure agent workspaces",
         "Files carry data, never authority",
         "workspace.import",
         "logical paths",
@@ -45,20 +45,19 @@ def test_changelog_starts_with_v0310_release_candidate() -> None:
         "isolated offline",
     ):
         assert phrase in changelog
-    assert "Accepted RFC-0031" not in changelog
 
 
-def test_v031_release_candidate_notes_are_complete() -> None:
+def test_v031_release_notes_are_complete() -> None:
     notes = _RELEASE_NOTES.read_text(encoding="utf-8")
     for phrase in (
         "# Phoenix OS 0.31.0",
-        "**Release candidate:** 2026-08-14",
+        "**Released:** 2026-08-14",
         "## Highlights",
         "## Security",
         "## Compatibility and migration",
         "## Architecture decisions",
         "## Release validation",
-        "## Planned artifacts",
+        "## Artifacts",
         "python scripts/check_agent_workspace_release.py",
         "Git tag `v0.31.0`",
         "phoenix_os-0.31.0-py3-none-any.whl",
@@ -72,14 +71,19 @@ def test_v031_release_candidate_notes_are_complete() -> None:
     assert "write/read/update/delete without source-tree imports" in notes
     assert "Import isolation remains" in notes
     assert "workspace regression suite that runs before packaging" in notes
+    assert "The release must pass:" in notes
+    assert "security-review, and release suites" in notes
+    assert "The GitHub release publishes:" in notes
 
 
-def test_rfc_remains_draft_until_publication_artifacts_exist() -> None:
+def test_rfc_is_fully_accepted_for_v0310() -> None:
     rfc = " ".join(_RFC.read_text(encoding="utf-8").split())
-    assert "- Status: Draft" in rfc
+    assert "- Status: Accepted" in rfc
+    assert "- [ ]" not in rfc
     assert "- [x] Release notes and package version 0.31.0" in rfc
-    assert "- [ ] Tag, artifacts, and checksums" in rfc
+    assert "- [x] Tag, artifacts, and checksums" in rfc
     assert "- Target release: Phoenix OS v0.31.0" in rfc
+    assert "RFC-0031 is accepted for Phoenix OS 0.31.0." in rfc
 
 
 def test_gate_and_previous_release_notes_remain_available() -> None:

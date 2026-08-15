@@ -3,7 +3,7 @@
 ## [0.31.0] - 2026-08-14
 
 ### Added
-- RFC-0031 secure agent workspaces with Phoenix-owned run/agent/principal scopes and exact independent `workspace.list`, `workspace.read`, `workspace.write`, `workspace.delete`, `workspace.import`, `workspace.export`, and `workspace.admin` authority.
+- Accepted RFC-0031 secure agent workspaces with Phoenix-owned run/agent/principal scopes and exact independent `workspace.list`, `workspace.read`, `workspace.write`, `workspace.delete`, `workspace.import`, `workspace.export`, and `workspace.admin` authority.
 - Canonical bounded logical paths separated from opaque backing keys, with confined local reference backing and fail-closed traversal/link/special-object handling.
 - Authoritative versioned/digested artifact records with immutable provenance, bounded count/byte quotas, atomic admission, optimistic mutation, finite retention, tombstones, and restart-safe anti-resurrection semantics.
 - Explicit independently authorized bounded import/export adapters plus provenance-preserving untrusted `ArtifactContextBlock` agent integration.
@@ -19,7 +19,7 @@
 ### Compatibility
 - Phoenix OS 0.30.0 behavior is preserved when workspace configuration is omitted.
 - Upgrade creates no artifact, workspace store, backing root, worker, transfer, permission, context attachment, host-directory mount, memory conversion, model call, tool call, delegation, or external access automatically.
-- Final publication is blocked on the full quality gate, all named subsystem gates, the agent-workspace gate, final RFC acceptance, and release artifact checksums.
+- Release publication uses Git tag `v0.31.0`, wheel and sdist artifacts, and `SHA256SUMS`.
 
 
 ## [0.30.0] - 2026-08-12

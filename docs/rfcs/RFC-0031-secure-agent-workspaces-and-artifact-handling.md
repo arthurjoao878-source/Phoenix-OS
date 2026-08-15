@@ -1,6 +1,6 @@
 # RFC-0031: Secure Agent Workspaces and Artifact Handling
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.31.0
 - Owners: Phoenix OS maintainers
 - Depends on: RFC-0004, RFC-0005, RFC-0007, RFC-0009, RFC-0010, RFC-0011, RFC-0012, RFC-0026, RFC-0027, RFC-0028, RFC-0029, and RFC-0030
@@ -380,10 +380,10 @@ runs in isolated Python mode without source-tree imports and validates exact wor
 actions/resources, logical-path traversal rejection, and authoritative
 write/read/update/delete behavior.
 
-The package metadata now targets v0.31.0. The gate also validates
-`docs/releases/v0.31.0.md` and the v0.31.0 release-candidate executable
-specification. Final RFC acceptance, tag, artifacts, and checksums remain the
-publication step.
+The package metadata targets v0.31.0. The gate validates
+`docs/releases/v0.31.0.md` and the v0.31.0 release executable specification.
+Release publication uses Git tag `v0.31.0`, wheel and sdist artifacts, and
+`SHA256SUMS`.
 
 ## Slice plan
 
@@ -440,7 +440,7 @@ publication step.
 - [x] Named agent-workspace release gate
 - [x] Offline wheel/sdist validation
 - [x] Release notes and package version 0.31.0
-- [ ] Tag, artifacts, and checksums
+- [x] Tag, artifacts, and checksums
 
 ## Acceptance
 
@@ -452,3 +452,5 @@ exports are explicit independently authorized transfers, artifact context remain
 untrusted, deleted/expired artifacts do not resurrect across restart, operational
 surfaces are content-free, Runtime owns finite lifecycle, and omitting workspace
 configuration preserves Phoenix OS v0.30.0 behavior.
+
+RFC-0031 is accepted for Phoenix OS 0.31.0.

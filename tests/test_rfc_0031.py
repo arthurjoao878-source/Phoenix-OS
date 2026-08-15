@@ -14,10 +14,10 @@ def _text() -> str:
     return " ".join(_RFC.read_text(encoding="utf-8").split())
 
 
-def test_rfc_0031_exists_as_v0310_draft() -> None:
+def test_rfc_0031_is_accepted_for_v0310() -> None:
     text = _text()
     assert "# RFC-0031: Secure Agent Workspaces and Artifact Handling" in text
-    assert "- Status: Draft" in text
+    assert "- Status: Accepted" in text
     assert "- Target release: Phoenix OS v0.31.0" in text
     assert "Files carry data, never authority." in text
 
@@ -194,7 +194,7 @@ def test_rfc_0031_proposes_provider_neutral_contracts() -> None:
     assert "process handle" in text
 
 
-def test_rfc_0031_slices_zero_through_four_and_slice_five_c_complete() -> None:
+def test_rfc_0031_slice_plan_is_fully_complete() -> None:
     text = _text()
     for slice_number in range(6):
         assert f"### Slice {slice_number} -" in text
@@ -257,9 +257,11 @@ def test_rfc_0031_slices_zero_through_four_and_slice_five_c_complete() -> None:
         assert f"- [x] {item}" in text
 
     assert "- [x] Release notes and package version 0.31.0" in text
-    assert "- [ ] Tag, artifacts, and checksums" in text
-    assert "- Status: Draft" in text
+    assert "- [x] Tag, artifacts, and checksums" in text
+    assert "- [ ]" not in text
+    assert "- Status: Accepted" in text
     assert "docs/releases/v0.31.0.md" in text
+    assert "RFC-0031 is accepted for Phoenix OS 0.31.0." in text
 
     assert "## Release validation" in text
     assert "python scripts/check_agent_workspace_release.py" in text
