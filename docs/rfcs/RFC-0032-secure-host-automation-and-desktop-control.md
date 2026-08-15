@@ -467,11 +467,11 @@ workspace behavior remains unchanged.
 
 ### Slice 3 - Configured application launch and exact window focus
 
-- [ ] Trusted configured-application registry/profile resolution
-- [ ] `host.app.launch` without arbitrary command-line authority
-- [ ] `host.window.focus` with immediate identity revalidation
-- [ ] Side-effect classification and no-transparent-retry tests
-- [ ] Launch-indeterminate and focus-TOCTOU regressions
+- [x] Trusted configured-application registry/profile resolution
+- [x] `host.app.launch` without arbitrary command-line authority
+- [x] `host.window.focus` with immediate identity revalidation
+- [x] Side-effect classification and no-transparent-retry tests
+- [x] Launch-indeterminate and focus-TOCTOU regressions
 
 ### Slice 4 - Graceful application close and approval
 
