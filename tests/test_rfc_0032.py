@@ -252,7 +252,7 @@ def test_rfc_0032_proposes_provider_neutral_host_contracts() -> None:
         assert f"`{contract}`" in text
 
 
-def test_rfc_0032_slice_zero_is_complete_and_later_slices_remain_open() -> None:
+def test_rfc_0032_slices_zero_and_one_are_complete_and_later_slices_remain_open() -> None:
     text = _text()
     assert "### Slice 0 - RFC foundation and executable specification" in text
     assert "### Slice 7 - Security review, migration, and release hardening" in text
@@ -267,7 +267,16 @@ def test_rfc_0032_slice_zero_is_complete_and_later_slices_remain_open() -> None:
     ):
         assert f"- [x] {item}" in text
 
-    assert "- [ ] Immutable bounded host/application/process/window contracts" in text
+    for item in (
+        "Immutable bounded host/application/process/window contracts",
+        "Host epoch and stale-identity rules",
+        "Exact `host.*` constants/resources and current-policy authorization",
+        "Host automation limits and safe errors",
+        "Deterministic fake adapter for network/OS-effect-free tests",
+        "Contract, policy, stale-ID, and compatibility regressions",
+    ):
+        assert f"- [x] {item}" in text
+
     assert "- [ ] `WindowsHostAutomationAdapter` process enumeration" in text
     assert "- [ ] Windows dogfood with real process/window/app/clipboard effects" in text
 

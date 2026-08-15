@@ -449,12 +449,12 @@ workspace behavior remains unchanged.
 
 ### Slice 1 - Core contracts, identities, authorization, and fake adapter
 
-- [ ] Immutable bounded host/application/process/window contracts
-- [ ] Host epoch and stale-identity rules
-- [ ] Exact `host.*` constants/resources and current-policy authorization
-- [ ] Host automation limits and safe errors
-- [ ] Deterministic fake adapter for network/OS-effect-free tests
-- [ ] Contract, policy, stale-ID, and compatibility regressions
+- [x] Immutable bounded host/application/process/window contracts
+- [x] Host epoch and stale-identity rules
+- [x] Exact `host.*` constants/resources and current-policy authorization
+- [x] Host automation limits and safe errors
+- [x] Deterministic fake adapter for network/OS-effect-free tests
+- [x] Contract, policy, stale-ID, and compatibility regressions
 
 ### Slice 2 - Windows read-only discovery
 

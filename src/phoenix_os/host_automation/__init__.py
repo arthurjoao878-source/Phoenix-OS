@@ -68,6 +68,7 @@ from phoenix_os.host_automation.errors import (
     HostAutomationUnsafeDesktopError,
     HostAutomationUnsupportedPlatformError,
 )
+from phoenix_os.host_automation.fake import DeterministicHostAutomationAdapter
 
 __all__ = [
     "HOST_APPLICATION_CLOSE_ACTION",
@@ -84,6 +85,7 @@ __all__ = [
     "MAX_HOST_OPERATION_TIMEOUT",
     "MAX_HOST_PROCESS_LABEL_CHARS",
     "MAX_HOST_WINDOW_TITLE_CHARS",
+    "DeterministicHostAutomationAdapter",
     "HostApplicationCloseRequest",
     "HostApplicationCloseResult",
     "HostApplicationId",
