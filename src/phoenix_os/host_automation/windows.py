@@ -1,16 +1,17 @@
-"""Windows host-automation adapter with bounded read-only discovery."""
+"""Windows host-automation adapter with bounded discovery and configured effects."""
 
 from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from phoenix_os.host_automation.contracts import (
     HostApplicationCloseRequest,
     HostApplicationCloseResult,
+    HostApplicationId,
     HostApplicationLaunchRequest,
     HostApplicationLaunchResult,
     HostAutomationLimits,
@@ -32,13 +33,24 @@ from phoenix_os.host_automation.contracts import (
     HostWindowListResult,
 )
 from phoenix_os.host_automation.errors import (
+    HostApplicationNotConfiguredError,
     HostAutomationAdapterError,
+    HostAutomationIndeterminateEffectError,
     HostAutomationLimitExceededError,
     HostAutomationOperationDisabledError,
     HostAutomationServiceUnavailableError,
     HostAutomationTimeoutError,
     HostAutomationUnsafeDesktopError,
     HostAutomationUnsupportedPlatformError,
+)
+from phoenix_os.host_automation.windows_effects import (
+    WindowsApplicationProfile,
+    _CtypesWindowsEffectsBackend,
+    _normalize_windows_application_profiles,
+    _run_windows_effect,
+    _WindowsEffectIndeterminateError,
+    _WindowsEffectsBackend,
+    _WindowsEffectTimedOutError,
 )
 
 _DEFAULT_WINDOWS_HOST_AUTOMATION_LIMITS = HostAutomationLimits()
@@ -568,13 +580,14 @@ class _CtypesWindowsDiscoveryBackend:
 
 
 class WindowsHostAutomationAdapter:
-    """Windows implementation boundary for bounded read-only process and window discovery."""
+    """Windows implementation boundary for bounded discovery and configured effects."""
 
     def __init__(
         self,
         *,
         host_id: HostId | str = "local-windows",
         limits: HostAutomationLimits = _DEFAULT_WINDOWS_HOST_AUTOMATION_LIMITS,
+        application_profiles: Sequence[WindowsApplicationProfile] = (),
     ) -> None:
         if sys.platform != "win32":
             raise HostAutomationUnsupportedPlatformError()
@@ -583,10 +596,15 @@ class WindowsHostAutomationAdapter:
             raise TypeError("limits must be HostAutomationLimits")
 
         self._limits: HostAutomationLimits = limits
+        self._application_profiles: dict[HostApplicationId, WindowsApplicationProfile] = (
+            _normalize_windows_application_profiles(application_profiles)
+        )
+        self._effects_backend: _WindowsEffectsBackend | None = None
         self._host_epoch: HostEpoch = HostEpoch()
         self._backend: _WindowsDiscoveryBackend = _CtypesWindowsDiscoveryBackend()
         self._process_ids: dict[tuple[int, int], HostProcessId] = {}
         self._native_processes: dict[HostProcessId, _NativeProcessRecord] = {}
+        self._application_ids_by_native_process: dict[tuple[int, int], HostApplicationId] = {}
         self._last_process_records: dict[tuple[int, int], _NativeProcessRecord] = {}
         self._last_window_process_records: dict[tuple[int, int], _NativeProcessRecord] = {}
         self._window_ids: dict[tuple[int, int, int], HostWindowId] = {}
@@ -734,8 +752,49 @@ class WindowsHostAutomationAdapter:
         if not isinstance(request, HostApplicationLaunchRequest):
             raise TypeError("request must be HostApplicationLaunchRequest")
         self._require_host(request.host_id)
-        self._ensure_open()
-        raise HostAutomationOperationDisabledError()
+
+        async with self._lock:
+            self._ensure_open()
+            profile = self._application_profiles.get(request.application_id)
+            if profile is None:
+                raise HostApplicationNotConfiguredError()
+
+            backend = self._effects_backend_for_operation()
+            try:
+                launched = await _run_windows_effect(
+                    lambda attempt: backend.launch_application(
+                        profile,
+                        attempt=attempt,
+                    ),
+                    timeout_seconds=self._limits.operation_timeout.total_seconds(),
+                )
+            except asyncio.CancelledError:
+                raise
+            except _WindowsEffectTimedOutError as exception:
+                raise HostAutomationTimeoutError() from exception
+            except _WindowsEffectIndeterminateError as exception:
+                raise HostAutomationIndeterminateEffectError() from exception
+            except Exception as exception:
+                raise HostAutomationAdapterError() from exception
+
+            record = _NativeProcessRecord(
+                pid=launched.pid,
+                creation_time=launched.creation_time,
+                label=launched.label,
+            )
+            key = (record.pid, record.creation_time)
+            self._last_process_records[key] = record
+            self._application_ids_by_native_process[key] = request.application_id
+            self._rebuild_process_identity_state()
+            process_id = self._process_ids[key]
+            return HostApplicationLaunchResult(
+                request_id=request.request_id,
+                host_id=self._host_id,
+                host_epoch=self._host_epoch,
+                application_id=request.application_id,
+                process_id=process_id,
+                created_at=request.created_at,
+            )
 
     async def focus_window(self, request: HostWindowFocusRequest) -> HostWindowFocusResult:
         if not isinstance(request, HostWindowFocusRequest):
@@ -777,6 +836,7 @@ class WindowsHostAutomationAdapter:
                 return
             self._process_ids.clear()
             self._native_processes.clear()
+            self._application_ids_by_native_process.clear()
             self._last_process_records.clear()
             self._last_window_process_records.clear()
             self._window_ids.clear()
@@ -825,6 +885,11 @@ class WindowsHostAutomationAdapter:
         active_records = dict(self._last_window_process_records)
         active_records.update(self._last_process_records)
         active_keys = set(active_records)
+        self._application_ids_by_native_process = {
+            key: application_id
+            for key, application_id in self._application_ids_by_native_process.items()
+            if key in active_keys
+        }
         self._process_ids = {
             key: process_id for key, process_id in self._process_ids.items() if key in active_keys
         }
@@ -844,6 +909,9 @@ class WindowsHostAutomationAdapter:
             host_id=self._host_id,
             host_epoch=self._host_epoch,
             process_id=process_id,
+            application_id=self._application_ids_by_native_process.get(
+                (record.pid, record.creation_time)
+            ),
             label=_content_minimized_process_label(
                 record.label,
                 maximum_characters=self._limits.max_process_label_chars,
@@ -858,11 +926,21 @@ class WindowsHostAutomationAdapter:
             host_epoch=self._host_epoch,
             window_id=window_id,
             process_id=process_id,
+            application_id=self._application_ids_by_native_process.get(
+                (record.pid, record.creation_time)
+            ),
             title=_content_minimized_window_title(
                 record.title,
                 maximum_characters=self._limits.max_window_title_chars,
             ),
         )
+
+    def _effects_backend_for_operation(self) -> _WindowsEffectsBackend:
+        backend = self._effects_backend
+        if backend is None:
+            backend = _CtypesWindowsEffectsBackend()
+            self._effects_backend = backend
+        return backend
 
     def _ensure_open(self) -> None:
         if self._closed:
