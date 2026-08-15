@@ -458,12 +458,12 @@ workspace behavior remains unchanged.
 
 ### Slice 2 - Windows read-only discovery
 
-- [ ] `WindowsHostAutomationAdapter` process enumeration
-- [ ] Bounded content-minimized `host.process.list`
-- [ ] Bounded reviewed `host.window.list`
-- [ ] Native identity translation without public handles
-- [ ] Session/desktop and stale-enumeration failure handling
-- [ ] Windows discovery integration tests
+- [x] `WindowsHostAutomationAdapter` process enumeration
+- [x] Bounded content-minimized `host.process.list`
+- [x] Bounded reviewed `host.window.list`
+- [x] Native identity translation without public handles
+- [x] Session/desktop and stale-enumeration failure handling
+- [x] Windows discovery integration tests
 
 ### Slice 3 - Configured application launch and exact window focus
 

@@ -16,9 +16,9 @@ from phoenix_os.host_automation import (
     HostAutomationServiceUnavailableError,
     HostAutomationTimeoutError,
     HostAutomationUnsupportedPlatformError,
+    HostClipboardReadRequest,
     HostId,
     HostProcessListRequest,
-    HostWindowListRequest,
     WindowsHostAutomationAdapter,
 )
 
@@ -246,7 +246,7 @@ async def test_unimplemented_windows_effects_remain_disabled(
     )
 
     with pytest.raises(HostAutomationOperationDisabledError):
-        await adapter.list_windows(HostWindowListRequest(host_id=_HOST, created_at=_NOW))
+        await adapter.read_clipboard(HostClipboardReadRequest(host_id=_HOST, created_at=_NOW))
 
 
 @pytest.mark.asyncio

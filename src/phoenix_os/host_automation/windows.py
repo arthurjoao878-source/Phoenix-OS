@@ -24,8 +24,10 @@ from phoenix_os.host_automation.contracts import (
     HostProcessId,
     HostProcessListRequest,
     HostProcessListResult,
+    HostWindowDescriptor,
     HostWindowFocusRequest,
     HostWindowFocusResult,
+    HostWindowId,
     HostWindowListRequest,
     HostWindowListResult,
 )
@@ -35,6 +37,7 @@ from phoenix_os.host_automation.errors import (
     HostAutomationOperationDisabledError,
     HostAutomationServiceUnavailableError,
     HostAutomationTimeoutError,
+    HostAutomationUnsafeDesktopError,
     HostAutomationUnsupportedPlatformError,
 )
 
@@ -42,6 +45,10 @@ _DEFAULT_WINDOWS_HOST_AUTOMATION_LIMITS = HostAutomationLimits()
 _WINDOWS_PROCESS_SCAN_MULTIPLIER = 8
 _WINDOWS_MIN_PROCESS_SCAN_COUNT = 64
 _WINDOWS_MAX_PROCESS_SCAN_COUNT = 32_768
+_WINDOWS_WINDOW_SCAN_MULTIPLIER = 8
+_WINDOWS_MIN_WINDOW_SCAN_COUNT = 64
+_WINDOWS_MAX_WINDOW_SCAN_COUNT = 16_384
+_WINDOWS_MAX_DESKTOP_NAME_CHARS = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +85,61 @@ class _NativeProcessSnapshot:
                 raise TypeError("native process snapshot contains an invalid record")
 
 
+@dataclass(frozen=True, slots=True)
+class _NativeWindowRecord:
+    hwnd: int
+    pid: int
+    creation_time: int
+    title: str
+
+    def __post_init__(self) -> None:
+        if isinstance(self.hwnd, bool) or not isinstance(self.hwnd, int) or self.hwnd <= 0:
+            raise ValueError("native window handle must be a positive integer")
+        if isinstance(self.pid, bool) or not isinstance(self.pid, int) or self.pid <= 0:
+            raise ValueError("native window pid must be a positive integer")
+        if (
+            isinstance(self.creation_time, bool)
+            or not isinstance(self.creation_time, int)
+            or self.creation_time < 0
+        ):
+            raise ValueError("native window creation_time must be a non-negative integer")
+        if not isinstance(self.title, str):
+            raise TypeError("native window title must be a string")
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeWindowSnapshot:
+    records: tuple[_NativeWindowRecord, ...]
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.records, tuple):
+            raise TypeError("native window records must be a tuple")
+        if not isinstance(self.truncated, bool):
+            raise TypeError("native window truncated must be a boolean")
+        for record in self.records:
+            if not isinstance(record, _NativeWindowRecord):
+                raise TypeError("native window snapshot contains an invalid record")
+
+
+@dataclass(frozen=True, slots=True)
+class _DesktopContext:
+    session_id: int
+    desktop_name: str
+
+    def __post_init__(self) -> None:
+        if isinstance(self.session_id, bool) or not isinstance(self.session_id, int):
+            raise TypeError("session_id must be an integer")
+        if self.session_id < 0:
+            raise ValueError("session_id must be non-negative")
+        if not isinstance(self.desktop_name, str) or not self.desktop_name:
+            raise ValueError("desktop_name must be a non-empty string")
+
+
+class _UnsafeDesktopBoundaryError(RuntimeError):
+    pass
+
+
 class _WindowsDiscoveryBackend(Protocol):
     def enumerate_processes(
         self,
@@ -85,6 +147,13 @@ class _WindowsDiscoveryBackend(Protocol):
         maximum_records: int,
         maximum_label_characters: int,
     ) -> _NativeProcessSnapshot: ...
+
+    def enumerate_windows(
+        self,
+        *,
+        maximum_records: int,
+        maximum_title_characters: int,
+    ) -> _NativeWindowSnapshot: ...
 
 
 class _CtypesWindowsDiscoveryBackend:
@@ -102,10 +171,16 @@ class _CtypesWindowsDiscoveryBackend:
         if win_dll is None or get_last_error is None:
             raise HostAutomationUnsupportedPlatformError()
 
-        self._ctypes = ctypes
-        self._wintypes = wintypes
+        self._ctypes: Any = ctypes
+        self._wintypes: Any = wintypes
         self._get_last_error: Callable[[], int] = get_last_error
         self._kernel32: Any = win_dll("kernel32", use_last_error=True)
+        self._user32: Any = win_dll("user32", use_last_error=True)
+        self._enum_windows_proc_type: Any = ctypes.WINFUNCTYPE(
+            wintypes.BOOL,
+            wintypes.HWND,
+            wintypes.LPARAM,
+        )
 
         class PROCESSENTRY32W(ctypes.Structure):
             _fields_ = [
@@ -201,6 +276,197 @@ class _CtypesWindowsDiscoveryBackend:
         records.sort(key=lambda item: (item.label.casefold(), item.pid, item.creation_time))
         return _NativeProcessSnapshot(tuple(records), truncated=truncated)
 
+    def enumerate_windows(
+        self,
+        *,
+        maximum_records: int,
+        maximum_title_characters: int,
+    ) -> _NativeWindowSnapshot:
+        if isinstance(maximum_records, bool) or not isinstance(maximum_records, int):
+            raise TypeError("maximum_records must be an integer")
+        if maximum_records <= 0:
+            raise ValueError("maximum_records must be greater than zero")
+        if isinstance(maximum_title_characters, bool) or not isinstance(
+            maximum_title_characters, int
+        ):
+            raise TypeError("maximum_title_characters must be an integer")
+        if maximum_title_characters <= 0:
+            raise ValueError("maximum_title_characters must be greater than zero")
+
+        before = self._current_desktop_context()
+        records: list[_NativeWindowRecord] = []
+        truncated = False
+        stopped_intentionally = False
+        examined = 0
+        maximum_examined = min(
+            _WINDOWS_MAX_WINDOW_SCAN_COUNT,
+            max(
+                _WINDOWS_MIN_WINDOW_SCAN_COUNT,
+                maximum_records * _WINDOWS_WINDOW_SCAN_MULTIPLIER,
+            ),
+        )
+
+        def visit(hwnd: int, lparam: int) -> bool:
+            nonlocal examined, stopped_intentionally, truncated
+            del lparam
+            examined += 1
+            if examined > maximum_examined:
+                truncated = True
+                stopped_intentionally = True
+                return False
+
+            native_hwnd = int(hwnd) if hwnd else 0
+            if native_hwnd > 0 and bool(self._user32.IsWindowVisible(hwnd)):
+                record = self._capture_window_record(
+                    native_hwnd,
+                    expected_session_id=before.session_id,
+                    maximum_title_characters=maximum_title_characters,
+                )
+                if record is not None:
+                    records.append(record)
+                    if len(records) >= maximum_records:
+                        truncated = True
+                        stopped_intentionally = True
+                        return False
+
+            if examined >= maximum_examined:
+                truncated = True
+                stopped_intentionally = True
+                return False
+            return True
+
+        callback = self._enum_windows_proc_type(visit)
+        set_last_error = getattr(self._ctypes, "set_last_error", None)
+        if callable(set_last_error):
+            set_last_error(0)
+        success = bool(self._user32.EnumWindows(callback, 0))
+        if not success and not stopped_intentionally:
+            raise RuntimeError("windows window enumeration failed")
+
+        after = self._current_desktop_context()
+        if after != before:
+            raise _UnsafeDesktopBoundaryError("desktop changed during window enumeration")
+
+        records.sort(
+            key=lambda item: (
+                item.title.casefold(),
+                item.pid,
+                item.creation_time,
+                item.hwnd,
+            )
+        )
+        return _NativeWindowSnapshot(tuple(records), truncated=truncated)
+
+    def _capture_window_record(
+        self,
+        hwnd: int,
+        *,
+        expected_session_id: int,
+        maximum_title_characters: int,
+    ) -> _NativeWindowRecord | None:
+        if not bool(self._user32.IsWindow(hwnd)):
+            return None
+
+        pid_before = self._window_process_id(hwnd)
+        if pid_before is None:
+            return None
+        if self._process_session_id(pid_before) != expected_session_id:
+            return None
+        creation_before = self._read_process_creation_time(pid_before)
+        if creation_before is None:
+            return None
+
+        title = self._read_window_title(
+            hwnd,
+            maximum_characters=maximum_title_characters,
+        )
+
+        if not bool(self._user32.IsWindow(hwnd)):
+            return None
+        pid_after = self._window_process_id(hwnd)
+        if pid_after is None or pid_after != pid_before:
+            return None
+        creation_after = self._read_process_creation_time(pid_after)
+        if creation_after != creation_before:
+            return None
+        if self._process_session_id(pid_after) != expected_session_id:
+            return None
+
+        return _NativeWindowRecord(
+            hwnd=hwnd,
+            pid=pid_before,
+            creation_time=creation_before,
+            title=title,
+        )
+
+    def _window_process_id(self, hwnd: int) -> int | None:
+        pid = self._wintypes.DWORD()
+        thread_id = self._user32.GetWindowThreadProcessId(hwnd, self._ctypes.byref(pid))
+        if not thread_id or not pid.value:
+            return None
+        return int(pid.value)
+
+    def _process_session_id(self, pid: int) -> int | None:
+        session_id = self._wintypes.DWORD()
+        success = bool(self._kernel32.ProcessIdToSessionId(pid, self._ctypes.byref(session_id)))
+        if not success:
+            return None
+        return int(session_id.value)
+
+    def _read_window_title(self, hwnd: int, *, maximum_characters: int) -> str:
+        length = max(0, int(self._user32.GetWindowTextLengthW(hwnd)))
+        capacity = min(length, maximum_characters) + 1
+        buffer = self._ctypes.create_unicode_buffer(max(1, capacity))
+        copied = int(self._user32.GetWindowTextW(hwnd, buffer, len(buffer)))
+        if copied <= 0:
+            return ""
+        return _content_minimized_window_title(
+            str(buffer.value),
+            maximum_characters=maximum_characters,
+        )
+
+    def _current_desktop_context(self) -> _DesktopContext:
+        current_pid = int(self._kernel32.GetCurrentProcessId())
+        session_id = self._process_session_id(current_pid)
+        if session_id is None:
+            raise _UnsafeDesktopBoundaryError("current Windows session is unavailable")
+
+        input_desktop = self._user32.OpenInputDesktop(0, False, 0x0001)
+        if not input_desktop:
+            raise _UnsafeDesktopBoundaryError("input desktop is unavailable")
+        try:
+            input_name = self._desktop_name(input_desktop)
+        finally:
+            self._user32.CloseDesktop(input_desktop)
+
+        thread_desktop = self._user32.GetThreadDesktop(self._kernel32.GetCurrentThreadId())
+        if not thread_desktop:
+            raise _UnsafeDesktopBoundaryError("thread desktop is unavailable")
+        thread_name = self._desktop_name(thread_desktop)
+        if input_name.casefold() != thread_name.casefold():
+            raise _UnsafeDesktopBoundaryError("thread desktop is not the input desktop")
+
+        return _DesktopContext(session_id=session_id, desktop_name=input_name)
+
+    def _desktop_name(self, desktop: object) -> str:
+        buffer = self._ctypes.create_unicode_buffer(_WINDOWS_MAX_DESKTOP_NAME_CHARS + 1)
+        needed = self._wintypes.DWORD()
+        success = bool(
+            self._user32.GetUserObjectInformationW(
+                desktop,
+                2,
+                buffer,
+                self._ctypes.sizeof(buffer),
+                self._ctypes.byref(needed),
+            )
+        )
+        if not success:
+            raise _UnsafeDesktopBoundaryError("Windows desktop identity is unavailable")
+        name = str(buffer.value).strip()
+        if not name:
+            raise _UnsafeDesktopBoundaryError("Windows desktop identity is empty")
+        return name
+
     def _read_process_creation_time(self, pid: int) -> int | None:
         ctypes = self._ctypes
         wintypes = self._wintypes
@@ -250,12 +516,59 @@ class _CtypesWindowsDiscoveryBackend:
             filetime_pointer,
         ]
         self._kernel32.GetProcessTimes.restype = wintypes.BOOL
+        self._kernel32.GetCurrentProcessId.argtypes = []
+        self._kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+        self._kernel32.GetCurrentThreadId.argtypes = []
+        self._kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        self._kernel32.ProcessIdToSessionId.argtypes = [
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
         self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         self._kernel32.CloseHandle.restype = wintypes.BOOL
 
+        self._user32.EnumWindows.argtypes = [self._enum_windows_proc_type, wintypes.LPARAM]
+        self._user32.EnumWindows.restype = wintypes.BOOL
+        self._user32.IsWindow.argtypes = [wintypes.HWND]
+        self._user32.IsWindow.restype = wintypes.BOOL
+        self._user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        self._user32.IsWindowVisible.restype = wintypes.BOOL
+        self._user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        self._user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        self._user32.GetWindowTextLengthW.restype = ctypes.c_int
+        self._user32.GetWindowTextW.argtypes = [
+            wintypes.HWND,
+            wintypes.LPWSTR,
+            ctypes.c_int,
+        ]
+        self._user32.GetWindowTextW.restype = ctypes.c_int
+        self._user32.OpenInputDesktop.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        self._user32.OpenInputDesktop.restype = wintypes.HANDLE
+        self._user32.GetThreadDesktop.argtypes = [wintypes.DWORD]
+        self._user32.GetThreadDesktop.restype = wintypes.HANDLE
+        self._user32.GetUserObjectInformationW.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._user32.GetUserObjectInformationW.restype = wintypes.BOOL
+        self._user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+        self._user32.CloseDesktop.restype = wintypes.BOOL
+
 
 class WindowsHostAutomationAdapter:
-    """Windows implementation boundary; only read-only process discovery is enabled here."""
+    """Windows implementation boundary for bounded read-only process and window discovery."""
 
     def __init__(
         self,
@@ -274,6 +587,10 @@ class WindowsHostAutomationAdapter:
         self._backend: _WindowsDiscoveryBackend = _CtypesWindowsDiscoveryBackend()
         self._process_ids: dict[tuple[int, int], HostProcessId] = {}
         self._native_processes: dict[HostProcessId, _NativeProcessRecord] = {}
+        self._last_process_records: dict[tuple[int, int], _NativeProcessRecord] = {}
+        self._last_window_process_records: dict[tuple[int, int], _NativeProcessRecord] = {}
+        self._window_ids: dict[tuple[int, int, int], HostWindowId] = {}
+        self._native_windows: dict[HostWindowId, _NativeWindowRecord] = {}
         self._closed: bool = False
         self._lock: asyncio.Lock = asyncio.Lock()
 
@@ -354,8 +671,61 @@ class WindowsHostAutomationAdapter:
         if not isinstance(request, HostWindowListRequest):
             raise TypeError("request must be HostWindowListRequest")
         self._require_host(request.host_id)
-        self._ensure_open()
-        raise HostAutomationOperationDisabledError()
+        if request.limit > self._limits.max_window_results:
+            raise HostAutomationLimitExceededError()
+
+        async with self._lock:
+            self._ensure_open()
+            scan_limit = self._limits.max_window_results + 1
+            try:
+                snapshot = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._backend.enumerate_windows,
+                        maximum_records=scan_limit,
+                        maximum_title_characters=self._limits.max_window_title_chars,
+                    ),
+                    timeout=self._limits.operation_timeout.total_seconds(),
+                )
+            except TimeoutError as exception:
+                raise HostAutomationTimeoutError() from exception
+            except asyncio.CancelledError:
+                raise
+            except _UnsafeDesktopBoundaryError as exception:
+                raise HostAutomationUnsafeDesktopError() from exception
+            except Exception as exception:
+                raise HostAutomationAdapterError() from exception
+
+            ordered_records = tuple(
+                sorted(
+                    snapshot.records,
+                    key=lambda record: (
+                        _content_minimized_window_title(
+                            record.title,
+                            maximum_characters=self._limits.max_window_title_chars,
+                        ).casefold(),
+                        record.pid,
+                        record.creation_time,
+                        record.hwnd,
+                    ),
+                )
+            )
+            visible_records = ordered_records[: self._limits.max_window_results]
+            self._refresh_window_identities(visible_records)
+            selected = visible_records[: request.limit]
+            descriptors = tuple(self._window_descriptor_for(record) for record in selected)
+            truncated = (
+                snapshot.truncated
+                or len(snapshot.records) > self._limits.max_window_results
+                or len(visible_records) > request.limit
+            )
+            return HostWindowListResult(
+                request_id=request.request_id,
+                host_id=self._host_id,
+                host_epoch=self._host_epoch,
+                windows=descriptors,
+                truncated=truncated,
+                created_at=request.created_at,
+            )
 
     async def launch_application(
         self,
@@ -407,20 +777,60 @@ class WindowsHostAutomationAdapter:
                 return
             self._process_ids.clear()
             self._native_processes.clear()
+            self._last_process_records.clear()
+            self._last_window_process_records.clear()
+            self._window_ids.clear()
+            self._native_windows.clear()
             self._closed = True
 
     def _refresh_process_identities(
         self,
         records: tuple[_NativeProcessRecord, ...],
     ) -> None:
-        active_keys = {(record.pid, record.creation_time) for record in records}
+        self._last_process_records = {
+            (record.pid, record.creation_time): record for record in records
+        }
+        self._rebuild_process_identity_state()
+
+    def _refresh_window_identities(
+        self,
+        records: tuple[_NativeWindowRecord, ...],
+    ) -> None:
+        self._last_window_process_records = {
+            (record.pid, record.creation_time): _NativeProcessRecord(
+                pid=record.pid,
+                creation_time=record.creation_time,
+                label="",
+            )
+            for record in records
+        }
+        self._rebuild_process_identity_state()
+
+        active_keys = {(record.hwnd, record.pid, record.creation_time) for record in records}
+        self._window_ids = {
+            key: window_id for key, window_id in self._window_ids.items() if key in active_keys
+        }
+
+        native_windows: dict[HostWindowId, _NativeWindowRecord] = {}
+        for record in records:
+            key = (record.hwnd, record.pid, record.creation_time)
+            window_id = self._window_ids.get(key)
+            if window_id is None:
+                window_id = HostWindowId()
+                self._window_ids[key] = window_id
+            native_windows[window_id] = record
+        self._native_windows = native_windows
+
+    def _rebuild_process_identity_state(self) -> None:
+        active_records = dict(self._last_window_process_records)
+        active_records.update(self._last_process_records)
+        active_keys = set(active_records)
         self._process_ids = {
             key: process_id for key, process_id in self._process_ids.items() if key in active_keys
         }
 
         native_processes: dict[HostProcessId, _NativeProcessRecord] = {}
-        for record in records:
-            key = (record.pid, record.creation_time)
+        for key, record in active_records.items():
             process_id = self._process_ids.get(key)
             if process_id is None:
                 process_id = HostProcessId()
@@ -437,6 +847,20 @@ class WindowsHostAutomationAdapter:
             label=_content_minimized_process_label(
                 record.label,
                 maximum_characters=self._limits.max_process_label_chars,
+            ),
+        )
+
+    def _window_descriptor_for(self, record: _NativeWindowRecord) -> HostWindowDescriptor:
+        process_id = self._process_ids[(record.pid, record.creation_time)]
+        window_id = self._window_ids[(record.hwnd, record.pid, record.creation_time)]
+        return HostWindowDescriptor(
+            host_id=self._host_id,
+            host_epoch=self._host_epoch,
+            window_id=window_id,
+            process_id=process_id,
+            title=_content_minimized_window_title(
+                record.title,
+                maximum_characters=self._limits.max_window_title_chars,
             ),
         )
 
@@ -460,4 +884,18 @@ def _content_minimized_process_label(value: str, *, maximum_characters: int) -> 
         raise ValueError("maximum_characters must be a positive integer")
 
     normalized = value.replace("/", "\\").rsplit("\\", 1)[-1].replace("\x00", "").strip()
+    return normalized[:maximum_characters]
+
+
+def _content_minimized_window_title(value: str, *, maximum_characters: int) -> str:
+    if not isinstance(value, str):
+        raise TypeError("window title must be a string")
+    if (
+        isinstance(maximum_characters, bool)
+        or not isinstance(maximum_characters, int)
+        or maximum_characters <= 0
+    ):
+        raise ValueError("maximum_characters must be a positive integer")
+
+    normalized = value.replace("\x00", "").strip()
     return normalized[:maximum_characters]
