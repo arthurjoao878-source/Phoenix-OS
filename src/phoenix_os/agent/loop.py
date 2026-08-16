@@ -508,6 +508,7 @@ class AgentLoop:
                         self._registry.resolve_adapter(invocation.tool_id),
                         invocation,
                         resolution.descriptor,
+                        context=context,
                         timeout_seconds=state.budget.tool_timeout_seconds(now=self._now()),
                         cancellation_grace=request.limits.cancellation_grace.total_seconds(),
                         cancellation=token,

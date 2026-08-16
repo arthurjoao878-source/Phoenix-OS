@@ -33,6 +33,7 @@ from phoenix_os.agent import (
     ToolInvocationResult,
     ToolOutputSchema,
     ToolRegistry,
+    ToolResultStatus,
     ToolSchema,
     ToolSchemaType,
 )
@@ -156,6 +157,37 @@ class _FailingTool:
     async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
         self.calls += 1
         raise RuntimeError("private external failure")
+
+
+class _ContextualLoopTool:
+    adapter_id = "contextual-loop-tool"
+    tool_id = ToolId("lookup")
+
+    def __init__(self) -> None:
+        self.contexts: list[SecurityContext] = []
+        self.plain_calls = 0
+
+    async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+        del request
+        self.plain_calls += 1
+        raise AssertionError("AgentLoop used legacy invoke path")
+
+    async def invoke_with_context(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+    ) -> ToolInvocationResult:
+        self.contexts.append(context)
+        return ToolInvocationResult(
+            run_id=request.run_id,
+            step_id=request.step_id,
+            call_id=request.call_id,
+            tool_id=request.tool_id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={"value": "contextual"},
+            started_at=request.created_at,
+            completed_at=request.created_at,
+        )
 
 
 def _loop(
@@ -362,3 +394,30 @@ async def test_pre_cancelled_run_rejects_all_new_work() -> None:
     assert run_auth.requests == []
     assert model_auth.requests == []
     assert tool_auth.requests == []
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_forwards_exact_security_context_to_contextual_tool() -> None:
+    registry = ToolRegistry()
+    descriptor = _descriptor(adapter_id="contextual-loop-tool")
+    adapter = _ContextualLoopTool()
+    registry.register_tool(
+        descriptor,
+        resolver=StaticToolResourceResolver("static-resource", "record:fixed"),
+        adapter=adapter,
+    )
+    loop, _run_auth, _model_auth, _tool_auth = _loop(
+        (
+            DeterministicToolTurn(ToolId("lookup"), {"value": "input"}),
+            DeterministicFinalTurn("complete"),
+        ),
+        registry=registry,
+    )
+    context = _context()
+
+    result = await loop.run(_request(), context)
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert adapter.contexts == [context]
+    assert adapter.contexts[0] is context
+    assert adapter.plain_calls == 0

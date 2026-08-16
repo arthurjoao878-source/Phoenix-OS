@@ -28,7 +28,8 @@ from phoenix_os.agent.fake import (
 )
 from phoenix_os.agent.schemas import validate_tool_output
 from phoenix_os.agent.state import AgentCancellationToken
-from phoenix_os.agent.tools import ToolAdapter, ToolDescriptor
+from phoenix_os.agent.tools import ContextualToolAdapter, ToolAdapter, ToolDescriptor
+from phoenix_os.policy import SecurityContext
 
 
 def _utc_now() -> datetime:
@@ -200,6 +201,7 @@ class BoundedAgentExecutor:
         request: ToolInvocationRequest,
         descriptor: ToolDescriptor,
         *,
+        context: SecurityContext | None = None,
         timeout_seconds: float,
         cancellation_grace: float,
         cancellation: AgentCancellationToken,
@@ -212,6 +214,8 @@ class BoundedAgentExecutor:
             raise TypeError("request must be ToolInvocationRequest")
         if not isinstance(descriptor, ToolDescriptor):
             raise TypeError("descriptor must be ToolDescriptor")
+        if context is not None and not isinstance(context, SecurityContext):
+            raise TypeError("context must be SecurityContext or None")
         if not isinstance(cancellation, AgentCancellationToken):
             raise TypeError("cancellation must be AgentCancellationToken")
         if adapter.tool_id != request.tool_id or descriptor.tool_id != request.tool_id:
@@ -226,9 +230,17 @@ class BoundedAgentExecutor:
             raise AgentTimeoutError()
         effective_timeout = min(timeout, descriptor.timeout.total_seconds(), remaining)
 
+        if isinstance(adapter, ContextualToolAdapter) and context is None:
+            raise ToolExecutionError()
+
         try:
+            if isinstance(adapter, ContextualToolAdapter):
+                assert context is not None
+                operation = adapter.invoke_with_context(request, context)
+            else:
+                operation = adapter.invoke(request)
             result = await _await_controlled(
-                adapter.invoke(request),
+                operation,
                 timeout_seconds=effective_timeout,
                 cancellation_grace=grace,
                 cancellation=cancellation,

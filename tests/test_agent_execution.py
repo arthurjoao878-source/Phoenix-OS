@@ -1,5 +1,7 @@
 import asyncio
+from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -33,6 +35,8 @@ from phoenix_os.agent import (
     ToolSchema,
     ToolSchemaType,
 )
+from phoenix_os.agent.tools import ContextualToolAdapter
+from phoenix_os.policy import PrincipalType, SecurityContext
 
 _NOW = datetime(2026, 7, 27, 12, tzinfo=UTC)
 
@@ -184,6 +188,79 @@ class _MismatchedTool:
             started_at=_NOW,
             completed_at=_NOW,
         )
+
+
+class _ContextualTool:
+    adapter_id = "deterministic-read-only"
+    tool_id = ToolId("lookup")
+
+    def __init__(self) -> None:
+        self.contexts: list[SecurityContext] = []
+        self.plain_calls = 0
+
+    async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+        del request
+        self.plain_calls += 1
+        raise AssertionError("contextual adapter used legacy invoke path")
+
+    async def invoke_with_context(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+    ) -> ToolInvocationResult:
+        self.contexts.append(context)
+        return ToolInvocationResult(
+            run_id=request.run_id,
+            step_id=request.step_id,
+            call_id=request.call_id,
+            tool_id=request.tool_id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={"value": "contextual"},
+            started_at=request.created_at,
+            completed_at=request.created_at,
+        )
+
+
+class _SynchronouslyFailingLegacyTool:
+    adapter_id = "deterministic-read-only"
+    tool_id = ToolId("lookup")
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke(
+        self,
+        request: ToolInvocationRequest,
+    ) -> Coroutine[Any, Any, ToolInvocationResult]:
+        del request
+        self.calls += 1
+        raise RuntimeError("synchronous private legacy failure")
+
+
+class _SynchronouslyFailingContextualTool:
+    adapter_id = "deterministic-read-only"
+    tool_id = ToolId("lookup")
+
+    def __init__(self) -> None:
+        self.context_calls = 0
+        self.plain_calls = 0
+
+    def invoke(
+        self,
+        request: ToolInvocationRequest,
+    ) -> Coroutine[Any, Any, ToolInvocationResult]:
+        del request
+        self.plain_calls += 1
+        raise AssertionError("contextual adapter used legacy invoke path")
+
+    def invoke_with_context(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+    ) -> Coroutine[Any, Any, ToolInvocationResult]:
+        del request, context
+        self.context_calls += 1
+        raise RuntimeError("synchronous private contextual failure")
 
 
 @pytest.mark.asyncio
@@ -363,3 +440,83 @@ async def test_tool_result_identity_and_output_schema_fail_closed() -> None:
             cancellation_grace=0.1,
             cancellation=AgentCancellationToken(),
         )
+
+
+@pytest.mark.asyncio
+async def test_contextual_tool_requires_explicit_security_context_and_skips_legacy_path() -> None:
+    request = _invocation()
+    adapter = _ContextualTool()
+    context = SecurityContext(
+        principal="service:assistant",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+    )
+
+    assert isinstance(adapter, ContextualToolAdapter)
+    result = await BoundedAgentExecutor(clock=lambda: _NOW).invoke_tool(
+        adapter,
+        request,
+        _descriptor(),
+        context=context,
+        timeout_seconds=1,
+        cancellation_grace=0.1,
+        cancellation=AgentCancellationToken(),
+    )
+
+    assert result.status is ToolResultStatus.SUCCEEDED
+    assert result.output == {"value": "contextual"}
+    assert adapter.contexts == [context]
+    assert adapter.plain_calls == 0
+
+    missing_context = _ContextualTool()
+    with pytest.raises(ToolExecutionError):
+        await BoundedAgentExecutor(clock=lambda: _NOW).invoke_tool(
+            missing_context,
+            request,
+            _descriptor(),
+            timeout_seconds=1,
+            cancellation_grace=0.1,
+            cancellation=AgentCancellationToken(),
+        )
+    assert missing_context.contexts == []
+    assert missing_context.plain_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_initiation_failures_are_indeterminate_inside_executor_boundary() -> None:
+    executor = BoundedAgentExecutor(clock=lambda: _NOW)
+
+    legacy = _SynchronouslyFailingLegacyTool()
+    legacy_result = await executor.invoke_tool(
+        legacy,
+        _invocation(),
+        _descriptor(),
+        timeout_seconds=1,
+        cancellation_grace=0.1,
+        cancellation=AgentCancellationToken(),
+    )
+
+    assert legacy_result.status is ToolResultStatus.INDETERMINATE
+    assert legacy_result.error_code == "execution_indeterminate"
+    assert legacy.calls == 1
+
+    contextual = _SynchronouslyFailingContextualTool()
+    context = SecurityContext(
+        principal="service:assistant",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+    )
+    contextual_result = await executor.invoke_tool(
+        contextual,
+        _invocation(),
+        _descriptor(),
+        context=context,
+        timeout_seconds=1,
+        cancellation_grace=0.1,
+        cancellation=AgentCancellationToken(),
+    )
+
+    assert contextual_result.status is ToolResultStatus.INDETERMINATE
+    assert contextual_result.error_code == "execution_indeterminate"
+    assert contextual.context_calls == 1
+    assert contextual.plain_calls == 0

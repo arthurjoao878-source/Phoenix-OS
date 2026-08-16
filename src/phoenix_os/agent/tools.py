@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import MappingProxyType
-from typing import Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from phoenix_os.agent.contracts import (
     MAX_AGENT_ARGUMENT_BYTES,
@@ -32,6 +32,9 @@ from phoenix_os.agent.schemas import (
     tool_schema_from_record,
     tool_schema_to_record,
 )
+
+if TYPE_CHECKING:
+    from phoenix_os.policy import SecurityContext
 
 MAX_TOOL_DESCRIPTOR_NAME_LENGTH = 128
 MAX_TOOL_DESCRIPTOR_DESCRIPTION_LENGTH = 2_048
@@ -259,6 +262,17 @@ class ToolAdapter(Protocol):
     def tool_id(self) -> ToolId: ...
 
     async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult: ...
+
+
+@runtime_checkable
+class ContextualToolAdapter(ToolAdapter, Protocol):
+    """Trusted adapter that requires the current explicit security context."""
+
+    async def invoke_with_context(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+    ) -> ToolInvocationResult: ...
 
 
 @dataclass(frozen=True, slots=True)
