@@ -475,11 +475,11 @@ workspace behavior remains unchanged.
 
 ### Slice 4 - Graceful application close and approval
 
-- [ ] Exact `host.app.close` graceful semantics
-- [ ] No force-kill fallback
-- [ ] Action-bound destructive approval
-- [ ] Changed-target/stale-target approval invalidation
-- [ ] Durable indeterminate-effect integration tests
+- [x] Exact `host.app.close` graceful semantics
+- [x] No force-kill fallback
+- [x] Action-bound destructive approval
+- [x] Changed-target/stale-target approval invalidation
+- [x] Durable indeterminate-effect integration tests
 
 ### Slice 5 - Text clipboard boundary
 
