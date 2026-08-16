@@ -1,5 +1,16 @@
 """OS-neutral secure host-automation contracts and adapters."""
 
+from phoenix_os.host_automation.approval import (
+    HostAutomationApprovalChallenge,
+    HostAutomationApprovalEvidence,
+    HostAutomationApprovalGate,
+    HostAutomationApprovalId,
+    HostAutomationApprovalRecord,
+    HostAutomationApprovalSnapshot,
+    HostAutomationApprovalStatus,
+    HostAutomationApprovalVerification,
+    InMemoryHostAutomationApprovalGate,
+)
 from phoenix_os.host_automation.authorization import (
     HOST_APPLICATION_CLOSE_ACTION,
     HOST_APPLICATION_LAUNCH_ACTION,
@@ -69,6 +80,7 @@ from phoenix_os.host_automation.errors import (
     HostAutomationUnsupportedPlatformError,
 )
 from phoenix_os.host_automation.fake import DeterministicHostAutomationAdapter
+from phoenix_os.host_automation.service import HostAutomationService
 from phoenix_os.host_automation.windows import WindowsHostAutomationAdapter
 
 __all__ = [
@@ -95,7 +107,15 @@ __all__ = [
     "HostApplicationNotConfiguredError",
     "HostAutomationAdapter",
     "HostAutomationAdapterError",
+    "HostAutomationApprovalChallenge",
+    "HostAutomationApprovalEvidence",
+    "HostAutomationApprovalGate",
+    "HostAutomationApprovalId",
+    "HostAutomationApprovalRecord",
     "HostAutomationApprovalRejectedError",
+    "HostAutomationApprovalSnapshot",
+    "HostAutomationApprovalStatus",
+    "HostAutomationApprovalVerification",
     "HostAutomationAuthorizationRejectedError",
     "HostAutomationAuthorizer",
     "HostAutomationCancelledError",
@@ -105,6 +125,7 @@ __all__ = [
     "HostAutomationLimitExceededError",
     "HostAutomationLimits",
     "HostAutomationOperationDisabledError",
+    "HostAutomationService",
     "HostAutomationServiceUnavailableError",
     "HostAutomationStaleIdentityError",
     "HostAutomationTargetNotFoundError",
@@ -127,6 +148,7 @@ __all__ = [
     "HostWindowId",
     "HostWindowListRequest",
     "HostWindowListResult",
+    "InMemoryHostAutomationApprovalGate",
     "PolicyEngineHostAutomationAuthorizer",
     "WindowsHostAutomationAdapter",
     "host_application_resource",
