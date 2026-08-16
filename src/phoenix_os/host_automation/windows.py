@@ -45,6 +45,10 @@ from phoenix_os.host_automation.errors import (
     HostAutomationUnsafeDesktopError,
     HostAutomationUnsupportedPlatformError,
 )
+from phoenix_os.host_automation.windows_clipboard import (
+    _CtypesWindowsClipboardBackend,
+    _WindowsClipboardBackend,
+)
 from phoenix_os.host_automation.windows_effects import (
     WindowsApplicationProfile,
     _CtypesWindowsEffectsBackend,
@@ -606,6 +610,7 @@ class WindowsHostAutomationAdapter:
             _normalize_windows_application_profiles(application_profiles)
         )
         self._effects_backend: _WindowsEffectsBackend | None = None
+        self._clipboard_backend: _WindowsClipboardBackend | None = None
         self._host_epoch: HostEpoch = HostEpoch()
         self._backend: _WindowsDiscoveryBackend = _CtypesWindowsDiscoveryBackend()
         self._process_ids: dict[tuple[int, int], HostProcessId] = {}
@@ -933,8 +938,43 @@ class WindowsHostAutomationAdapter:
         if not isinstance(request, HostClipboardWriteRequest):
             raise TypeError("request must be HostClipboardWriteRequest")
         self._require_host(request.host_id)
-        self._ensure_open()
-        raise HostAutomationOperationDisabledError()
+
+        encoded = request.text.encode("utf-8")
+        if (
+            len(request.text) > self._limits.max_clipboard_text_chars
+            or len(encoded) > self._limits.max_clipboard_text_bytes
+        ):
+            raise HostAutomationLimitExceededError()
+
+        async with self._lock:
+            self._ensure_open()
+            backend = self._clipboard_backend_for_operation()
+            try:
+                await _run_windows_effect(
+                    lambda attempt: backend.write_text(
+                        request.text,
+                        attempt=attempt,
+                    ),
+                    timeout_seconds=self._limits.operation_timeout.total_seconds(),
+                )
+            except asyncio.CancelledError:
+                raise
+            except _WindowsEffectTimedOutError as exception:
+                raise HostAutomationTimeoutError() from exception
+            except _WindowsEffectIndeterminateError as exception:
+                raise HostAutomationIndeterminateEffectError() from exception
+            except _WindowsEffectUnsafeDesktopError as exception:
+                raise HostAutomationUnsafeDesktopError() from exception
+            except Exception as exception:
+                raise HostAutomationAdapterError() from exception
+
+            return HostClipboardWriteResult(
+                request_id=request.request_id,
+                host_id=self._host_id,
+                written_characters=len(request.text),
+                written_bytes=len(encoded),
+                created_at=request.created_at,
+            )
 
     async def close(self) -> None:
         async with self._lock:
@@ -1046,6 +1086,13 @@ class WindowsHostAutomationAdapter:
         if backend is None:
             backend = _CtypesWindowsEffectsBackend()
             self._effects_backend = backend
+        return backend
+
+    def _clipboard_backend_for_operation(self) -> _WindowsClipboardBackend:
+        backend = self._clipboard_backend
+        if backend is None:
+            backend = _CtypesWindowsClipboardBackend()
+            self._clipboard_backend = backend
         return backend
 
     def _ensure_open(self) -> None:

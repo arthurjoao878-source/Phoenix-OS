@@ -250,6 +250,12 @@ def test_clipboard_contracts_are_text_only_and_bounded_by_chars_and_utf8_bytes()
     assert read.host_id == host_id
     assert write.text == "Phoenix 🔥"
 
+    with pytest.raises(ValueError, match="must not contain NUL"):
+        HostClipboardWriteRequest(
+            host_id=host_id,
+            text="before\x00after",
+        )
+
     with pytest.raises(ValueError, match="character count"):
         HostClipboardWriteRequest(
             host_id=host_id,

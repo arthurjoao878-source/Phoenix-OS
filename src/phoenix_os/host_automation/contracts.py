@@ -413,16 +413,15 @@ class HostClipboardWriteRequest:
     def __post_init__(self) -> None:
         if not isinstance(self.host_id, HostId):
             raise TypeError("host_id must be HostId")
-        object.__setattr__(
-            self,
-            "text",
-            _bounded_unicode(
-                self.text,
-                label="clipboard text",
-                maximum_chars=MAX_HOST_CLIPBOARD_TEXT_CHARS,
-                maximum_bytes=MAX_HOST_CLIPBOARD_TEXT_BYTES,
-            ),
+        text = _bounded_unicode(
+            self.text,
+            label="clipboard text",
+            maximum_chars=MAX_HOST_CLIPBOARD_TEXT_CHARS,
+            maximum_bytes=MAX_HOST_CLIPBOARD_TEXT_BYTES,
         )
+        if "\x00" in text:
+            raise ValueError("clipboard text must not contain NUL")
+        object.__setattr__(self, "text", text)
         _require_uuid(self.request_id, label="request_id")
         _aware(self.created_at, label="created_at")
 
