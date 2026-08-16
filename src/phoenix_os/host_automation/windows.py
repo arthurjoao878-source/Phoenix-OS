@@ -48,6 +48,7 @@ from phoenix_os.host_automation.errors import (
 from phoenix_os.host_automation.windows_clipboard import (
     _CtypesWindowsClipboardBackend,
     _WindowsClipboardBackend,
+    _WindowsClipboardLimitExceededError,
 )
 from phoenix_os.host_automation.windows_effects import (
     WindowsApplicationProfile,
@@ -598,14 +599,18 @@ class WindowsHostAutomationAdapter:
         host_id: HostId | str = "local-windows",
         limits: HostAutomationLimits = _DEFAULT_WINDOWS_HOST_AUTOMATION_LIMITS,
         application_profiles: Sequence[WindowsApplicationProfile] = (),
+        clipboard_read_enabled: bool = False,
     ) -> None:
         if sys.platform != "win32":
             raise HostAutomationUnsupportedPlatformError()
         self._host_id: HostId = host_id if isinstance(host_id, HostId) else HostId(host_id)
         if not isinstance(limits, HostAutomationLimits):
             raise TypeError("limits must be HostAutomationLimits")
+        if not isinstance(clipboard_read_enabled, bool):
+            raise TypeError("clipboard_read_enabled must be a boolean")
 
         self._limits: HostAutomationLimits = limits
+        self._clipboard_read_enabled: bool = clipboard_read_enabled
         self._application_profiles: dict[HostApplicationId, WindowsApplicationProfile] = (
             _normalize_windows_application_profiles(application_profiles)
         )
@@ -929,7 +934,48 @@ class WindowsHostAutomationAdapter:
             raise TypeError("request must be HostClipboardReadRequest")
         self._require_host(request.host_id)
         self._ensure_open()
-        raise HostAutomationOperationDisabledError()
+        if not self._clipboard_read_enabled:
+            raise HostAutomationOperationDisabledError()
+
+        async with self._lock:
+            self._ensure_open()
+            backend = self._clipboard_backend_for_operation()
+            try:
+                text = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        backend.read_text,
+                        maximum_chars=self._limits.max_clipboard_text_chars,
+                        maximum_utf8_bytes=self._limits.max_clipboard_text_bytes,
+                    ),
+                    timeout=self._limits.operation_timeout.total_seconds(),
+                )
+            except TimeoutError as exception:
+                raise HostAutomationTimeoutError() from exception
+            except asyncio.CancelledError:
+                raise
+            except _WindowsClipboardLimitExceededError as exception:
+                raise HostAutomationLimitExceededError() from exception
+            except _WindowsEffectUnsafeDesktopError as exception:
+                raise HostAutomationUnsafeDesktopError() from exception
+            except Exception as exception:
+                raise HostAutomationAdapterError() from exception
+
+            try:
+                encoded = text.encode("utf-8")
+            except UnicodeEncodeError as exception:
+                raise HostAutomationAdapterError() from exception
+            if (
+                len(text) > self._limits.max_clipboard_text_chars
+                or len(encoded) > self._limits.max_clipboard_text_bytes
+            ):
+                raise HostAutomationLimitExceededError()
+
+            return HostClipboardReadResult(
+                request_id=request.request_id,
+                host_id=self._host_id,
+                text=text,
+                created_at=request.created_at,
+            )
 
     async def write_clipboard(
         self,

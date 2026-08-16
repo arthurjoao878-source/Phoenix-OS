@@ -18,7 +18,18 @@ _WINDOWS_WS_POPUP = 0x80000000
 _WINDOWS_MAX_DESKTOP_NAME_CHARS = 256
 
 
+class _WindowsClipboardLimitExceededError(RuntimeError):
+    pass
+
+
 class _WindowsClipboardBackend(Protocol):
+    def read_text(
+        self,
+        *,
+        maximum_chars: int,
+        maximum_utf8_bytes: int,
+    ) -> str: ...
+
     def write_text(
         self,
         text: str,
@@ -28,7 +39,7 @@ class _WindowsClipboardBackend(Protocol):
 
 
 class _CtypesWindowsClipboardBackend:
-    """Write one immediate-rendered CF_UNICODETEXT payload without format expansion."""
+    """Read/write bounded plain text through CF_UNICODETEXT."""
 
     def __init__(self) -> None:
         if sys.platform != "win32":
@@ -46,6 +57,102 @@ class _CtypesWindowsClipboardBackend:
         self._kernel32: Any = win_dll("kernel32", use_last_error=True)
         self._user32: Any = win_dll("user32", use_last_error=True)
         self._configure_signatures()
+
+    def read_text(
+        self,
+        *,
+        maximum_chars: int,
+        maximum_utf8_bytes: int,
+    ) -> str:
+        if (
+            isinstance(maximum_chars, bool)
+            or not isinstance(maximum_chars, int)
+            or maximum_chars <= 0
+        ):
+            raise ValueError("maximum_chars must be a positive integer")
+        if (
+            isinstance(maximum_utf8_bytes, bool)
+            or not isinstance(maximum_utf8_bytes, int)
+            or maximum_utf8_bytes <= 0
+        ):
+            raise ValueError("maximum_utf8_bytes must be a positive integer")
+
+        before = self._current_desktop_context()
+        opened = False
+        memory = None
+        locked = False
+        try:
+            if not self._user32.OpenClipboard(None):
+                raise RuntimeError("Windows clipboard is unavailable")
+            opened = True
+
+            after_open = self._current_desktop_context()
+            if after_open != before:
+                raise _WindowsEffectUnsafeDesktopError()
+
+            if not self._user32.IsClipboardFormatAvailable(_WINDOWS_CF_UNICODETEXT):
+                return ""
+
+            memory = self._user32.GetClipboardData(_WINDOWS_CF_UNICODETEXT)
+            if not memory:
+                raise RuntimeError("Windows Unicode clipboard data is unavailable")
+
+            allocation_bytes = int(self._kernel32.GlobalSize(memory))
+            if allocation_bytes <= 0:
+                raise RuntimeError("Windows clipboard data size is unavailable")
+
+            pointer = self._kernel32.GlobalLock(memory)
+            if not pointer:
+                raise RuntimeError("Windows clipboard data lock failed")
+            locked = True
+
+            available_utf16_units = allocation_bytes // 2
+            maximum_utf16_units = min(maximum_chars * 2, maximum_utf8_bytes)
+            scan_utf16_units = min(
+                available_utf16_units,
+                maximum_utf16_units + 1,
+            )
+            if scan_utf16_units <= 0:
+                raise RuntimeError("Windows Unicode clipboard data is malformed")
+
+            units = self._ctypes.cast(
+                pointer,
+                self._ctypes.POINTER(self._ctypes.c_uint16),
+            )
+            terminator_index = None
+            for index in range(scan_utf16_units):
+                if units[index] == 0:
+                    terminator_index = index
+                    break
+
+            if terminator_index is None:
+                if available_utf16_units > maximum_utf16_units:
+                    raise _WindowsClipboardLimitExceededError()
+                raise RuntimeError("Windows Unicode clipboard data is not NUL-terminated")
+
+            payload = bytes(self._ctypes.string_at(pointer, terminator_index * 2))
+            try:
+                text = payload.decode("utf-16-le")
+                encoded = text.encode("utf-8")
+            except UnicodeError as exception:
+                raise RuntimeError("Windows Unicode clipboard data is malformed") from exception
+
+            if len(text) > maximum_chars or len(encoded) > maximum_utf8_bytes:
+                raise _WindowsClipboardLimitExceededError()
+
+            after_read = self._current_desktop_context()
+            if after_read != before:
+                raise _WindowsEffectUnsafeDesktopError()
+            return text
+        finally:
+            active_exception = sys.exc_info()[0] is not None
+            cleanup_failed = False
+            if locked and memory:
+                self._kernel32.GlobalUnlock(memory)
+            if opened and not self._user32.CloseClipboard():
+                cleanup_failed = True
+            if cleanup_failed and not active_exception:
+                raise RuntimeError("Windows clipboard cleanup failed")
 
     def write_text(
         self,
@@ -184,6 +291,8 @@ class _CtypesWindowsClipboardBackend:
         self._kernel32.GlobalAlloc.restype = wintypes.HANDLE
         self._kernel32.GlobalLock.argtypes = [wintypes.HANDLE]
         self._kernel32.GlobalLock.restype = ctypes.c_void_p
+        self._kernel32.GlobalSize.argtypes = [wintypes.HANDLE]
+        self._kernel32.GlobalSize.restype = ctypes.c_size_t
         self._kernel32.GlobalUnlock.argtypes = [wintypes.HANDLE]
         self._kernel32.GlobalUnlock.restype = wintypes.BOOL
         self._kernel32.GlobalFree.argtypes = [wintypes.HANDLE]
@@ -219,6 +328,10 @@ class _CtypesWindowsClipboardBackend:
         self._user32.DestroyWindow.restype = wintypes.BOOL
         self._user32.OpenClipboard.argtypes = [wintypes.HWND]
         self._user32.OpenClipboard.restype = wintypes.BOOL
+        self._user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+        self._user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+        self._user32.GetClipboardData.argtypes = [wintypes.UINT]
+        self._user32.GetClipboardData.restype = wintypes.HANDLE
         self._user32.CloseClipboard.argtypes = []
         self._user32.CloseClipboard.restype = wintypes.BOOL
         self._user32.EmptyClipboard.argtypes = []
