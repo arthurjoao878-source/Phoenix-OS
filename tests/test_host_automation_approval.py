@@ -113,6 +113,55 @@ async def test_host_close_approval_is_single_use() -> None:
 
 
 @pytest.mark.asyncio
+async def test_host_close_approval_rejects_tampered_action_binding() -> None:
+    gate = InMemoryHostAutomationApprovalGate(clock=_Clock(_NOW))
+    request = _request()
+    context = _context()
+    challenge = await gate.request_application_close(request, context)
+    evidence = await gate.approve(challenge.approval_id, _approver())
+
+    # Simulate tampering after trusted construction/serialization.
+    object.__setattr__(evidence, "action", "host.app.launch")
+
+    with pytest.raises(HostAutomationApprovalRejectedError):
+        await gate.verify_and_consume_application_close(
+            evidence,
+            request,
+            context,
+        )
+
+    record = await gate.lookup(challenge.approval_id)
+    assert record is not None
+    assert record.status is HostAutomationApprovalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_approved_host_close_approval_expires_before_consumption() -> None:
+    clock = _Clock(_NOW)
+    gate = InMemoryHostAutomationApprovalGate(
+        ttl=timedelta(seconds=30),
+        clock=clock,
+    )
+    request = _request()
+    context = _context()
+    challenge = await gate.request_application_close(request, context)
+    evidence = await gate.approve(challenge.approval_id, _approver())
+
+    clock.advance(timedelta(seconds=30))
+
+    with pytest.raises(HostAutomationApprovalRejectedError):
+        await gate.verify_and_consume_application_close(
+            evidence,
+            request,
+            context,
+        )
+
+    record = await gate.lookup(challenge.approval_id)
+    assert record is not None
+    assert record.status is HostAutomationApprovalStatus.APPROVED
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutation",
     ["host", "epoch", "application", "process", "request", "principal"],
