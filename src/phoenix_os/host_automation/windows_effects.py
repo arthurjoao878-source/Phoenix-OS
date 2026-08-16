@@ -1,4 +1,4 @@
-"""Windows-specific configured application launch, focus, and effect helpers."""
+"""Windows-specific configured application launch, focus, close, and effect helpers."""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ from typing import Any, Protocol
 from phoenix_os.host_automation.contracts import HostApplicationId
 
 _WINDOWS_MAX_DESKTOP_NAME_CHARS = 256
+_WINDOWS_MAX_CLOSE_WINDOWS = 256
+_WINDOWS_WM_CLOSE = 0x0010
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +87,22 @@ class _WindowsFocusTarget:
             raise ValueError("focus target creation_time must be non-negative")
 
 
+@dataclass(frozen=True, slots=True)
+class _WindowsCloseTarget:
+    pid: int
+    creation_time: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.pid, bool) or not isinstance(self.pid, int) or self.pid <= 0:
+            raise ValueError("close target pid must be a positive integer")
+        if (
+            isinstance(self.creation_time, bool)
+            or not isinstance(self.creation_time, int)
+            or self.creation_time < 0
+        ):
+            raise ValueError("close target creation_time must be non-negative")
+
+
 class _WindowsEffectPreventedError(RuntimeError):
     pass
 
@@ -143,6 +161,13 @@ class _WindowsEffectsBackend(Protocol):
         attempt: _WindowsEffectAttempt,
     ) -> None: ...
 
+    def close_application(
+        self,
+        target: _WindowsCloseTarget,
+        *,
+        attempt: _WindowsEffectAttempt,
+    ) -> None: ...
+
 
 class _CtypesWindowsEffectsBackend:
     """Launch configured executables with CreateProcessW and no model command line."""
@@ -195,6 +220,11 @@ class _CtypesWindowsEffectsBackend:
 
         self._startup_info_type: type[Any] = STARTUPINFOW
         self._process_information_type: type[Any] = PROCESS_INFORMATION
+        self._enum_windows_proc_type: Any = ctypes.WINFUNCTYPE(
+            wintypes.BOOL,
+            wintypes.HWND,
+            wintypes.LPARAM,
+        )
         self._configure_signatures()
 
     def launch_application(
@@ -271,6 +301,90 @@ class _CtypesWindowsEffectsBackend:
             raise _WindowsEffectPreventedError()
         if not bool(self._user32.SetForegroundWindow(target.hwnd)):
             raise RuntimeError("configured Windows window focus failed")
+
+    def close_application(
+        self,
+        target: _WindowsCloseTarget,
+        *,
+        attempt: _WindowsEffectAttempt,
+    ) -> None:
+        if not isinstance(target, _WindowsCloseTarget):
+            raise TypeError("target must be _WindowsCloseTarget")
+        if not isinstance(attempt, _WindowsEffectAttempt):
+            raise TypeError("attempt must be _WindowsEffectAttempt")
+
+        before = self._current_desktop_context()
+        self._revalidate_close_target(target, expected_session_id=before[0])
+        hwnds = self._enumerate_close_windows(target.pid)
+        if not hwnds:
+            raise _WindowsEffectStaleIdentityError()
+
+        after = self._current_desktop_context()
+        if after != before:
+            raise _WindowsEffectUnsafeDesktopError()
+
+        self._revalidate_close_target(target, expected_session_id=before[0])
+        for hwnd in hwnds:
+            self._revalidate_close_window(hwnd, target)
+
+        if not attempt.begin_effect():
+            raise _WindowsEffectPreventedError()
+
+        for hwnd in hwnds:
+            try:
+                self._revalidate_close_window(hwnd, target)
+            except _WindowsEffectStaleIdentityError as exception:
+                raise _WindowsEffectIndeterminateError() from exception
+            if not bool(self._user32.PostMessageW(hwnd, _WINDOWS_WM_CLOSE, 0, 0)):
+                raise _WindowsEffectIndeterminateError()
+
+    def _revalidate_close_target(
+        self,
+        target: _WindowsCloseTarget,
+        *,
+        expected_session_id: int,
+    ) -> None:
+        creation_before = self._read_process_creation_time(target.pid)
+        if creation_before != target.creation_time:
+            raise _WindowsEffectStaleIdentityError()
+        if self._process_session_id(target.pid) != expected_session_id:
+            raise _WindowsEffectUnsafeDesktopError()
+        creation_after = self._read_process_creation_time(target.pid)
+        if creation_after != target.creation_time:
+            raise _WindowsEffectStaleIdentityError()
+        if self._process_session_id(target.pid) != expected_session_id:
+            raise _WindowsEffectUnsafeDesktopError()
+
+    def _revalidate_close_window(self, hwnd: int, target: _WindowsCloseTarget) -> None:
+        if not bool(self._user32.IsWindow(hwnd)):
+            raise _WindowsEffectStaleIdentityError()
+        if self._window_process_id(hwnd) != target.pid:
+            raise _WindowsEffectStaleIdentityError()
+        if self._read_process_creation_time(target.pid) != target.creation_time:
+            raise _WindowsEffectStaleIdentityError()
+
+    def _enumerate_close_windows(self, pid: int) -> tuple[int, ...]:
+        handles: list[int] = []
+        truncated = False
+
+        def callback_impl(hwnd: int, _lparam: int) -> bool:
+            nonlocal truncated
+            handle = hwnd
+            if self._window_process_id(handle) != pid:
+                return True
+            if len(handles) >= _WINDOWS_MAX_CLOSE_WINDOWS:
+                truncated = True
+                return False
+            handles.append(handle)
+            return True
+
+        callback = self._enum_windows_proc_type(callback_impl)
+        success = bool(self._user32.EnumWindows(callback, 0))
+        if truncated:
+            raise RuntimeError("configured Windows application close window limit exceeded")
+        if not success:
+            raise RuntimeError("configured Windows application close enumeration failed")
+        return tuple(dict.fromkeys(handles))
 
     def _revalidate_focus_target(
         self,
@@ -437,6 +551,15 @@ class _CtypesWindowsEffectsBackend:
             ctypes.POINTER(wintypes.DWORD),
         ]
         self._user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        self._user32.EnumWindows.argtypes = [self._enum_windows_proc_type, wintypes.LPARAM]
+        self._user32.EnumWindows.restype = wintypes.BOOL
+        self._user32.PostMessageW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        self._user32.PostMessageW.restype = wintypes.BOOL
         self._user32.SetForegroundWindow.argtypes = [wintypes.HWND]
         self._user32.SetForegroundWindow.restype = wintypes.BOOL
         self._user32.OpenInputDesktop.argtypes = [

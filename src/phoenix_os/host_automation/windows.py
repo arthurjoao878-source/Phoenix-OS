@@ -50,6 +50,7 @@ from phoenix_os.host_automation.windows_effects import (
     _CtypesWindowsEffectsBackend,
     _normalize_windows_application_profiles,
     _run_windows_effect,
+    _WindowsCloseTarget,
     _WindowsEffectIndeterminateError,
     _WindowsEffectsBackend,
     _WindowsEffectStaleIdentityError,
@@ -867,8 +868,56 @@ class WindowsHostAutomationAdapter:
         if not isinstance(request, HostApplicationCloseRequest):
             raise TypeError("request must be HostApplicationCloseRequest")
         self._require_host(request.host_id)
-        self._ensure_open()
-        raise HostAutomationOperationDisabledError()
+
+        async with self._lock:
+            self._ensure_open()
+            if request.host_epoch != self._host_epoch:
+                raise HostAutomationStaleIdentityError()
+
+            native_process = self._native_processes.get(request.process_id)
+            if native_process is None:
+                raise HostAutomationTargetNotFoundError()
+
+            native_key = (native_process.pid, native_process.creation_time)
+            if self._process_ids.get(native_key) != request.process_id:
+                raise HostAutomationStaleIdentityError()
+            if self._application_ids_by_native_process.get(native_key) != request.application_id:
+                raise HostAutomationStaleIdentityError()
+
+            backend = self._effects_backend_for_operation()
+            target = _WindowsCloseTarget(
+                pid=native_process.pid,
+                creation_time=native_process.creation_time,
+            )
+            try:
+                await _run_windows_effect(
+                    lambda attempt: backend.close_application(
+                        target,
+                        attempt=attempt,
+                    ),
+                    timeout_seconds=self._limits.operation_timeout.total_seconds(),
+                )
+            except asyncio.CancelledError:
+                raise
+            except _WindowsEffectTimedOutError as exception:
+                raise HostAutomationTimeoutError() from exception
+            except _WindowsEffectIndeterminateError as exception:
+                raise HostAutomationIndeterminateEffectError() from exception
+            except _WindowsEffectStaleIdentityError as exception:
+                raise HostAutomationStaleIdentityError() from exception
+            except _WindowsEffectUnsafeDesktopError as exception:
+                raise HostAutomationUnsafeDesktopError() from exception
+            except Exception as exception:
+                raise HostAutomationAdapterError() from exception
+
+            return HostApplicationCloseResult(
+                request_id=request.request_id,
+                host_id=self._host_id,
+                host_epoch=self._host_epoch,
+                application_id=request.application_id,
+                process_id=request.process_id,
+                created_at=request.created_at,
+            )
 
     async def read_clipboard(self, request: HostClipboardReadRequest) -> HostClipboardReadResult:
         if not isinstance(request, HostClipboardReadRequest):
