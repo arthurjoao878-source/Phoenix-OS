@@ -1,11 +1,14 @@
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 
 from phoenix_os.agent import (
     AgentAuthorizationRejectedError,
+    AgentJsonInput,
     AgentRunId,
     AgentSchemaError,
     AgentStepId,
@@ -13,6 +16,7 @@ from phoenix_os.agent import (
     ToolCallId,
     ToolEffect,
     ToolExecutionError,
+    ToolId,
     ToolInvocationRequest,
     ToolRegistry,
 )
@@ -160,8 +164,8 @@ class _MismatchedListResultService(HostAutomationService):
 
 def _invocation(
     *,
-    tool_id,
-    arguments: dict[str, object],
+    tool_id: ToolId,
+    arguments: Mapping[str, AgentJsonInput],
     resource: str,
 ) -> ToolInvocationRequest:
     return ToolInvocationRequest(
@@ -283,24 +287,26 @@ async def test_read_only_host_tool_adapters_project_only_reviewed_untrusted_data
     processes = process_result.output["processes"]
     assert isinstance(processes, tuple)
     assert len(processes) == 1
-    assert processes[0]["process_id"] == str(_PROCESS_ID)
-    assert processes[0]["application_id"] == str(_APP_ID)
-    assert processes[0]["label"] == _MALICIOUS_LABEL
+    process = cast(Mapping[str, AgentJsonInput], processes[0])
+    assert process["process_id"] == str(_PROCESS_ID)
+    assert process["application_id"] == str(_APP_ID)
+    assert process["label"] == _MALICIOUS_LABEL
     assert "host_id" not in process_result.output
-    assert "pid" not in processes[0]
-    assert "command_line" not in processes[0]
+    assert "pid" not in process
+    assert "command_line" not in process
 
     assert window_result.output is not None
     assert window_result.output["host_epoch"] == str(_EPOCH)
     windows = window_result.output["windows"]
     assert isinstance(windows, tuple)
     assert len(windows) == 1
-    assert windows[0]["window_id"] == str(_WINDOW_ID)
-    assert windows[0]["process_id"] == str(_PROCESS_ID)
-    assert windows[0]["application_id"] == str(_APP_ID)
-    assert windows[0]["title"] == _MALICIOUS_TITLE
+    window = cast(Mapping[str, AgentJsonInput], windows[0])
+    assert window["window_id"] == str(_WINDOW_ID)
+    assert window["process_id"] == str(_PROCESS_ID)
+    assert window["application_id"] == str(_APP_ID)
+    assert window["title"] == _MALICIOUS_TITLE
     assert "host_id" not in window_result.output
-    assert "hwnd" not in windows[0]
+    assert "hwnd" not in window
 
     assert process_resource not in _MALICIOUS_LABEL
     assert window_resource not in _MALICIOUS_TITLE
