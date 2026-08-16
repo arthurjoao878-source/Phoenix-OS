@@ -82,10 +82,13 @@ def _bounded_unicode(
         raise ValueError(f"{label} must not be blank")
     if len(value) > maximum_chars:
         raise ValueError(f"{label} exceeds the maximum character count")
+    encoded: bytes | None
     try:
         encoded = value.encode("utf-8")
-    except UnicodeEncodeError as exception:
-        raise ValueError(f"{label} is not valid Unicode") from exception
+    except UnicodeEncodeError:
+        encoded = None
+    if encoded is None:
+        raise ValueError(f"{label} is not valid Unicode")
     if maximum_bytes is not None and len(encoded) > maximum_bytes:
         raise ValueError(f"{label} exceeds the maximum byte count")
     return value
@@ -406,7 +409,7 @@ class HostClipboardReadRequest:
 @dataclass(frozen=True, slots=True)
 class HostClipboardWriteRequest:
     host_id: HostId
-    text: str
+    text: str = field(repr=False)
     request_id: UUID = field(default_factory=uuid4)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -598,23 +601,22 @@ class HostApplicationCloseResult:
 class HostClipboardReadResult:
     request_id: UUID
     host_id: HostId
-    text: str
+    text: str = field(repr=False)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
         _require_uuid(self.request_id, label="request_id")
         if not isinstance(self.host_id, HostId):
             raise TypeError("host_id must be HostId")
-        object.__setattr__(
-            self,
-            "text",
-            _bounded_unicode(
-                self.text,
-                label="clipboard text",
-                maximum_chars=MAX_HOST_CLIPBOARD_TEXT_CHARS,
-                maximum_bytes=MAX_HOST_CLIPBOARD_TEXT_BYTES,
-            ),
+        text = _bounded_unicode(
+            self.text,
+            label="clipboard text",
+            maximum_chars=MAX_HOST_CLIPBOARD_TEXT_CHARS,
+            maximum_bytes=MAX_HOST_CLIPBOARD_TEXT_BYTES,
         )
+        if "\x00" in text:
+            raise ValueError("clipboard text must not contain NUL")
+        object.__setattr__(self, "text", text)
         _aware(self.created_at, label="created_at")
 
 

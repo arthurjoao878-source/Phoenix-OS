@@ -940,6 +940,8 @@ class WindowsHostAutomationAdapter:
         async with self._lock:
             self._ensure_open()
             backend = self._clipboard_backend_for_operation()
+            text: object = ""
+            failure: Exception | None = None
             try:
                 text = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -949,21 +951,29 @@ class WindowsHostAutomationAdapter:
                     ),
                     timeout=self._limits.operation_timeout.total_seconds(),
                 )
-            except TimeoutError as exception:
-                raise HostAutomationTimeoutError() from exception
+            except TimeoutError:
+                failure = HostAutomationTimeoutError()
             except asyncio.CancelledError:
                 raise
-            except _WindowsClipboardLimitExceededError as exception:
-                raise HostAutomationLimitExceededError() from exception
-            except _WindowsEffectUnsafeDesktopError as exception:
-                raise HostAutomationUnsafeDesktopError() from exception
-            except Exception as exception:
-                raise HostAutomationAdapterError() from exception
+            except _WindowsClipboardLimitExceededError:
+                failure = HostAutomationLimitExceededError()
+            except _WindowsEffectUnsafeDesktopError:
+                failure = HostAutomationUnsafeDesktopError()
+            except Exception:
+                failure = HostAutomationAdapterError()
 
+            if failure is not None:
+                raise failure
+            if not isinstance(text, str):
+                raise HostAutomationAdapterError()
+
+            encoded: bytes | None
             try:
                 encoded = text.encode("utf-8")
-            except UnicodeEncodeError as exception:
-                raise HostAutomationAdapterError() from exception
+            except UnicodeEncodeError:
+                encoded = None
+            if encoded is None:
+                raise HostAutomationAdapterError()
             if (
                 len(text) > self._limits.max_clipboard_text_chars
                 or len(encoded) > self._limits.max_clipboard_text_bytes
@@ -995,6 +1005,7 @@ class WindowsHostAutomationAdapter:
         async with self._lock:
             self._ensure_open()
             backend = self._clipboard_backend_for_operation()
+            failure: Exception | None = None
             try:
                 await _run_windows_effect(
                     lambda attempt: backend.write_text(
@@ -1005,14 +1016,17 @@ class WindowsHostAutomationAdapter:
                 )
             except asyncio.CancelledError:
                 raise
-            except _WindowsEffectTimedOutError as exception:
-                raise HostAutomationTimeoutError() from exception
-            except _WindowsEffectIndeterminateError as exception:
-                raise HostAutomationIndeterminateEffectError() from exception
-            except _WindowsEffectUnsafeDesktopError as exception:
-                raise HostAutomationUnsafeDesktopError() from exception
-            except Exception as exception:
-                raise HostAutomationAdapterError() from exception
+            except _WindowsEffectTimedOutError:
+                failure = HostAutomationTimeoutError()
+            except _WindowsEffectIndeterminateError:
+                failure = HostAutomationIndeterminateEffectError()
+            except _WindowsEffectUnsafeDesktopError:
+                failure = HostAutomationUnsafeDesktopError()
+            except Exception:
+                failure = HostAutomationAdapterError()
+
+            if failure is not None:
+                raise failure
 
             return HostClipboardWriteResult(
                 request_id=request.request_id,
