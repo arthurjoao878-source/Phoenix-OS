@@ -483,11 +483,11 @@ workspace behavior remains unchanged.
 
 ### Slice 5 - Text clipboard boundary
 
-- [ ] Bounded text-only `host.clipboard.write`
-- [ ] Separately configurable `host.clipboard.read`
-- [ ] Sensitive-data redaction from operational surfaces
-- [ ] Clipboard injection and byte/Unicode limit regressions
-- [ ] No file/image/HTML/binary clipboard authority
+- [x] Bounded text-only `host.clipboard.write`
+- [x] Separately configurable `host.clipboard.read`
+- [x] Sensitive-data redaction from operational surfaces
+- [x] Clipboard injection and byte/Unicode limit regressions
+- [x] No file/image/HTML/binary clipboard authority
 
 ### Slice 6 - Agent integration, observability, administration, and Runtime ownership
 
