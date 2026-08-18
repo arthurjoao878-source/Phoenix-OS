@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from dataclasses import replace
+from time import monotonic_ns
+from typing import TypeVar
+from uuid import UUID
+
 from phoenix_os.host_automation.approval import (
     HostAutomationApprovalChallenge,
     HostAutomationApprovalEvidence,
@@ -26,11 +32,24 @@ from phoenix_os.host_automation.contracts import (
     HostWindowListResult,
 )
 from phoenix_os.host_automation.errors import (
+    HostAutomationAdapterError,
     HostAutomationApprovalRejectedError,
+    HostAutomationError,
+    HostAutomationErrorCode,
+    HostAutomationIndeterminateEffectError,
     HostAutomationServiceUnavailableError,
     HostAutomationStaleIdentityError,
 )
+from phoenix_os.host_automation.observer import (
+    HostAutomationObserver,
+    HostAutomationOperation,
+    HostAutomationOperationObservation,
+    HostAutomationOperationOutcome,
+    NullHostAutomationObserver,
+)
 from phoenix_os.policy import SecurityContext
+
+_T = TypeVar("_T")
 
 
 class HostAutomationService:
@@ -43,6 +62,7 @@ class HostAutomationService:
         authorizer: HostAutomationAuthorizer,
         approval_gate: HostAutomationApprovalGate | None = None,
         require_application_close_approval: bool = False,
+        observer: HostAutomationObserver | None = None,
     ) -> None:
         if not isinstance(adapter, HostAutomationAdapter):
             raise TypeError("adapter must implement HostAutomationAdapter")
@@ -57,11 +77,14 @@ class HostAutomationService:
             raise TypeError("require_application_close_approval must be a boolean")
         if require_application_close_approval and approval_gate is None:
             raise ValueError("application close approval requires an approval gate")
+        if observer is not None and not isinstance(observer, HostAutomationObserver):
+            raise TypeError("observer must implement HostAutomationObserver")
 
         self._adapter = adapter
         self._authorizer = authorizer
         self._approval_gate = approval_gate
         self._require_application_close_approval = require_application_close_approval
+        self._observer = observer if observer is not None else NullHostAutomationObserver()
         self._closed = False
 
     @property
@@ -73,36 +96,128 @@ class HostAutomationService:
         request: HostProcessListRequest,
         context: SecurityContext,
     ) -> HostProcessListResult:
-        self._ensure_open()
-        await self._authorizer.authorize_process_list(request, context)
-        return await self._adapter.list_processes(request)
+        started = self._started_observation(
+            HostAutomationOperation.PROCESS_LIST,
+            request.request_id,
+        )
+        await self._record(started, context)
+        started_ns = monotonic_ns()
+        try:
+            self._ensure_open()
+            await self._authorizer.authorize_process_list(request, context)
+            result = await self._call_readonly_adapter(self._adapter.list_processes(request))
+        except Exception as exception:
+            await self._record(
+                self._failed_observation(started, exception, started_ns),
+                context,
+            )
+            raise
+        await self._record(
+            replace(
+                started,
+                outcome=HostAutomationOperationOutcome.SUCCEEDED,
+                duration_ms=_duration_ms(started_ns),
+                result_count=len(result.processes),
+                truncated=result.truncated,
+            ),
+            context,
+        )
+        return result
 
     async def list_windows(
         self,
         request: HostWindowListRequest,
         context: SecurityContext,
     ) -> HostWindowListResult:
-        self._ensure_open()
-        await self._authorizer.authorize_window_list(request, context)
-        return await self._adapter.list_windows(request)
+        started = self._started_observation(
+            HostAutomationOperation.WINDOW_LIST,
+            request.request_id,
+        )
+        await self._record(started, context)
+        started_ns = monotonic_ns()
+        try:
+            self._ensure_open()
+            await self._authorizer.authorize_window_list(request, context)
+            result = await self._call_readonly_adapter(self._adapter.list_windows(request))
+        except Exception as exception:
+            await self._record(
+                self._failed_observation(started, exception, started_ns),
+                context,
+            )
+            raise
+        await self._record(
+            replace(
+                started,
+                outcome=HostAutomationOperationOutcome.SUCCEEDED,
+                duration_ms=_duration_ms(started_ns),
+                result_count=len(result.windows),
+                truncated=result.truncated,
+            ),
+            context,
+        )
+        return result
 
     async def launch_application(
         self,
         request: HostApplicationLaunchRequest,
         context: SecurityContext,
     ) -> HostApplicationLaunchResult:
-        self._ensure_open()
-        await self._authorizer.authorize_application_launch(request, context)
-        return await self._adapter.launch_application(request)
+        started = self._started_observation(
+            HostAutomationOperation.APPLICATION_LAUNCH,
+            request.request_id,
+        )
+        await self._record(started, context)
+        started_ns = monotonic_ns()
+        try:
+            self._ensure_open()
+            await self._authorizer.authorize_application_launch(request, context)
+            result = await self._call_effectful_adapter(self._adapter.launch_application(request))
+        except Exception as exception:
+            await self._record(
+                self._failed_observation(started, exception, started_ns),
+                context,
+            )
+            raise
+        await self._record(
+            replace(
+                started,
+                outcome=HostAutomationOperationOutcome.SUCCEEDED,
+                duration_ms=_duration_ms(started_ns),
+            ),
+            context,
+        )
+        return result
 
     async def focus_window(
         self,
         request: HostWindowFocusRequest,
         context: SecurityContext,
     ) -> HostWindowFocusResult:
-        self._ensure_open()
-        await self._authorizer.authorize_window_focus(request, context)
-        return await self._adapter.focus_window(request)
+        started = self._started_observation(
+            HostAutomationOperation.WINDOW_FOCUS,
+            request.request_id,
+        )
+        await self._record(started, context)
+        started_ns = monotonic_ns()
+        try:
+            self._ensure_open()
+            await self._authorizer.authorize_window_focus(request, context)
+            result = await self._call_effectful_adapter(self._adapter.focus_window(request))
+        except Exception as exception:
+            await self._record(
+                self._failed_observation(started, exception, started_ns),
+                context,
+            )
+            raise
+        await self._record(
+            replace(
+                started,
+                outcome=HostAutomationOperationOutcome.SUCCEEDED,
+                duration_ms=_duration_ms(started_ns),
+            ),
+            context,
+        )
+        return result
 
     async def request_application_close_approval(
         self,
@@ -122,39 +237,105 @@ class HostAutomationService:
         *,
         approval: HostAutomationApprovalEvidence | None = None,
     ) -> HostApplicationCloseResult:
-        self._ensure_open()
-        await self._authorizer.authorize_application_close(request, context)
-        self._validate_adapter_close_identity(request)
+        started = self._started_observation(
+            HostAutomationOperation.APPLICATION_CLOSE,
+            request.request_id,
+        )
+        await self._record(started, context)
+        started_ns = monotonic_ns()
+        try:
+            self._ensure_open()
+            await self._authorizer.authorize_application_close(request, context)
+            self._validate_adapter_close_identity(request)
 
-        if self._require_application_close_approval:
-            if approval is None:
-                raise HostAutomationApprovalRejectedError()
-            gate = self._required_close_approval_gate()
-            await gate.verify_and_consume_application_close(
-                approval,
-                request,
+            if self._require_application_close_approval:
+                if approval is None:
+                    raise HostAutomationApprovalRejectedError()
+                gate = self._required_close_approval_gate()
+                await gate.verify_and_consume_application_close(
+                    approval,
+                    request,
+                    context,
+                )
+
+            result = await self._call_effectful_adapter(self._adapter.close_application(request))
+        except Exception as exception:
+            await self._record(
+                self._failed_observation(started, exception, started_ns),
                 context,
             )
-
-        return await self._adapter.close_application(request)
+            raise
+        await self._record(
+            replace(
+                started,
+                outcome=HostAutomationOperationOutcome.SUCCEEDED,
+                duration_ms=_duration_ms(started_ns),
+            ),
+            context,
+        )
+        return result
 
     async def read_clipboard(
         self,
         request: HostClipboardReadRequest,
         context: SecurityContext,
     ) -> HostClipboardReadResult:
-        self._ensure_open()
-        await self._authorizer.authorize_clipboard_read(request, context)
-        return await self._adapter.read_clipboard(request)
+        started = self._started_observation(
+            HostAutomationOperation.CLIPBOARD_READ,
+            request.request_id,
+        )
+        await self._record(started, context)
+        started_ns = monotonic_ns()
+        try:
+            self._ensure_open()
+            await self._authorizer.authorize_clipboard_read(request, context)
+            result = await self._call_readonly_adapter(self._adapter.read_clipboard(request))
+        except Exception as exception:
+            await self._record(
+                self._failed_observation(started, exception, started_ns),
+                context,
+            )
+            raise
+        await self._record(
+            replace(
+                started,
+                outcome=HostAutomationOperationOutcome.SUCCEEDED,
+                duration_ms=_duration_ms(started_ns),
+            ),
+            context,
+        )
+        return result
 
     async def write_clipboard(
         self,
         request: HostClipboardWriteRequest,
         context: SecurityContext,
     ) -> HostClipboardWriteResult:
-        self._ensure_open()
-        await self._authorizer.authorize_clipboard_write(request, context)
-        return await self._adapter.write_clipboard(request)
+        started = self._started_observation(
+            HostAutomationOperation.CLIPBOARD_WRITE,
+            request.request_id,
+        )
+        await self._record(started, context)
+        started_ns = monotonic_ns()
+        try:
+            self._ensure_open()
+            await self._authorizer.authorize_clipboard_write(request, context)
+            result = await self._call_effectful_adapter(self._adapter.write_clipboard(request))
+        except Exception as exception:
+            await self._record(
+                self._failed_observation(started, exception, started_ns),
+                context,
+            )
+            raise
+        await self._record(
+            replace(
+                started,
+                outcome=HostAutomationOperationOutcome.SUCCEEDED,
+                duration_ms=_duration_ms(started_ns),
+            ),
+            context,
+        )
+        return result
 
     async def close(self) -> None:
         if self._closed:
@@ -180,3 +361,81 @@ class HostAutomationService:
     def _ensure_open(self) -> None:
         if self._closed:
             raise HostAutomationServiceUnavailableError()
+
+    def _started_observation(
+        self,
+        operation: HostAutomationOperation,
+        request_id: object,
+    ) -> HostAutomationOperationObservation:
+        if not isinstance(request_id, UUID):
+            raise TypeError("request_id must be UUID")
+        return HostAutomationOperationObservation(
+            operation=operation,
+            outcome=HostAutomationOperationOutcome.STARTED,
+            host_id=self._adapter.host_id,
+            request_id=request_id,
+        )
+
+    async def _record(
+        self,
+        observation: HostAutomationOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        try:
+            await self._observer.record(observation, context)
+        except Exception:
+            pass
+
+    def _failed_observation(
+        self,
+        started: HostAutomationOperationObservation,
+        exception: Exception,
+        started_ns: int,
+    ) -> HostAutomationOperationObservation:
+        outcome, error_code = _failure_metadata(exception)
+        return replace(
+            started,
+            outcome=outcome,
+            duration_ms=_duration_ms(started_ns),
+            error_code=error_code,
+        )
+
+    async def _call_readonly_adapter(self, operation: Awaitable[_T]) -> _T:
+        try:
+            return await operation
+        except HostAutomationError:
+            raise
+        except Exception:
+            raise HostAutomationAdapterError() from None
+
+    async def _call_effectful_adapter(self, operation: Awaitable[_T]) -> _T:
+        try:
+            return await operation
+        except HostAutomationError:
+            raise
+        except Exception:
+            raise HostAutomationIndeterminateEffectError() from None
+
+
+def _duration_ms(started_ns: int) -> int:
+    return max(0, (monotonic_ns() - started_ns) // 1_000_000)
+
+
+def _failure_metadata(
+    exception: Exception,
+) -> tuple[HostAutomationOperationOutcome, HostAutomationErrorCode | None]:
+    if not isinstance(exception, HostAutomationError):
+        return HostAutomationOperationOutcome.FAILED, None
+    code = exception.code
+    if code in {
+        HostAutomationErrorCode.AUTHORIZATION_REJECTED,
+        HostAutomationErrorCode.APPROVAL_REJECTED,
+    }:
+        return HostAutomationOperationOutcome.REJECTED, code
+    if code is HostAutomationErrorCode.CANCELLED:
+        return HostAutomationOperationOutcome.CANCELLED, code
+    if code is HostAutomationErrorCode.TIMEOUT:
+        return HostAutomationOperationOutcome.TIMED_OUT, code
+    if code is HostAutomationErrorCode.INDETERMINATE_EFFECT:
+        return HostAutomationOperationOutcome.INDETERMINATE, code
+    return HostAutomationOperationOutcome.FAILED, code

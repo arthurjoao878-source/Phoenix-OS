@@ -131,6 +131,15 @@ from phoenix_os.host_automation.errors import (
     HostAutomationUnsupportedPlatformError,
 )
 from phoenix_os.host_automation.fake import DeterministicHostAutomationAdapter
+from phoenix_os.host_automation.observer import (
+    ContentFreeHostAutomationObserver,
+    HostAutomationObservabilityConfiguration,
+    HostAutomationObserver,
+    HostAutomationOperation,
+    HostAutomationOperationObservation,
+    HostAutomationOperationOutcome,
+    NullHostAutomationObserver,
+)
 from phoenix_os.host_automation.service import HostAutomationService
 from phoenix_os.host_automation.windows import WindowsHostAutomationAdapter
 
@@ -175,6 +184,7 @@ __all__ = [
     "MAX_HOST_OPERATION_TIMEOUT",
     "MAX_HOST_PROCESS_LABEL_CHARS",
     "MAX_HOST_WINDOW_TITLE_CHARS",
+    "ContentFreeHostAutomationObserver",
     "DeterministicHostAutomationAdapter",
     "HostApplicationCloseRequest",
     "HostApplicationCloseResult",
@@ -203,7 +213,12 @@ __all__ = [
     "HostAutomationIndeterminateEffectError",
     "HostAutomationLimitExceededError",
     "HostAutomationLimits",
+    "HostAutomationObservabilityConfiguration",
+    "HostAutomationObserver",
+    "HostAutomationOperation",
     "HostAutomationOperationDisabledError",
+    "HostAutomationOperationObservation",
+    "HostAutomationOperationOutcome",
     "HostAutomationService",
     "HostAutomationServiceUnavailableError",
     "HostAutomationStaleIdentityError",
@@ -233,6 +248,7 @@ __all__ = [
     "HostWindowListResult",
     "HostWindowListToolAdapter",
     "InMemoryHostAutomationApprovalGate",
+    "NullHostAutomationObserver",
     "PolicyEngineHostAutomationAuthorizer",
     "WindowsHostAutomationAdapter",
     "host_application_close_tool_descriptor",
