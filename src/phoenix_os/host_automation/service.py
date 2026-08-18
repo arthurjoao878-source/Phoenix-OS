@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
-from dataclasses import dataclass, replace
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import InitVar, dataclass, field, replace
 from time import monotonic_ns
 from typing import TypeVar
 from uuid import UUID
@@ -65,8 +67,10 @@ class HostAutomationServiceSnapshot:
     closed: bool
     close_approval_required: bool
     schema_version: int = 1
+    available: bool = field(init=False)
+    _available: InitVar[bool | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _available: bool | None) -> None:
         if not isinstance(self.host_id, HostId):
             raise TypeError("host_id must be HostId")
         if not isinstance(self.host_epoch, HostEpoch):
@@ -77,12 +81,14 @@ class HostAutomationServiceSnapshot:
             raise TypeError("closed must be a boolean")
         if type(self.close_approval_required) is not bool:
             raise TypeError("close_approval_required must be a boolean")
+        if _available is not None and type(_available) is not bool:
+            raise TypeError("available must be a boolean")
+        available = not self.closed if _available is None else _available
+        if self.closed and available:
+            raise ValueError("closed host service snapshot cannot be available")
+        object.__setattr__(self, "available", available)
         if self.schema_version != 1:
             raise ValueError("unsupported host service snapshot version")
-
-    @property
-    def available(self) -> bool:
-        return not self.closed
 
 
 class HostAutomationService:
@@ -119,6 +125,29 @@ class HostAutomationService:
         self._require_application_close_approval = require_application_close_approval
         self._observer = observer if observer is not None else NullHostAutomationObserver()
         self._closed = False
+        self._runtime_managed = False
+        self._runtime_availability: Callable[[], bool] | None = None
+        self._operation_condition = asyncio.Condition()
+        self._in_flight_operations = 0
+        self._close_lock = asyncio.Lock()
+        self._closing = False
+
+    def _bind_runtime_lifecycle(self) -> None:
+        if self._closed:
+            raise RuntimeError("closed host automation service cannot be Runtime-owned")
+        if self._runtime_managed:
+            raise RuntimeError("host automation service is already Runtime-owned")
+        self._runtime_managed = True
+        self._runtime_availability = None
+
+    def _activate_runtime_lifecycle(self, availability: Callable[[], bool]) -> None:
+        if not callable(availability):
+            raise TypeError("availability must be callable")
+        if not self._runtime_managed:
+            raise RuntimeError("host automation service is not Runtime-owned")
+        if self._closed:
+            raise RuntimeError("host automation service is already closed")
+        self._runtime_availability = availability
 
     @property
     def closed(self) -> bool:
@@ -137,6 +166,7 @@ class HostAutomationService:
             limits=self._adapter.limits,
             closed=self._closed,
             close_approval_required=self._require_application_close_approval,
+            _available=self._is_available(),
         )
 
     async def list_processes(
@@ -151,9 +181,10 @@ class HostAutomationService:
         await self._record(started, context)
         started_ns = monotonic_ns()
         try:
-            self._ensure_open()
-            await self._authorizer.authorize_process_list(request, context)
-            result = await self._call_readonly_adapter(self._adapter.list_processes(request))
+            async with self._operation_scope():
+                await self._authorizer.authorize_process_list(request, context)
+                self._ensure_open()
+                result = await self._call_readonly_adapter(self._adapter.list_processes(request))
         except Exception as exception:
             await self._record(
                 self._failed_observation(started, exception, started_ns),
@@ -184,9 +215,10 @@ class HostAutomationService:
         await self._record(started, context)
         started_ns = monotonic_ns()
         try:
-            self._ensure_open()
-            await self._authorizer.authorize_window_list(request, context)
-            result = await self._call_readonly_adapter(self._adapter.list_windows(request))
+            async with self._operation_scope():
+                await self._authorizer.authorize_window_list(request, context)
+                self._ensure_open()
+                result = await self._call_readonly_adapter(self._adapter.list_windows(request))
         except Exception as exception:
             await self._record(
                 self._failed_observation(started, exception, started_ns),
@@ -217,9 +249,12 @@ class HostAutomationService:
         await self._record(started, context)
         started_ns = monotonic_ns()
         try:
-            self._ensure_open()
-            await self._authorizer.authorize_application_launch(request, context)
-            result = await self._call_effectful_adapter(self._adapter.launch_application(request))
+            async with self._operation_scope():
+                await self._authorizer.authorize_application_launch(request, context)
+                self._ensure_open()
+                result = await self._call_effectful_adapter(
+                    self._adapter.launch_application(request)
+                )
         except Exception as exception:
             await self._record(
                 self._failed_observation(started, exception, started_ns),
@@ -248,9 +283,10 @@ class HostAutomationService:
         await self._record(started, context)
         started_ns = monotonic_ns()
         try:
-            self._ensure_open()
-            await self._authorizer.authorize_window_focus(request, context)
-            result = await self._call_effectful_adapter(self._adapter.focus_window(request))
+            async with self._operation_scope():
+                await self._authorizer.authorize_window_focus(request, context)
+                self._ensure_open()
+                result = await self._call_effectful_adapter(self._adapter.focus_window(request))
         except Exception as exception:
             await self._record(
                 self._failed_observation(started, exception, started_ns),
@@ -272,11 +308,12 @@ class HostAutomationService:
         request: HostApplicationCloseRequest,
         context: SecurityContext,
     ) -> HostAutomationApprovalChallenge:
-        self._ensure_open()
-        gate = self._required_close_approval_gate()
-        await self._authorizer.authorize_application_close(request, context)
-        self._validate_adapter_close_identity(request)
-        return await gate.request_application_close(request, context)
+        async with self._operation_scope():
+            gate = self._required_close_approval_gate()
+            await self._authorizer.authorize_application_close(request, context)
+            self._validate_adapter_close_identity(request)
+            self._ensure_open()
+            return await gate.request_application_close(request, context)
 
     async def close_application(
         self,
@@ -292,21 +329,24 @@ class HostAutomationService:
         await self._record(started, context)
         started_ns = monotonic_ns()
         try:
-            self._ensure_open()
-            await self._authorizer.authorize_application_close(request, context)
-            self._validate_adapter_close_identity(request)
+            async with self._operation_scope():
+                await self._authorizer.authorize_application_close(request, context)
+                self._validate_adapter_close_identity(request)
 
-            if self._require_application_close_approval:
-                if approval is None:
-                    raise HostAutomationApprovalRejectedError()
-                gate = self._required_close_approval_gate()
-                await gate.verify_and_consume_application_close(
-                    approval,
-                    request,
-                    context,
+                if self._require_application_close_approval:
+                    if approval is None:
+                        raise HostAutomationApprovalRejectedError()
+                    gate = self._required_close_approval_gate()
+                    await gate.verify_and_consume_application_close(
+                        approval,
+                        request,
+                        context,
+                    )
+
+                self._ensure_open()
+                result = await self._call_effectful_adapter(
+                    self._adapter.close_application(request)
                 )
-
-            result = await self._call_effectful_adapter(self._adapter.close_application(request))
         except Exception as exception:
             await self._record(
                 self._failed_observation(started, exception, started_ns),
@@ -335,9 +375,10 @@ class HostAutomationService:
         await self._record(started, context)
         started_ns = monotonic_ns()
         try:
-            self._ensure_open()
-            await self._authorizer.authorize_clipboard_read(request, context)
-            result = await self._call_readonly_adapter(self._adapter.read_clipboard(request))
+            async with self._operation_scope():
+                await self._authorizer.authorize_clipboard_read(request, context)
+                self._ensure_open()
+                result = await self._call_readonly_adapter(self._adapter.read_clipboard(request))
         except Exception as exception:
             await self._record(
                 self._failed_observation(started, exception, started_ns),
@@ -366,9 +407,10 @@ class HostAutomationService:
         await self._record(started, context)
         started_ns = monotonic_ns()
         try:
-            self._ensure_open()
-            await self._authorizer.authorize_clipboard_write(request, context)
-            result = await self._call_effectful_adapter(self._adapter.write_clipboard(request))
+            async with self._operation_scope():
+                await self._authorizer.authorize_clipboard_write(request, context)
+                self._ensure_open()
+                result = await self._call_effectful_adapter(self._adapter.write_clipboard(request))
         except Exception as exception:
             await self._record(
                 self._failed_observation(started, exception, started_ns),
@@ -386,13 +428,25 @@ class HostAutomationService:
         return result
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        gate = self._approval_gate
-        if gate is not None:
-            await gate.close()
-        await self._adapter.close()
+        async with self._close_lock:
+            if self._closed:
+                return
+
+            async with self._operation_condition:
+                self._runtime_availability = None
+                self._closing = True
+                while self._in_flight_operations:
+                    await self._operation_condition.wait()
+
+            gate = self._approval_gate
+            if gate is not None:
+                await gate.close()
+            await self._adapter.close()
+
+            async with self._operation_condition:
+                self._closed = True
+                self._closing = False
+                self._operation_condition.notify_all()
 
     def _required_close_approval_gate(self) -> HostAutomationApprovalGate:
         gate = self._approval_gate
@@ -407,8 +461,33 @@ class HostAutomationService:
             raise HostAutomationStaleIdentityError()
 
     def _ensure_open(self) -> None:
-        if self._closed:
+        if not self._is_available():
             raise HostAutomationServiceUnavailableError()
+
+    def _is_available(self) -> bool:
+        if self._closed or self._closing:
+            return False
+        if not self._runtime_managed:
+            return True
+        availability = self._runtime_availability
+        if availability is None:
+            return False
+        try:
+            return availability() is True
+        except Exception:
+            return False
+
+    @asynccontextmanager
+    async def _operation_scope(self) -> AsyncIterator[None]:
+        async with self._operation_condition:
+            self._ensure_open()
+            self._in_flight_operations += 1
+        try:
+            yield
+        finally:
+            async with self._operation_condition:
+                self._in_flight_operations -= 1
+                self._operation_condition.notify_all()
 
     def _started_observation(
         self,

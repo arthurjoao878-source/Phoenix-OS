@@ -30,6 +30,7 @@ from phoenix_os.runtime import (
     LifecycleComponent,
     PhoenixRuntime,
     RuntimeContext,
+    RuntimeState,
 )
 from phoenix_os.state import StateStore, StateStoreRegistry
 
@@ -94,6 +95,12 @@ if TYPE_CHECKING:
     )
     from phoenix_os.control_plane.service_account_machine_http import (
         ControlPlaneServiceAccountMachineRoute,
+    )
+    from phoenix_os.host_automation import (
+        HostAutomationAdapter,
+        HostAutomationApprovalGate,
+        HostAutomationObservabilityConfiguration,
+        HostAutomationService,
     )
     from phoenix_os.identity import AuthenticationManager
     from phoenix_os.inbound_events import (
@@ -226,6 +233,14 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "webhooks.subscriptions",
         "webhooks.transport",
         "workflows",
+    }
+)
+
+_HOST_AUTOMATION_DEFINITION_NAMES = frozenset(
+    {
+        "host",
+        "host.administration",
+        "host.health",
     }
 )
 
@@ -634,6 +649,27 @@ class _DurableCleanupStorageLifecycle:
             raise failure
 
 
+class _HostAutomationLifecycle:
+    """Bind one configured host service to the Phoenix Runtime lifecycle."""
+
+    def __init__(self, service: HostAutomationService) -> None:
+        self._service = service
+        self._service._bind_runtime_lifecycle()
+
+    async def start(self, context: RuntimeContext) -> None:
+        if not isinstance(context, RuntimeContext):
+            raise TypeError("context must be RuntimeContext")
+        runtime = context.services.get("runtime")
+        if not isinstance(runtime, PhoenixRuntime):
+            raise RuntimeError("host automation lifecycle requires PhoenixRuntime")
+        self._service._activate_runtime_lifecycle(lambda: runtime.state is RuntimeState.RUNNING)
+
+    async def stop(self, context: RuntimeContext) -> None:
+        if not isinstance(context, RuntimeContext):
+            raise TypeError("context must be RuntimeContext")
+        await self._service.close()
+
+
 class RuntimeAssembler:
     """Compose configuration-backed services and create a Phoenix Runtime."""
 
@@ -660,6 +696,12 @@ class RuntimeAssembler:
         workflows: WorkflowOrchestrator | None = None,
         workflow_poll_interval: float = 1.0,
         workflow_worker: str = "phoenix.workflows",
+        host_automation_adapter: HostAutomationAdapter | None = None,
+        host_automation_approval_gate: HostAutomationApprovalGate | None = None,
+        host_automation_require_application_close_approval: bool = False,
+        host_automation_observability_configuration: (
+            HostAutomationObservabilityConfiguration | None
+        ) = None,
         inference_enabled: bool = False,
         inference_configuration: InferenceServiceConfiguration | None = None,
         inference_providers: tuple[ModelProvider, ...] = (),
@@ -798,6 +840,14 @@ class RuntimeAssembler:
         self._workflows = workflows
         self._workflow_poll_interval = workflow_poll_interval
         self._workflow_worker = workflow_worker
+        self._host_automation_adapter = host_automation_adapter
+        self._host_automation_approval_gate = host_automation_approval_gate
+        self._host_automation_require_application_close_approval = (
+            host_automation_require_application_close_approval
+        )
+        self._host_automation_observability_configuration = (
+            host_automation_observability_configuration
+        )
         self._inference_enabled = inference_enabled
         self._inference_configuration = inference_configuration
         self._inference_providers = tuple(inference_providers)
@@ -933,6 +983,47 @@ class RuntimeAssembler:
         )
         if workflows is not None and jobs is None:
             raise ValueError("workflow orchestration requires a Runtime-owned job scheduler")
+        if not isinstance(host_automation_require_application_close_approval, bool):
+            raise TypeError("host automation close approval flag must be bool")
+        host_automation_options_supplied = any(
+            (
+                host_automation_approval_gate is not None,
+                host_automation_require_application_close_approval,
+                host_automation_observability_configuration is not None,
+            )
+        )
+        if host_automation_options_supplied and host_automation_adapter is None:
+            raise ValueError("host automation options require an adapter")
+        if host_automation_adapter is not None:
+            from phoenix_os.host_automation import (
+                HostAutomationAdapter as RuntimeHostAutomationAdapter,
+            )
+            from phoenix_os.host_automation import (
+                HostAutomationApprovalGate as RuntimeHostAutomationApprovalGate,
+            )
+            from phoenix_os.host_automation import (
+                HostAutomationObservabilityConfiguration as RuntimeHostObservabilityConfiguration,
+            )
+
+            if not isinstance(host_automation_adapter, RuntimeHostAutomationAdapter):
+                raise TypeError("host automation adapter has an invalid type")
+            if policy is None:
+                raise ValueError("configured host automation requires a PolicyEngine")
+            if host_automation_approval_gate is not None and not isinstance(
+                host_automation_approval_gate,
+                RuntimeHostAutomationApprovalGate,
+            ):
+                raise TypeError("host automation approval gate has an invalid type")
+            if (
+                host_automation_require_application_close_approval
+                and host_automation_approval_gate is None
+            ):
+                raise ValueError("host application close approval requires an approval gate")
+            if host_automation_observability_configuration is not None and not isinstance(
+                host_automation_observability_configuration,
+                RuntimeHostObservabilityConfiguration,
+            ):
+                raise TypeError("host automation observability configuration has an invalid type")
         if not isinstance(inference_enabled, bool):
             raise TypeError("inference enabled flag must be bool")
         if not isinstance(
@@ -1418,6 +1509,15 @@ class RuntimeAssembler:
         self._observe_events = observe_events
         self._journal_events = journal_events
         definitions_tuple = tuple(definitions)
+        if host_automation_adapter is not None:
+            host_conflicts = sorted(
+                definition.name
+                for definition in definitions_tuple
+                if definition.name in _HOST_AUTOMATION_DEFINITION_NAMES
+            )
+            if host_conflicts:
+                names = ", ".join(host_conflicts)
+                raise ValueError(f"host automation services conflict with definitions: {names}")
         if agent_workspace_configuration is not None:
             workspace_conflicts = sorted(
                 definition.name
@@ -1509,6 +1609,47 @@ class RuntimeAssembler:
             state_store = None if self._state.default_name is None else self._state.store()
         else:
             state_store = self._state
+
+        host_automation_service = None
+        if self._host_automation_adapter is not None:
+            from phoenix_os.host_automation import (
+                ContentFreeHostAutomationObserver,
+                HostAutomationAdministration,
+                HostAutomationObservabilityConfiguration,
+                HostAutomationService,
+                PolicyEngineHostAutomationAuthorizer,
+            )
+
+            assert self._policy is not None
+            host_observability_configuration = self._host_automation_observability_configuration
+            if host_observability_configuration is None:
+                host_observability_configuration = HostAutomationObservabilityConfiguration()
+            host_observer = ContentFreeHostAutomationObserver(
+                self._host_automation_adapter.host_id,
+                host_observability_configuration,
+                events=self._events,
+                audit=self._audit,
+                observability=self._observability,
+            )
+            host_automation_service = HostAutomationService(
+                adapter=self._host_automation_adapter,
+                authorizer=PolicyEngineHostAutomationAuthorizer(self._policy),
+                approval_gate=self._host_automation_approval_gate,
+                require_application_close_approval=(
+                    self._host_automation_require_application_close_approval
+                ),
+                observer=host_observer,
+            )
+            host_automation_administration = HostAutomationAdministration(host_automation_service)
+            custom_services["host"] = host_automation_service
+            custom_services["host.health"] = host_automation_administration
+            custom_services["host.administration"] = host_automation_administration
+            components.append(
+                ComponentSpec(
+                    "host",
+                    _HostAutomationLifecycle(host_automation_service),
+                )
+            )
 
         inference_stack = None
         if self._inference_enabled:
