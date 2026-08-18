@@ -22,6 +22,7 @@ class HostAutomationErrorCode(StrEnum):
     CANCELLED = "cancelled"
     INDETERMINATE_EFFECT = "indeterminate_effect"
     ADAPTER_FAILED = "adapter_failed"
+    ADMINISTRATION_DENIED = "administration_denied"
 
 
 class HostAutomationError(Exception):
@@ -126,3 +127,10 @@ class HostAutomationAdapterError(HostAutomationError):
 
     def __init__(self) -> None:
         super().__init__("host automation adapter failed")
+
+
+class HostAutomationAdministrationAccessDeniedError(HostAutomationError):
+    code = HostAutomationErrorCode.ADMINISTRATION_DENIED
+
+    def __init__(self) -> None:
+        super().__init__("host automation administration access denied")

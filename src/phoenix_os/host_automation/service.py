@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from time import monotonic_ns
 from typing import TypeVar
 from uuid import UUID
@@ -20,10 +20,13 @@ from phoenix_os.host_automation.contracts import (
     HostApplicationLaunchRequest,
     HostApplicationLaunchResult,
     HostAutomationAdapter,
+    HostAutomationLimits,
     HostClipboardReadRequest,
     HostClipboardReadResult,
     HostClipboardWriteRequest,
     HostClipboardWriteResult,
+    HostEpoch,
+    HostId,
     HostProcessListRequest,
     HostProcessListResult,
     HostWindowFocusRequest,
@@ -50,6 +53,36 @@ from phoenix_os.host_automation.observer import (
 from phoenix_os.policy import SecurityContext
 
 _T = TypeVar("_T")
+
+
+@dataclass(frozen=True, slots=True)
+class HostAutomationServiceSnapshot:
+    """Content-free bounded runtime health for one configured host service."""
+
+    host_id: HostId
+    host_epoch: HostEpoch
+    limits: HostAutomationLimits
+    closed: bool
+    close_approval_required: bool
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.host_id, HostId):
+            raise TypeError("host_id must be HostId")
+        if not isinstance(self.host_epoch, HostEpoch):
+            raise TypeError("host_epoch must be HostEpoch")
+        if not isinstance(self.limits, HostAutomationLimits):
+            raise TypeError("limits must be HostAutomationLimits")
+        if type(self.closed) is not bool:
+            raise TypeError("closed must be a boolean")
+        if type(self.close_approval_required) is not bool:
+            raise TypeError("close_approval_required must be a boolean")
+        if self.schema_version != 1:
+            raise ValueError("unsupported host service snapshot version")
+
+    @property
+    def available(self) -> bool:
+        return not self.closed
 
 
 class HostAutomationService:
@@ -90,6 +123,21 @@ class HostAutomationService:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def host_id(self) -> HostId:
+        return self._adapter.host_id
+
+    async def snapshot(self) -> HostAutomationServiceSnapshot:
+        """Return content-free health without probing desktop state."""
+
+        return HostAutomationServiceSnapshot(
+            host_id=self._adapter.host_id,
+            host_epoch=self._adapter.host_epoch,
+            limits=self._adapter.limits,
+            closed=self._closed,
+            close_approval_required=self._require_application_close_approval,
+        )
 
     async def list_processes(
         self,

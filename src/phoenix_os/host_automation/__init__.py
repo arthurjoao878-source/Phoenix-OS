@@ -1,5 +1,11 @@
 """OS-neutral secure host-automation contracts and adapters."""
 
+from phoenix_os.host_automation.administration import (
+    HOST_HEALTH_READ_PERMISSION,
+    HostAutomationAdministration,
+    HostAutomationAdministrationSnapshot,
+    host_health_resource,
+)
 from phoenix_os.host_automation.agent_control_tools import (
     HOST_APPLICATION_CLOSE_TOOL_ADAPTER_ID,
     HOST_APPLICATION_CLOSE_TOOL_ID,
@@ -115,6 +121,7 @@ from phoenix_os.host_automation.contracts import (
 from phoenix_os.host_automation.errors import (
     HostApplicationNotConfiguredError,
     HostAutomationAdapterError,
+    HostAutomationAdministrationAccessDeniedError,
     HostAutomationApprovalRejectedError,
     HostAutomationAuthorizationRejectedError,
     HostAutomationCancelledError,
@@ -140,7 +147,10 @@ from phoenix_os.host_automation.observer import (
     HostAutomationOperationOutcome,
     NullHostAutomationObserver,
 )
-from phoenix_os.host_automation.service import HostAutomationService
+from phoenix_os.host_automation.service import (
+    HostAutomationService,
+    HostAutomationServiceSnapshot,
+)
 from phoenix_os.host_automation.windows import WindowsHostAutomationAdapter
 
 __all__ = [
@@ -160,6 +170,7 @@ __all__ = [
     "HOST_CLIPBOARD_WRITE_TOOL_ADAPTER_ID",
     "HOST_CLIPBOARD_WRITE_TOOL_ID",
     "HOST_CLIPBOARD_WRITE_TOOL_RESOLVER_ID",
+    "HOST_HEALTH_READ_PERMISSION",
     "HOST_PROCESS_LIST_ACTION",
     "HOST_PROCESS_LIST_TOOL_ADAPTER_ID",
     "HOST_PROCESS_LIST_TOOL_ID",
@@ -196,6 +207,9 @@ __all__ = [
     "HostApplicationNotConfiguredError",
     "HostAutomationAdapter",
     "HostAutomationAdapterError",
+    "HostAutomationAdministration",
+    "HostAutomationAdministrationAccessDeniedError",
+    "HostAutomationAdministrationSnapshot",
     "HostAutomationApprovalChallenge",
     "HostAutomationApprovalEvidence",
     "HostAutomationApprovalGate",
@@ -220,6 +234,7 @@ __all__ = [
     "HostAutomationOperationObservation",
     "HostAutomationOperationOutcome",
     "HostAutomationService",
+    "HostAutomationServiceSnapshot",
     "HostAutomationServiceUnavailableError",
     "HostAutomationStaleIdentityError",
     "HostAutomationTargetNotFoundError",
@@ -261,6 +276,7 @@ __all__ = [
     "host_clipboard_resource",
     "host_clipboard_write_tool_descriptor",
     "host_clipboard_write_tool_resolver",
+    "host_health_resource",
     "host_process_collection_resource",
     "host_process_list_tool_descriptor",
     "host_process_list_tool_resolver",
