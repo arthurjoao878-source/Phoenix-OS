@@ -12,3 +12,4 @@ python scripts/check_durable_agent_release.py
 python scripts/check_multi_agent_release.py
 python scripts/check_agent_memory_release.py
 python scripts/check_agent_workspace_release.py
+python scripts/check_host_automation_release.py

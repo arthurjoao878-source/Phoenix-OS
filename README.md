@@ -262,6 +262,24 @@ and authoritative write/read/update/delete behavior. The gate derives the curren
 package version from `pyproject.toml` and validates the v0.31.0 release-candidate
 metadata before final RFC acceptance, tag, artifacts, and checksums.
 
+## Host-automation release gate
+
+RFC-0032 adds a named source-tree gate for exact host authority, bounded Windows
+adapter behavior, agent-tool integration, stale-safe effects, clipboard boundaries,
+Runtime lifecycle, migration, security review, and ADR coverage:
+
+```bash
+python scripts/check_host_automation_release.py
+```
+
+The gate reruns every `test_host_automation*.py` regression plus the RFC-0032
+executable specification and validates the required host-automation source modules
+and release-hardening files.
+
+Gate 4 intentionally does not perform real Windows dogfood, wheel/sdist build or
+offline installation, package-version/release-note validation, or
+tag/artifact/checksum validation. Those remain separate later Slice 7 gates.
+
 ## Release notes
 
 - [Phoenix OS 0.31.0](docs/releases/v0.31.0.md)

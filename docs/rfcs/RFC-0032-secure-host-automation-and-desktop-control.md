@@ -427,6 +427,22 @@ On unsupported operating systems, explicit Windows-adapter configuration fails w
 safe unsupported-platform error. Omitting host automation remains compatible and does
 not probe the desktop.
 
+## Named release gate
+
+RFC-0032 has a repository-level named gate for the host-automation boundary:
+
+```text
+python scripts/check_host_automation_release.py
+```
+
+The gate reruns all `test_host_automation*.py` regressions plus the RFC-0032
+executable specification and validates the required host-automation source modules
+and release-hardening files.
+
+The named gate intentionally does not perform real Windows dogfood, wheel/sdist build
+or offline installation, package-version/release-note validation, or
+tag/artifact/checksum validation. Those remain separate later Slice 7 gates.
+
 ## Compatibility
 
 When host-automation configuration is omitted, Phoenix creates no host service,
@@ -503,7 +519,7 @@ workspace behavior remains unchanged.
 - [ ] Threat-model/security-invariant review
 - [ ] ADRs for host authority, application profiles, native identity opacity, and UI TOCTOU
 - [ ] v0.31.0 to v0.32.0 migration guidance
-- [ ] Named host-automation release gate
+- [x] Named host-automation release gate
 - [ ] Windows dogfood with real process/window/app/clipboard effects
 - [ ] Offline wheel/sdist validation
 - [ ] Release notes and package version 0.32.0
