@@ -35,7 +35,6 @@ from phoenix_os.agent.schemas import (
 from phoenix_os.agent.tools import ToolDescriptor
 from phoenix_os.policy import PrincipalType, SecurityContext
 
-
 _SESSION_ID = UUID("10000000-0000-4000-8000-000000000001")
 _OTHER_SESSION_ID = UUID("10000000-0000-4000-8000-000000000002")
 

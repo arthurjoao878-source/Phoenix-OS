@@ -454,12 +454,9 @@ class InMemoryToolApprovalService:
                 context,
                 expires_at=entry.challenge.expires_at,
             )
-            if (
-                not hmac.compare_digest(entry.binding_digest, binding)
-                or not hmac.compare_digest(
-                    _evidence_digest(evidence),
-                    _evidence_digest(_evidence(entry)),
-                )
+            if not hmac.compare_digest(entry.binding_digest, binding) or not hmac.compare_digest(
+                _evidence_digest(evidence),
+                _evidence_digest(_evidence(entry)),
             ):
                 raise AgentApprovalRejectedError()
             entry.status = ToolApprovalStatus.CONSUMED
