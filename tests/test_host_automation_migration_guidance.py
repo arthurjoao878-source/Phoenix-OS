@@ -40,9 +40,10 @@ def test_host_automation_migration_keeps_release_hardening_separate() -> None:
     raw = _MIGRATION.read_text(encoding="utf-8")
     text = " ".join(raw.split())
     assert r".\scripts\check.ps1" in text
-    assert "Gate 3 adds migration guidance and its regression test only." in text
-    assert "The named host-automation release gate remains the next formal Slice 7 gate" in text
-    assert "Windows dogfood" in text
+    assert "Gate 3 originally added this migration guidance." in text
+    assert "Gates 4 through 6 subsequently sealed" in text
+    assert "manual real-Windows dogfood" in text
     assert "offline wheel/sdist validation" in text
-    assert "package version 0.32.0" in text
-    assert "tag, artifacts, and checksums" in text
+    assert "Gate 7 sets the package metadata to v0.32.0" in text
+    assert "docs/releases/v0.32.0.md" in text
+    assert "Final RFC acceptance, release commit, tag, artifacts, and checksums" in text

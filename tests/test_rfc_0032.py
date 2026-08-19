@@ -252,7 +252,7 @@ def test_rfc_0032_proposes_provider_neutral_host_contracts() -> None:
         assert f"`{contract}`" in text
 
 
-def test_rfc_0032_slices_zero_one_and_two_are_complete_and_later_slices_remain_open() -> None:
+def test_rfc_0032_implementation_and_release_candidate_milestones_are_recorded() -> None:
     text = _text()
     assert "### Slice 0 - RFC foundation and executable specification" in text
     assert "### Slice 7 - Security review, migration, and release hardening" in text
@@ -286,7 +286,25 @@ def test_rfc_0032_slices_zero_one_and_two_are_complete_and_later_slices_remain_o
         "Windows discovery integration tests",
     ):
         assert f"- [x] {item}" in text
+    for item in (
+        "Reviewed RFC-0027 host tool descriptors and schemas",
+        "Independent `tool.invoke` plus `host.*` enforcement",
+        "Content-free host observer events and safe public failures",
+        "Bounded host administration/health surface",
+        "Runtime assembler ownership and disabled-by-default tests",
+        "Threat-model/security-invariant review",
+        "ADRs for host authority, application profiles, native identity opacity, and UI TOCTOU",
+        "v0.31.0 to v0.32.0 migration guidance",
+    ):
+        assert f"- [x] {item}" in text
+
+    assert "- [x] Named host-automation release gate" in text
     assert "- [x] Windows dogfood with real process/window/app/clipboard effects" in text
+    assert "- [x] Offline wheel/sdist validation" in text
+    assert "- [x] Release notes and package version 0.32.0" in text
+    assert "- [ ] Tag, artifacts, and checksums" in text
+    assert "- Status: Draft" in text
+    assert "docs/releases/v0.32.0.md" in text
 
 
 def test_rfc_0032_acceptance_preserves_security_boundary() -> None:

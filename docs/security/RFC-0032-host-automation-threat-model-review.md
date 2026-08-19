@@ -198,6 +198,8 @@ independent tool and host authorization, configured destructive close retains
 host-specific approval, sensitive desktop content stays out of operational telemetry,
 and uncertain effects are never transparently replayed.
 
-This review does not publish v0.32.0 and does not complete later Slice 7 ADR,
-migration, named release-gate, real Windows dogfood, offline package, release-note,
-version, tag, artifact, or checksum work.
+This review does not itself publish v0.32.0. The ADRs, migration, named release gate,
+manual real-Windows dogfood, offline package validation, release-candidate notes, and
+package version are now part of the reviewed release evidence. Final publication still
+requires successful release-candidate/full quality gates, final RFC acceptance, the
+release commit, tag, artifacts, and checksums.

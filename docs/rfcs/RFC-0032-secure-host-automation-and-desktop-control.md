@@ -449,14 +449,16 @@ environments.
 
 The isolated smoke uses `DeterministicHostAutomationAdapter` and therefore exercises
 packaged host contracts, policy/service wiring, process discovery, and clipboard
-write/read without native desktop effects or source-tree imports. The package version is
-derived from `pyproject.toml`; Gate 6 does not change it. The later release-note/version
-gate owns the `0.32.0` bump, after which this same package validation automatically checks
-the new metadata. Real Windows dogfood remains manual, and tag/artifact/checksum
-publication remains separate. Gate 6 local completion was recorded after a reviewed run built and
-validated the wheel and sdist, rebuilt a wheel from the validated sdist, installed both
-wheel forms with `--no-deps --no-index`, and passed isolated deterministic
-host-automation smoke validation.
+write/read without native desktop effects or source-tree imports. Gate 6 was sealed after
+the reviewed local package-validation run and exact-SHA CI built and validated the wheel
+and sdist, rebuilt a wheel from the validated sdist, installed both wheel forms with
+`--no-deps --no-index`, and passed isolated deterministic host-automation smoke
+validation.
+
+Gate 7 now sets the package metadata to v0.32.0. The named gate derives that version from
+`pyproject.toml`, requires `docs/releases/v0.32.0.md` and
+`tests/test_v032_release.py`, and validates the v0.32.0 release-candidate metadata before
+final RFC acceptance, tag, artifacts, and checksums. Real Windows dogfood remains manual.
 
 ## Windows dogfood gate
 
@@ -482,8 +484,8 @@ are never transparently retried, and no force-kill path is present.
 
 Gate 5 was sealed after a reviewed interactive Windows run completed all seven real-effect
 steps with exit code 0, restored the fixed dogfood clipboard baseline, and left no
-Notepad process running after the exact graceful close. Offline package validation remains
-the next separate gate.
+Notepad process running after the exact graceful close. Gate 6 subsequently sealed the
+separate offline package-validation boundary.
 
 ## Compatibility
 
@@ -549,22 +551,22 @@ workspace behavior remains unchanged.
 
 ### Slice 6 - Agent integration, observability, administration, and Runtime ownership
 
-- [ ] Reviewed RFC-0027 host tool descriptors and schemas
-- [ ] Independent `tool.invoke` plus `host.*` enforcement
-- [ ] Content-free host observer events and safe public failures
-- [ ] Bounded host administration/health surface
-- [ ] Runtime assembler ownership and disabled-by-default tests
+- [x] Reviewed RFC-0027 host tool descriptors and schemas
+- [x] Independent `tool.invoke` plus `host.*` enforcement
+- [x] Content-free host observer events and safe public failures
+- [x] Bounded host administration/health surface
+- [x] Runtime assembler ownership and disabled-by-default tests
 - [x] Windows dogfood host integration
 
 ### Slice 7 - Security review, migration, and release hardening
 
-- [ ] Threat-model/security-invariant review
-- [ ] ADRs for host authority, application profiles, native identity opacity, and UI TOCTOU
-- [ ] v0.31.0 to v0.32.0 migration guidance
+- [x] Threat-model/security-invariant review
+- [x] ADRs for host authority, application profiles, native identity opacity, and UI TOCTOU
+- [x] v0.31.0 to v0.32.0 migration guidance
 - [x] Named host-automation release gate
 - [x] Windows dogfood with real process/window/app/clipboard effects
 - [x] Offline wheel/sdist validation
-- [ ] Release notes and package version 0.32.0
+- [x] Release notes and package version 0.32.0
 - [ ] Tag, artifacts, and checksums
 
 ## Acceptance

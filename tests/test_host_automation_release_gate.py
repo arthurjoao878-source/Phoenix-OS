@@ -20,6 +20,8 @@ def test_host_automation_release_gate_covers_source_and_release_hardening() -> N
         '"tests/test_host_automation_windows_dogfood.py"',
         '"phoenix_os/host_automation/windows_effects.py"',
         '"docs/rfcs/RFC-0032-secure-host-automation-and-desktop-control.md"',
+        '"docs/releases/v0.32.0.md"',
+        '"tests/test_v032_release.py"',
         '"docs/migrations/v0.31.0-to-v0.32.0-secure-host-automation.md"',
         '"docs/adrs/ADR-0060-host-state-is-data-effects-require-fresh-authority.md"',
         '"docs/adrs/ADR-0063-immediate-ui-toctou-revalidation.md"',
@@ -79,5 +81,5 @@ def test_host_automation_release_gate_is_named_in_ci_local_checks_and_docs() -> 
     assert "- [x] Named host-automation release gate" in rfc
     assert "- [x] Windows dogfood with real process/window/app/clipboard effects" in rfc
     assert "- [x] Offline wheel/sdist validation" in rfc
-    assert "- [ ] Release notes and package version 0.32.0" in rfc
+    assert "- [x] Release notes and package version 0.32.0" in rfc
     assert "- [ ] Tag, artifacts, and checksums" in rfc

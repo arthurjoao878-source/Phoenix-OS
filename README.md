@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.31.0` implements thirty-one accepted specifications:
+Version `0.32.0` implements thirty-two accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -89,12 +89,18 @@ Version `0.31.0` implements thirty-one accepted specifications:
   run/agent/principal artifact workspaces with exact independent authorization,
   Phoenix-owned logical paths, authoritative versioned storage, explicit transfers,
   untrusted artifact context, fail-closed recovery, and Runtime-owned lifecycle.
+- **RFC-0032 - Secure Host Automation and Desktop Control:** opt-in bounded
+  OS-neutral host contracts with a reviewed Windows adapter, fresh exact `host.*`
+  authority, server-owned application profiles, opaque process/window identities,
+  stale-safe focus/close, text-only clipboard boundaries, and Runtime-owned lifecycle.
 
 The core intentionally contains no AI model, remote database driver, external vector database,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
-queue broker, audit signature provider, remote audit archive, telemetry vendor, hosted control-plane service, implicit remote exposure, or
-operating-system automation. The
-standard-library SQLite adapter is a local reference implementation; stronger storage remains behind
+queue broker, audit signature provider, remote audit archive, telemetry vendor, hosted control-plane
+service, implicit remote exposure, or implicit operating-system automation. RFC-0032 adds an explicit
+opt-in host-automation boundary with OS-neutral public contracts and a reviewed Windows adapter; it
+does not add generic shell, keyboard/mouse, force-kill, elevation, or arbitrary executable authority.
+The standard-library SQLite adapter is a local reference implementation; stronger storage remains behind
 the State Store and Audit Store protocols. Other integrations belong behind capability providers,
 lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
 The plugin system is an authority boundary for SDK contributions, not a sandbox for hostile code.
@@ -284,15 +290,16 @@ validated sdist, and installs both wheel forms with `--no-deps --no-index` into 
 virtual environments. The packaged smoke uses `DeterministicHostAutomationAdapter`, so it
 does not perform native desktop effects.
 
-Gate 6 does not mutate the project version or create release notes. The later version
-and release-note gate owns the `0.32.0` bump; after that bump this same package gate will
-derive and validate the new version automatically. Real Windows dogfood remains manual,
-and tag/artifact/checksum publication remains a later gate.
+Gate 6 was sealed after the reviewed package-validation run and exact-SHA CI built and
+validated the wheel and sdist, rebuilt a wheel from the validated sdist, installed both
+wheel forms with `--no-deps --no-index`, and passed isolated deterministic
+host-automation smoke validation.
 
-Gate 6 local completion was recorded after a reviewed run built and validated the wheel and sdist,
-rebuilt a wheel from the validated sdist, installed both wheel forms with
-`--no-deps --no-index`, and passed isolated deterministic host-automation smoke
-validation.
+Gate 7 now sets the package metadata to `0.32.0` and adds
+`docs/releases/v0.32.0.md`. The same named gate derives the current version from
+`pyproject.toml`, requires the v0.32.0 release-candidate specification and release notes
+in the package boundary, and keeps real Windows effects manual. Final RFC acceptance,
+tag, artifacts, and checksums remain the publication gate.
 
 ## Windows host-automation dogfood
 
@@ -325,6 +332,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 
 ## Release notes
 
+- [Phoenix OS 0.32.0](docs/releases/v0.32.0.md)
 - [Phoenix OS 0.31.0](docs/releases/v0.31.0.md)
 - [Phoenix OS 0.30.0](docs/releases/v0.30.0.md)
 - [Phoenix OS 0.29.0](docs/releases/v0.29.0.md)
@@ -334,7 +342,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
+The release notes summarize host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
 security boundaries, compatibility, migration, architecture decisions,
 validation, and package artifacts.
 
@@ -415,6 +423,17 @@ Existing v0.30.0 behavior remains unchanged when workspace configuration is omit
 The [RFC-0031 agent-workspace threat-model and security-invariant review](docs/security/RFC-0031-agent-workspace-threat-model-review.md)
 records all seventy-one invariants, release-candidate evidence, and residual risks.
 
+The opt-in v0.32.0 secure host-automation subsystem has staged disabled-first rollout,
+exact host policy, bounded process/window discovery, server-owned application profiles,
+stale-safe focus/close, text-only clipboard controls, manual Windows dogfood, and
+disable-first rollback guidance:
+
+- [Migrate v0.31.0 deployments to v0.32.0 secure host automation](docs/migrations/v0.31.0-to-v0.32.0-secure-host-automation.md)
+
+Existing v0.31.0 behavior remains unchanged when host automation is omitted. The
+[RFC-0032 host-automation threat-model and security-invariant review](docs/security/RFC-0032-host-automation-threat-model-review.md)
+records all fifty-six invariants, release-candidate evidence, and residual risks.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -454,6 +473,12 @@ logical paths with host confinement, authoritative workspace records behind
 provider-neutral backing, and explicit independently authorized import/export. The
 [RFC-0031 agent-workspace threat-model and security-invariant review](docs/security/RFC-0031-agent-workspace-threat-model-review.md)
 records all seventy-one workspace invariants and release-candidate evidence.
+
+The RFC-0032 host-automation records cover host-state-as-data with fresh effect
+authority, server-owned configured application profiles, opaque Phoenix process/window
+identities, and immediate UI TOCTOU revalidation. The
+[RFC-0032 host-automation threat-model and security-invariant review](docs/security/RFC-0032-host-automation-threat-model-review.md)
+records all fifty-six host-automation invariants and release-candidate evidence.
 
 ## Local dashboard example
 

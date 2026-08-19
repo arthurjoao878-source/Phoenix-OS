@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PYPROJECT = _ROOT / "pyproject.toml"
 _README = _ROOT / "README.md"
 _CHANGELOG = _ROOT / "CHANGELOG.md"
 _RELEASE_NOTES = _ROOT / "docs" / "releases" / "v0.31.0.md"
@@ -13,15 +11,10 @@ _RFC = _ROOT / "docs" / "rfcs" / "RFC-0031-secure-agent-workspaces-and-artifact-
 _GATE = _ROOT / "scripts" / "check_agent_workspace_release.py"
 
 
-def test_project_version_is_v0310() -> None:
-    document = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert document["project"]["version"] == "0.31.0"
-
-
-def test_readme_announces_thirty_one_specs_and_agent_workspace_gate() -> None:
+def test_readme_preserves_v031_release_history() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.31.0` implements thirty-one accepted specifications:" in readme
-    assert "**RFC-0031 — Secure Agent Workspaces and Artifact Handling:**" in readme
+    assert "RFC-0031" in readme
+    assert "Secure Agent Workspaces and Artifact Handling" in readme
     current = "[Phoenix OS 0.31.0](docs/releases/v0.31.0.md)"
     previous = "[Phoenix OS 0.30.0](docs/releases/v0.30.0.md)"
     assert readme.count(current) == 1
@@ -29,7 +22,7 @@ def test_readme_announces_thirty_one_specs_and_agent_workspace_gate() -> None:
     assert "## Agent-workspace release gate" in readme
 
 
-def test_changelog_starts_with_v0310_release() -> None:
+def test_changelog_preserves_v0310_release() -> None:
     changelog = _CHANGELOG.read_text(encoding="utf-8")
     current = "## [0.31.0] - 2026-08-14"
     previous = "## [0.30.0] - 2026-08-12"
@@ -47,7 +40,7 @@ def test_changelog_starts_with_v0310_release() -> None:
         assert phrase in changelog
 
 
-def test_v031_release_notes_are_complete() -> None:
+def test_v031_release_notes_remain_complete() -> None:
     notes = _RELEASE_NOTES.read_text(encoding="utf-8")
     for phrase in (
         "# Phoenix OS 0.31.0",
@@ -76,7 +69,7 @@ def test_v031_release_notes_are_complete() -> None:
     assert "The GitHub release publishes:" in notes
 
 
-def test_rfc_is_fully_accepted_for_v0310() -> None:
+def test_rfc_remains_accepted_for_v0310() -> None:
     rfc = " ".join(_RFC.read_text(encoding="utf-8").split())
     assert "- Status: Accepted" in rfc
     assert "- [ ]" not in rfc
@@ -86,7 +79,7 @@ def test_rfc_is_fully_accepted_for_v0310() -> None:
     assert "RFC-0031 is accepted for Phoenix OS 0.31.0." in rfc
 
 
-def test_gate_and_previous_release_notes_remain_available() -> None:
+def test_v031_gate_and_previous_release_notes_remain_available() -> None:
     assert _GATE.is_file()
     assert _PREVIOUS_RELEASE_NOTES.is_file()
     assert "# Phoenix OS 0.30.0" in _PREVIOUS_RELEASE_NOTES.read_text(encoding="utf-8")

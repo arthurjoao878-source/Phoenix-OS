@@ -16,7 +16,10 @@ from pathlib import Path, PurePosixPath
 
 _ROOT = Path(__file__).resolve().parents[1]
 
-_COMPANION_TESTS = ("tests/test_rfc_0032.py",)
+_COMPANION_TESTS = (
+    "tests/test_rfc_0032.py",
+    "tests/test_v032_release.py",
+)
 
 _REQUIRED_HOST_AUTOMATION_TESTS = frozenset(
     {
@@ -83,6 +86,7 @@ _REQUIRED_SDIST_DOCUMENTS = (
     "CHANGELOG.md",
     "LICENSE",
     "pyproject.toml",
+    "docs/releases/v0.32.0.md",
     "docs/rfcs/RFC-0032-secure-host-automation-and-desktop-control.md",
     "docs/migrations/v0.31.0-to-v0.32.0-secure-host-automation.md",
     "docs/security/RFC-0032-host-automation-threat-model-review.md",
