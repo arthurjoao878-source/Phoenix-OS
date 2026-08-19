@@ -3,7 +3,7 @@
 ## [0.32.0] - 2026-08-19
 
 ### Added
-- RFC-0032 secure host automation and desktop control with OS-neutral public contracts, a reviewed Windows adapter, and exact independent `host.process.list`, `host.window.list`, `host.app.launch`, `host.window.focus`, `host.app.close`, `host.clipboard.write`, and `host.clipboard.read` authority.
+- Accepted RFC-0032 secure host automation and desktop control with OS-neutral public contracts, a reviewed Windows adapter, and exact independent `host.process.list`, `host.window.list`, `host.app.launch`, `host.window.focus`, `host.app.close`, `host.clipboard.write`, and `host.clipboard.read` authority.
 - Server-owned configured application profiles, opaque Phoenix process/window identities bound to finite host epochs, bounded content-minimized discovery, and immediate target revalidation for interactive effects.
 - Graceful-close-only application control, independently configurable bounded text clipboard read/write, content-free host observation/administration, and Runtime-owned availability/shutdown.
 - Host-automation migration guidance, four architecture records, formal fifty-six-invariant threat review, manual real-Windows dogfood, release metadata, and isolated offline wheel/sdist validation.
@@ -19,7 +19,7 @@
 - Phoenix OS 0.31.0 behavior is preserved when host-automation configuration is omitted.
 - Upgrade creates no host service, adapter, native handle, enumeration, launch profile, clipboard access, host tool, permission, approval, worker, or desktop effect automatically.
 - Windows is the only concrete v0.32.0 adapter; unsupported explicit Windows configuration fails safely, while omission remains a no-op.
-- Final publication remains pending final RFC acceptance, release commit, Git tag `v0.32.0`, wheel/sdist artifacts, and `SHA256SUMS`.
+- Release publication uses Git tag `v0.32.0`, wheel and sdist artifacts, and `SHA256SUMS`.
 
 
 ## [0.31.0] - 2026-08-14

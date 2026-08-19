@@ -82,4 +82,4 @@ def test_host_automation_release_gate_is_named_in_ci_local_checks_and_docs() -> 
     assert "- [x] Windows dogfood with real process/window/app/clipboard effects" in rfc
     assert "- [x] Offline wheel/sdist validation" in rfc
     assert "- [x] Release notes and package version 0.32.0" in rfc
-    assert "- [ ] Tag, artifacts, and checksums" in rfc
+    assert "- [x] Tag, artifacts, and checksums" in rfc

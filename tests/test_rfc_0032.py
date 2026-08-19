@@ -27,10 +27,10 @@ def _security_invariant_numbers() -> list[int]:
     return numbers
 
 
-def test_rfc_0032_is_draft_for_v0320() -> None:
+def test_rfc_0032_is_accepted_for_v0320() -> None:
     text = _text()
     assert "# RFC-0032: Secure Host Automation and Desktop Control" in text
-    assert "- Status: Draft" in text
+    assert "- Status: Accepted" in text
     assert "- Target release: Phoenix OS v0.32.0" in text
     assert "Desktop state is data; host effects require fresh authority." in text
 
@@ -252,7 +252,7 @@ def test_rfc_0032_proposes_provider_neutral_host_contracts() -> None:
         assert f"`{contract}`" in text
 
 
-def test_rfc_0032_implementation_and_release_candidate_milestones_are_recorded() -> None:
+def test_rfc_0032_slice_plan_is_fully_complete() -> None:
     text = _text()
     assert "### Slice 0 - RFC foundation and executable specification" in text
     assert "### Slice 7 - Security review, migration, and release hardening" in text
@@ -302,9 +302,11 @@ def test_rfc_0032_implementation_and_release_candidate_milestones_are_recorded()
     assert "- [x] Windows dogfood with real process/window/app/clipboard effects" in text
     assert "- [x] Offline wheel/sdist validation" in text
     assert "- [x] Release notes and package version 0.32.0" in text
-    assert "- [ ] Tag, artifacts, and checksums" in text
-    assert "- Status: Draft" in text
+    assert "- [x] Tag, artifacts, and checksums" in text
+    assert "- [ ]" not in text
+    assert "- Status: Accepted" in text
     assert "docs/releases/v0.32.0.md" in text
+    assert "RFC-0032 is accepted for Phoenix OS 0.32.0." in text
 
 
 def test_rfc_0032_acceptance_preserves_security_boundary() -> None:

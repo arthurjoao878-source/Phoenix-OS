@@ -1,6 +1,6 @@
 # RFC-0032: Secure Host Automation and Desktop Control
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.32.0
 - Owners: Phoenix OS maintainers
 - Depends on: RFC-0002, RFC-0003, RFC-0004, RFC-0005, RFC-0006, RFC-0008, RFC-0009, RFC-0010, RFC-0012, RFC-0027, RFC-0028, and RFC-0031
@@ -455,10 +455,11 @@ and sdist, rebuilt a wheel from the validated sdist, installed both wheel forms 
 `--no-deps --no-index`, and passed isolated deterministic host-automation smoke
 validation.
 
-Gate 7 now sets the package metadata to v0.32.0. The named gate derives that version from
+The package metadata targets v0.32.0. The named gate derives that version from
 `pyproject.toml`, requires `docs/releases/v0.32.0.md` and
-`tests/test_v032_release.py`, and validates the v0.32.0 release-candidate metadata before
-final RFC acceptance, tag, artifacts, and checksums. Real Windows dogfood remains manual.
+`tests/test_v032_release.py`, and validates the v0.32.0 release metadata.
+Release publication uses Git tag `v0.32.0`, wheel and sdist artifacts, and
+`SHA256SUMS`. Real Windows dogfood remains manual.
 
 ## Windows dogfood gate
 
@@ -567,7 +568,7 @@ workspace behavior remains unchanged.
 - [x] Windows dogfood with real process/window/app/clipboard effects
 - [x] Offline wheel/sdist validation
 - [x] Release notes and package version 0.32.0
-- [ ] Tag, artifacts, and checksums
+- [x] Tag, artifacts, and checksums
 
 ## Acceptance
 
@@ -583,3 +584,5 @@ from operational telemetry, host side effects are never transparently replayed a
 indeterminate failure, Runtime owns finite lifecycle, unsupported platforms fail
 safely when explicitly configured, and omitting host automation preserves Phoenix OS
 v0.31.0 behavior.
+
+RFC-0032 is accepted for Phoenix OS 0.32.0.

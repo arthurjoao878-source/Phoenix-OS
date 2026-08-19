@@ -30,14 +30,14 @@ def test_readme_announces_thirty_two_specs_and_host_automation_gate() -> None:
     assert "## Host-automation release gate" in readme
 
 
-def test_changelog_starts_with_v0320_release_candidate() -> None:
+def test_changelog_starts_with_v0320_release() -> None:
     changelog = _CHANGELOG.read_text(encoding="utf-8")
     current = "## [0.32.0] - 2026-08-19"
     previous = "## [0.31.0] - 2026-08-14"
     assert changelog.count(current) == 1
     assert changelog.index(current) < changelog.index(previous)
     for phrase in (
-        "RFC-0032 secure host automation and desktop control",
+        "Accepted RFC-0032 secure host automation and desktop control",
         "Desktop state is data; host effects require fresh authority",
         "host.app.launch",
         "opaque Phoenix process/window identities",
@@ -46,20 +46,19 @@ def test_changelog_starts_with_v0320_release_candidate() -> None:
         "isolated offline",
     ):
         assert phrase in changelog
-    assert "Accepted RFC-0032" not in changelog
 
 
-def test_v032_release_candidate_notes_are_complete() -> None:
+def test_v032_release_notes_are_complete() -> None:
     notes = _RELEASE_NOTES.read_text(encoding="utf-8")
     for phrase in (
         "# Phoenix OS 0.32.0",
-        "**Release candidate:** 2026-08-19",
+        "**Released:** 2026-08-19",
         "## Highlights",
         "## Security",
         "## Compatibility and migration",
         "## Architecture decisions",
         "## Release validation",
-        "## Planned artifacts",
+        "## Artifacts",
         "Desktop state is data; host effects require fresh authority.",
         "python scripts/check_host_automation_release.py",
         "python scripts/dogfood_host_automation_windows.py --confirm-real-effects",
@@ -72,16 +71,21 @@ def test_v032_release_candidate_notes_are_complete() -> None:
     upper = notes.upper()
     assert "TODO" not in upper
     assert "TBD" not in upper
+    assert "The release must pass:" in notes
+    assert "release metadata, wheel and sdist contents" in notes
+    assert "The GitHub release publishes:" in notes
+    assert "Verify artifact names and checksums against `SHA256SUMS`" in notes
 
 
-def test_rfc_remains_draft_until_publication_artifacts_exist() -> None:
+def test_rfc_is_fully_accepted_for_v0320() -> None:
     rfc = " ".join(_RFC.read_text(encoding="utf-8").split())
-    assert "- Status: Draft" in rfc
+    assert "- Status: Accepted" in rfc
+    assert "- [ ]" not in rfc
     assert "- [x] Release notes and package version 0.32.0" in rfc
-    assert "- [ ] Tag, artifacts, and checksums" in rfc
-    assert rfc.count("- [ ]") == 1
+    assert "- [x] Tag, artifacts, and checksums" in rfc
     assert "- Target release: Phoenix OS v0.32.0" in rfc
     assert "docs/releases/v0.32.0.md" in rfc
+    assert "RFC-0032 is accepted for Phoenix OS 0.32.0." in rfc
 
 
 def test_gate_and_previous_release_notes_remain_available() -> None:

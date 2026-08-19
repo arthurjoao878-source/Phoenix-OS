@@ -71,13 +71,13 @@ def test_windows_dogfood_is_not_part_of_automatic_ci_or_local_check_aggregators(
     assert "manual and Windows-only" in rfc
 
 
-def test_windows_dogfood_completion_is_recorded_without_closing_later_gates() -> None:
+def test_windows_dogfood_completion_remains_recorded_after_release_acceptance() -> None:
     rfc = _RFC.read_text(encoding="utf-8")
     readme = _README.read_text(encoding="utf-8")
     assert "- [x] Windows dogfood host integration" in rfc
     assert "- [x] Windows dogfood with real process/window/app/clipboard effects" in rfc
     assert "- [x] Offline wheel/sdist validation" in rfc
     assert "- [x] Release notes and package version 0.32.0" in rfc
-    assert "- [ ] Tag, artifacts, and checksums" in rfc
+    assert "- [x] Tag, artifacts, and checksums" in rfc
     assert "completed all seven" in readme
     assert "steps with exit code 0" in readme
