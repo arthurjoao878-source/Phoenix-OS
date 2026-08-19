@@ -1,4 +1,5 @@
 import asyncio
+import sys
 
 import pytest
 
@@ -222,6 +223,72 @@ async def test_runtime_assembler_owns_configured_host_service_and_adapter_shutdo
     assert adapter.closed
     assert not (await service.snapshot()).available
     assert runtime.state is RuntimeState.STOPPED
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Windows Runtime host integration requires Windows",
+)
+@pytest.mark.asyncio
+async def test_runtime_assembler_integrates_real_windows_host_adapter() -> None:
+    from phoenix_os import PolicyEffect, PolicyEngine, PolicyRule
+    from phoenix_os.host_automation import (
+        HostAutomationLimits,
+        HostId,
+        WindowsHostAutomationAdapter,
+    )
+
+    configuration = await ConfigLoader(ConfigSchema(()), (MappingConfigSource({}),)).load()
+    events = EventBus()
+    kernel = Kernel(router=Router(), authorizer=AllowAllAuthorizer(), events=events)
+    capabilities = CapabilityRegistry(events=events)
+    policy = PolicyEngine((PolicyRule("allow", PolicyEffect.ALLOW),), events=events)
+    adapter = WindowsHostAutomationAdapter(
+        host_id=HostId("runtime-windows"),
+        limits=HostAutomationLimits(
+            max_process_results=64,
+            max_process_label_chars=260,
+        ),
+    )
+
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=policy,
+        host_automation_adapter=adapter,
+    ).assemble()
+
+    service = runtime.service("host")
+    assert isinstance(service, HostAutomationService)
+    assert not adapter.closed
+    assert not (await service.snapshot()).available
+
+    await runtime.start()
+    try:
+        assert (await service.snapshot()).available
+        result = await service.list_processes(
+            HostProcessListRequest(host_id=adapter.host_id, limit=64),
+            SecurityContext(
+                principal="service:windows-dogfood",
+                principal_type=PrincipalType.SERVICE,
+                authenticated=True,
+            ),
+        )
+
+        assert result.host_id == adapter.host_id
+        assert result.host_epoch == adapter.host_epoch
+        assert len(result.processes) <= 64
+        assert all(item.host_id == result.host_id for item in result.processes)
+        assert all(item.host_epoch == result.host_epoch for item in result.processes)
+    finally:
+        await runtime.stop()
+
+    assert runtime.state is RuntimeState.STOPPED
+    assert service.closed
+    assert adapter.closed
+    assert not (await service.snapshot()).available
 
 
 def _assert_runtime_state(
