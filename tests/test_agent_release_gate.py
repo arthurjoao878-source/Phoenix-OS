@@ -127,7 +127,7 @@ def test_agent_release_gate_smokes_packaged_execution_and_authority() -> None:
         'AGENT_RUN_ACTION == "agent.run"',
         'TOOL_INVOKE_ACTION == "tool.invoke"',
         "model_authorizer.calls == 2",
-        "tool_authorizer.calls == 1",
+        "tool_authorizer.calls == 2",
     ):
         assert phrase in gate
 

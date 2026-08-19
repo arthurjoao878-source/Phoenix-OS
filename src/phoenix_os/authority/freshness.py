@@ -23,6 +23,13 @@ class SessionFreshnessSource(Protocol):
     async def session(self, session_id: UUID) -> Session: ...
 
 
+@runtime_checkable
+class AuthorityFreshnessValidator(Protocol):
+    """Validate current trusted authority immediately before operation admission."""
+
+    async def validate(self, context: SecurityContext) -> None: ...
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 

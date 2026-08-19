@@ -2,12 +2,14 @@
 
 from phoenix_os.authority.freshness import (
     AuthorityFreshnessRejectedError,
+    AuthorityFreshnessValidator,
     CurrentSessionFreshnessValidator,
     SessionFreshnessSource,
 )
 
 __all__ = [
     "AuthorityFreshnessRejectedError",
+    "AuthorityFreshnessValidator",
     "CurrentSessionFreshnessValidator",
     "SessionFreshnessSource",
 ]
