@@ -76,7 +76,7 @@ def test_windows_dogfood_completion_is_recorded_without_closing_later_gates() ->
     readme = _README.read_text(encoding="utf-8")
     assert "- [x] Windows dogfood host integration" in rfc
     assert "- [x] Windows dogfood with real process/window/app/clipboard effects" in rfc
-    assert "- [ ] Offline wheel/sdist validation" in rfc
+    assert "- [x] Offline wheel/sdist validation" in rfc
     assert "- [ ] Release notes and package version 0.32.0" in rfc
     assert "- [ ] Tag, artifacts, and checksums" in rfc
     assert "completed all seven" in readme

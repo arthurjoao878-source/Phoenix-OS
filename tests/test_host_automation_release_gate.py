@@ -30,17 +30,40 @@ def test_host_automation_release_gate_covers_source_and_release_hardening() -> N
         assert phrase in text
 
 
-def test_host_automation_release_gate_keeps_later_release_gates_separate() -> None:
+def test_host_automation_release_gate_builds_validates_and_rebuilds_packages() -> None:
     text = _GATE.read_text(encoding="utf-8")
-    for deferred in (
-        '"-m", "build"',
-        '"--no-index"',
+    for phrase in (
         "import tarfile",
-        "import venv",
         "import zipfile",
-        "Windows dogfood",
+        "_REQUIRED_SDIST_DOCUMENTS",
+        "_validate_archive_names(",
+        "_validate_wheel(",
+        'tarfile.open(sdist, mode="r:gz")',
+        '"build"',
+        '"--no-isolation"',
+        "Rebuilding a wheel from the validated sdist",
+        '"docs/security/RFC-0032-host-automation-threat-model-review.md"',
     ):
-        assert deferred not in text
+        assert phrase in text
+
+
+def test_host_automation_release_gate_uses_offline_isolated_deterministic_smoke() -> None:
+    text = _GATE.read_text(encoding="utf-8")
+    for phrase in (
+        "import venv",
+        '"--no-deps"',
+        '"--no-index"',
+        "PYTHONNOUSERSITE",
+        'distribution_version("phoenix-os") == {version!r}',
+        "DeterministicHostAutomationAdapter",
+        "HostAutomationService(",
+        "service.list_processes(",
+        "service.write_clipboard(",
+        "service.read_clipboard(",
+        '"-I"',
+    ):
+        assert phrase in text
+    assert "--confirm-real-effects" not in text
 
 
 def test_host_automation_release_gate_is_named_in_ci_local_checks_and_docs() -> None:
@@ -55,6 +78,6 @@ def test_host_automation_release_gate_is_named_in_ci_local_checks_and_docs() -> 
     rfc = _RFC.read_text(encoding="utf-8")
     assert "- [x] Named host-automation release gate" in rfc
     assert "- [x] Windows dogfood with real process/window/app/clipboard effects" in rfc
-    assert "- [ ] Offline wheel/sdist validation" in rfc
+    assert "- [x] Offline wheel/sdist validation" in rfc
     assert "- [ ] Release notes and package version 0.32.0" in rfc
     assert "- [ ] Tag, artifacts, and checksums" in rfc

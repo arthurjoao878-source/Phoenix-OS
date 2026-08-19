@@ -276,9 +276,23 @@ The gate reruns every `test_host_automation*.py` regression plus the RFC-0032
 executable specification and validates the required host-automation source modules
 and release-hardening files.
 
-Gate 4 intentionally does not perform real Windows dogfood, wheel/sdist build or
-offline installation, package-version/release-note validation, or
-tag/artifact/checksum validation. Those remain separate later Slice 7 gates.
+Gate 4 originally sealed this as a source-tree-only named gate. Gate 6 extends the
+same command with package-boundary validation: it builds one wheel and one sdist from the
+current `pyproject.toml` metadata, validates archive paths, metadata, required
+host-automation package files and release-hardening documents, rebuilds a wheel from the
+validated sdist, and installs both wheel forms with `--no-deps --no-index` into isolated
+virtual environments. The packaged smoke uses `DeterministicHostAutomationAdapter`, so it
+does not perform native desktop effects.
+
+Gate 6 does not mutate the project version or create release notes. The later version
+and release-note gate owns the `0.32.0` bump; after that bump this same package gate will
+derive and validate the new version automatically. Real Windows dogfood remains manual,
+and tag/artifact/checksum publication remains a later gate.
+
+Gate 6 local completion was recorded after a reviewed run built and validated the wheel and sdist,
+rebuilt a wheel from the validated sdist, installed both wheel forms with
+`--no-deps --no-index`, and passed isolated deterministic host-automation smoke
+validation.
 
 ## Windows host-automation dogfood
 

@@ -439,9 +439,24 @@ The gate reruns all `test_host_automation*.py` regressions plus the RFC-0032
 executable specification and validates the required host-automation source modules
 and release-hardening files.
 
-The named gate intentionally does not perform real Windows dogfood, wheel/sdist build
-or offline installation, package-version/release-note validation, or
-tag/artifact/checksum validation. Those remain separate later Slice 7 gates.
+Gate 4 originally sealed the named gate as source-tree-only. Gate 6 extends the same
+command with package-boundary validation. It builds one wheel and one sdist from the
+current `pyproject.toml` metadata, rejects unsafe archive paths and forbidden file types,
+validates wheel metadata and required host-automation package files, validates required
+RFC/migration/security/ADR documents in the sdist, rebuilds a wheel from the validated
+sdist, and installs both wheel forms with `--no-deps --no-index` into isolated virtual
+environments.
+
+The isolated smoke uses `DeterministicHostAutomationAdapter` and therefore exercises
+packaged host contracts, policy/service wiring, process discovery, and clipboard
+write/read without native desktop effects or source-tree imports. The package version is
+derived from `pyproject.toml`; Gate 6 does not change it. The later release-note/version
+gate owns the `0.32.0` bump, after which this same package validation automatically checks
+the new metadata. Real Windows dogfood remains manual, and tag/artifact/checksum
+publication remains separate. Gate 6 local completion was recorded after a reviewed run built and
+validated the wheel and sdist, rebuilt a wheel from the validated sdist, installed both
+wheel forms with `--no-deps --no-index`, and passed isolated deterministic
+host-automation smoke validation.
 
 ## Windows dogfood gate
 
@@ -548,7 +563,7 @@ workspace behavior remains unchanged.
 - [ ] v0.31.0 to v0.32.0 migration guidance
 - [x] Named host-automation release gate
 - [x] Windows dogfood with real process/window/app/clipboard effects
-- [ ] Offline wheel/sdist validation
+- [x] Offline wheel/sdist validation
 - [ ] Release notes and package version 0.32.0
 - [ ] Tag, artifacts, and checksums
 
