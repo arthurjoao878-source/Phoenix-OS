@@ -32,6 +32,7 @@ _REQUIRED_HOST_AUTOMATION_TESTS = frozenset(
         "tests/test_host_automation_windows_clipboard_write.py",
         "tests/test_host_automation_windows_close.py",
         "tests/test_host_automation_windows_discovery.py",
+        "tests/test_host_automation_windows_dogfood.py",
         "tests/test_host_automation_windows_focus.py",
         "tests/test_host_automation_windows_launch.py",
     }
@@ -64,6 +65,7 @@ _REQUIRED_RELEASE_HARDENING_FILES = (
     "docs/adrs/ADR-0061-server-owned-configured-application-profiles.md",
     "docs/adrs/ADR-0062-opaque-phoenix-host-identities.md",
     "docs/adrs/ADR-0063-immediate-ui-toctou-revalidation.md",
+    "scripts/dogfood_host_automation_windows.py",
     "src/phoenix_os/configuration/dependencies.py",
 )
 

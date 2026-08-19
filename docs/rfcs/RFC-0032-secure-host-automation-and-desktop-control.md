@@ -443,6 +443,33 @@ The named gate intentionally does not perform real Windows dogfood, wheel/sdist 
 or offline installation, package-version/release-note validation, or
 tag/artifact/checksum validation. Those remain separate later Slice 7 gates.
 
+## Windows dogfood gate
+
+Gate 5 is manual and Windows-only. The runner is intentionally excluded from automatic
+CI and the local check aggregators because it performs real interactive desktop effects:
+
+```powershell
+Set-Clipboard -Value "PHOENIX-RFC0032-DOGFOOD-BASELINE"
+python scripts/dogfood_host_automation_windows.py --confirm-real-effects
+```
+
+The operator must close every existing Notepad window first and save any clipboard
+content that matters. The runner then refuses truncated process discovery or an existing
+Notepad process, uses only the server-owned `System32\notepad.exe` profile, and exercises
+the real Windows adapter through `HostAutomationService` plus
+`PolicyEngineHostAutomationAuthorizer`.
+
+The run covers real process discovery, configured launch, window discovery, exact
+opaque-identity focus, bounded plain-text clipboard write/read with fixed baseline
+restoration, and one exact graceful close. Focus and close policy rules are bound
+just-in-time to the discovered opaque window/process resources. Indeterminate effects
+are never transparently retried, and no force-kill path is present.
+
+Gate 5 was sealed after a reviewed interactive Windows run completed all seven real-effect
+steps with exit code 0, restored the fixed dogfood clipboard baseline, and left no
+Notepad process running after the exact graceful close. Offline package validation remains
+the next separate gate.
+
 ## Compatibility
 
 When host-automation configuration is omitted, Phoenix creates no host service,
@@ -512,7 +539,7 @@ workspace behavior remains unchanged.
 - [ ] Content-free host observer events and safe public failures
 - [ ] Bounded host administration/health surface
 - [ ] Runtime assembler ownership and disabled-by-default tests
-- [ ] Windows dogfood host integration
+- [x] Windows dogfood host integration
 
 ### Slice 7 - Security review, migration, and release hardening
 
@@ -520,7 +547,7 @@ workspace behavior remains unchanged.
 - [ ] ADRs for host authority, application profiles, native identity opacity, and UI TOCTOU
 - [ ] v0.31.0 to v0.32.0 migration guidance
 - [x] Named host-automation release gate
-- [ ] Windows dogfood with real process/window/app/clipboard effects
+- [x] Windows dogfood with real process/window/app/clipboard effects
 - [ ] Offline wheel/sdist validation
 - [ ] Release notes and package version 0.32.0
 - [ ] Tag, artifacts, and checksums

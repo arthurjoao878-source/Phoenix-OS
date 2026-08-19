@@ -286,7 +286,7 @@ def test_rfc_0032_slices_zero_one_and_two_are_complete_and_later_slices_remain_o
         "Windows discovery integration tests",
     ):
         assert f"- [x] {item}" in text
-    assert "- [ ] Windows dogfood with real process/window/app/clipboard effects" in text
+    assert "- [x] Windows dogfood with real process/window/app/clipboard effects" in text
 
 
 def test_rfc_0032_acceptance_preserves_security_boundary() -> None:

@@ -280,6 +280,35 @@ Gate 4 intentionally does not perform real Windows dogfood, wheel/sdist build or
 offline installation, package-version/release-note validation, or
 tag/artifact/checksum validation. Those remain separate later Slice 7 gates.
 
+## Windows host-automation dogfood
+
+Gate 5 is manual and Windows-only because it exercises the interactive desktop through
+the real Windows discovery, effect, and clipboard backends. It is deliberately not
+invoked from CI, `scripts/check.ps1`, or `scripts/check.sh`.
+
+Before running, close every Notepad window and save any clipboard content you care
+about. Then place the fixed non-sensitive baseline on the clipboard and explicitly
+confirm the real effects:
+
+```powershell
+Set-Clipboard -Value "PHOENIX-RFC0032-DOGFOOD-BASELINE"
+python scripts/dogfood_host_automation_windows.py --confirm-real-effects
+```
+
+The runner refuses an existing Notepad process or truncated process preflight, launches
+only the trusted `System32\notepad.exe` application profile, and sends every dogfood
+operation through `HostAutomationService` with `PolicyEngineHostAutomationAuthorizer`.
+Focus and close authority are registered only for the exact opaque identities discovered
+during that run.
+
+The dogfood performs real process/window discovery, one configured application launch,
+one exact window focus, a fixed clipboard write/read plus baseline restoration, and one
+graceful application close. Indeterminate effects are not retried, and the runner has no
+force-kill or arbitrary executable/command-line escape hatch.
+
+Gate 5 completion was sealed after a reviewed interactive Windows run completed all seven
+steps with exit code 0 and left no Notepad process running after the graceful close.
+
 ## Release notes
 
 - [Phoenix OS 0.31.0](docs/releases/v0.31.0.md)
