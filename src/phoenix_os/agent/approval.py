@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
+from uuid import UUID
 
 from phoenix_os.agent.authorization import (
     TOOL_INVOKE_ACTION,
@@ -19,6 +21,7 @@ from phoenix_os.agent.authorization import (
 )
 from phoenix_os.agent.contracts import (
     MAX_AGENT_APPROVAL_WAIT_TIMEOUT,
+    AgentId,
     AgentRunId,
     AgentStepId,
     ToolApprovalId,
@@ -32,10 +35,13 @@ from phoenix_os.agent.errors import (
     AgentServiceUnavailableError,
 )
 from phoenix_os.agent.tools import ToolDescriptor
-from phoenix_os.policy import SecurityContext
+from phoenix_os.policy import PrincipalType, SecurityContext
 
 _ARGUMENT_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _RESOURCE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._:/-]{0,1023})\Z")
+_IMPLEMENTATION_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})\Z")
+_APPROVAL_V1 = 1
+_APPROVAL_V2 = 2
 
 
 def _utc_now() -> datetime:
@@ -64,7 +70,13 @@ class ToolApprovalChallenge:
     argument_digest: str
     requested_at: datetime
     expires_at: datetime
-    schema_version: int = 1
+    schema_version: int = _APPROVAL_V1
+    principal_type: PrincipalType | None = None
+    principal: str | None = None
+    session_id: UUID | None = None
+    agent_id: AgentId | None = None
+    resolver_id: str | None = None
+    adapter_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_binding_fields(
@@ -77,8 +89,15 @@ class ToolApprovalChallenge:
             self.resolved_resource,
             self.argument_digest,
         )
-        if self.schema_version != 1:
-            raise ValueError("unsupported tool approval challenge schema version")
+        _validate_subject_binding(
+            schema_version=self.schema_version,
+            principal_type=self.principal_type,
+            principal=self.principal,
+            session_id=self.session_id,
+            agent_id=self.agent_id,
+            resolver_id=self.resolver_id,
+            adapter_id=self.adapter_id,
+        )
         _require_aware(self.requested_at, "requested_at")
         _require_aware(self.expires_at, "expires_at")
         if self.expires_at <= self.requested_at:
@@ -100,7 +119,13 @@ class ToolApprovalEvidence:
     approved_by: str
     approved_at: datetime
     expires_at: datetime
-    schema_version: int = 1
+    schema_version: int = _APPROVAL_V1
+    principal_type: PrincipalType | None = None
+    principal: str | None = None
+    session_id: UUID | None = None
+    agent_id: AgentId | None = None
+    resolver_id: str | None = None
+    adapter_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_binding_fields(
@@ -113,11 +138,18 @@ class ToolApprovalEvidence:
             self.resolved_resource,
             self.argument_digest,
         )
+        _validate_subject_binding(
+            schema_version=self.schema_version,
+            principal_type=self.principal_type,
+            principal=self.principal,
+            session_id=self.session_id,
+            agent_id=self.agent_id,
+            resolver_id=self.resolver_id,
+            adapter_id=self.adapter_id,
+        )
         approved_by = self.approved_by.strip()
         if not approved_by:
             raise ValueError("approved_by must not be blank")
-        if self.schema_version != 1:
-            raise ValueError("unsupported tool approval evidence schema version")
         _require_aware(self.approved_at, "approved_at")
         _require_aware(self.expires_at, "expires_at")
         if self.expires_at <= self.approved_at:
@@ -135,7 +167,7 @@ class ToolApprovalVerification:
     call_id: ToolCallId
     tool_id: ToolId
     consumed_at: datetime
-    schema_version: int = 1
+    schema_version: int = _APPROVAL_V1
 
     def __post_init__(self) -> None:
         if not isinstance(self.approval_id, ToolApprovalId):
@@ -148,7 +180,7 @@ class ToolApprovalVerification:
             raise TypeError("call_id must be ToolCallId")
         if not isinstance(self.tool_id, ToolId):
             raise TypeError("tool_id must be ToolId")
-        if self.schema_version != 1:
+        if self.schema_version not in {_APPROVAL_V1, _APPROVAL_V2}:
             raise ValueError("unsupported tool approval verification schema version")
         _require_aware(self.consumed_at, "consumed_at")
 
@@ -336,17 +368,29 @@ class InMemoryToolApprovalService:
 
         challenge = ToolApprovalChallenge(
             approval_id=ToolApprovalId(),
+            schema_version=_APPROVAL_V2,
+            principal_type=context.principal_type,
+            principal=context.principal,
+            session_id=context.session_id,
+            agent_id=request.agent_id,
             run_id=request.run_id,
             step_id=request.step_id,
             call_id=request.call_id,
             tool_id=request.tool_id,
             effect=descriptor.effect,
+            resolver_id=descriptor.resolver_id,
+            adapter_id=descriptor.adapter_id,
             resolved_resource=request.resolved_resource,
             argument_digest=canonical_tool_argument_digest(request.arguments),
             requested_at=now,
             expires_at=expires_at,
         )
-        binding = _binding_digest(request, descriptor, context)
+        binding = _binding_digest(
+            request,
+            descriptor,
+            context,
+            expires_at=expires_at,
+        )
         async with self._lock:
             self._require_open()
             self._ensure_capacity(now)
@@ -389,18 +433,29 @@ class InMemoryToolApprovalService:
     ) -> ToolApprovalVerification:
         if not isinstance(evidence, ToolApprovalEvidence):
             raise TypeError("evidence must be ToolApprovalEvidence")
+        if evidence.schema_version != _APPROVAL_V2:
+            raise AgentApprovalRejectedError()
         _validate_request_descriptor_context(request, descriptor, context)
         now = self._now()
-        binding = _binding_digest(request, descriptor, context)
 
         async with self._lock:
             self._require_open()
             entry = self._entries.get(evidence.approval_id)
             if (
                 entry is None
+                or entry.challenge.schema_version != _APPROVAL_V2
                 or entry.status is not ToolApprovalStatus.APPROVED
                 or now >= entry.challenge.expires_at
-                or not hmac.compare_digest(entry.binding_digest, binding)
+            ):
+                raise AgentApprovalRejectedError()
+            binding = _binding_digest(
+                request,
+                descriptor,
+                context,
+                expires_at=entry.challenge.expires_at,
+            )
+            if (
+                not hmac.compare_digest(entry.binding_digest, binding)
                 or not hmac.compare_digest(
                     _evidence_digest(evidence),
                     _evidence_digest(_evidence(entry)),
@@ -417,6 +472,7 @@ class InMemoryToolApprovalService:
             call_id=request.call_id,
             tool_id=request.tool_id,
             consumed_at=now,
+            schema_version=_APPROVAL_V2,
         )
 
     async def lookup(
@@ -518,6 +574,49 @@ def _validate_binding_fields(
         raise ValueError("argument_digest has an invalid format")
 
 
+def _validate_subject_binding(
+    *,
+    schema_version: int,
+    principal_type: PrincipalType | None,
+    principal: str | None,
+    session_id: UUID | None,
+    agent_id: AgentId | None,
+    resolver_id: str | None,
+    adapter_id: str | None,
+) -> None:
+    if schema_version not in {_APPROVAL_V1, _APPROVAL_V2}:
+        raise ValueError("unsupported tool approval schema version")
+    v2_fields = (
+        principal_type,
+        principal,
+        session_id,
+        agent_id,
+        resolver_id,
+        adapter_id,
+    )
+    if schema_version == _APPROVAL_V1:
+        if any(value is not None for value in v2_fields):
+            raise ValueError("legacy tool approval cannot contain v2 binding fields")
+        return
+    if not isinstance(principal_type, PrincipalType):
+        raise TypeError("principal_type must be PrincipalType")
+    if principal_type is PrincipalType.ANONYMOUS:
+        raise ValueError("tool approval cannot bind an anonymous principal")
+    if not isinstance(principal, str):
+        raise TypeError("principal must be a string")
+    if not principal or principal != principal.strip() or len(principal) > 1_024:
+        raise ValueError("principal is invalid")
+    if session_id is not None and not isinstance(session_id, UUID):
+        raise TypeError("session_id must be UUID or None")
+    if not isinstance(agent_id, AgentId):
+        raise TypeError("agent_id must be AgentId")
+    for label, value in (("resolver_id", resolver_id), ("adapter_id", adapter_id)):
+        if not isinstance(value, str):
+            raise TypeError(f"{label} must be a string")
+        if _IMPLEMENTATION_ID_PATTERN.fullmatch(value) is None:
+            raise ValueError(f"{label} is invalid")
+
+
 def _validate_request_descriptor_context(
     request: ToolInvocationRequest,
     descriptor: ToolDescriptor,
@@ -528,6 +627,8 @@ def _validate_request_descriptor_context(
     if not isinstance(descriptor, ToolDescriptor):
         raise TypeError("descriptor must be ToolDescriptor")
     _require_authenticated_context(context)
+    if request.agent_id is None:
+        raise AgentApprovalRejectedError()
     if descriptor.tool_id != request.tool_id:
         raise AgentApprovalRejectedError()
 
@@ -543,14 +644,35 @@ def _binding_digest(
     request: ToolInvocationRequest,
     descriptor: ToolDescriptor,
     context: SecurityContext,
+    *,
+    expires_at: datetime,
 ) -> bytes:
-    material = (
-        f"phoenix-agent-approval-binding:v1:{TOOL_INVOKE_ACTION}:"
-        f"{context.principal_type.value}:{context.principal}:"
-        f"{request.run_id}:{request.step_id}:{request.call_id}:{request.tool_id}:"
-        f"{descriptor.effect.value}:{descriptor.resolver_id}:{descriptor.adapter_id}:"
-        f"{request.resolved_resource}:{canonical_tool_argument_digest(request.arguments)}"
-    ).encode()
+    agent_id = request.agent_id
+    if agent_id is None:
+        raise AgentApprovalRejectedError()
+    _require_aware(expires_at, "approval binding expiry")
+    material = json.dumps(
+        [
+            "phoenix-agent-approval-binding:v2",
+            TOOL_INVOKE_ACTION,
+            context.principal_type.value,
+            context.principal,
+            None if context.session_id is None else str(context.session_id),
+            str(agent_id),
+            str(request.run_id),
+            str(request.step_id),
+            str(request.call_id),
+            str(request.tool_id),
+            descriptor.effect.value,
+            descriptor.resolver_id,
+            descriptor.adapter_id,
+            request.resolved_resource,
+            canonical_tool_argument_digest(request.arguments),
+            expires_at.isoformat(),
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(material).digest()
 
 
@@ -570,6 +692,8 @@ def _evidence(entry: _ApprovalEntry) -> ToolApprovalEvidence:
     if approved_by is None or approved_at is None:
         raise AgentApprovalRejectedError()
     challenge = entry.challenge
+    if challenge.schema_version != _APPROVAL_V2:
+        raise AgentApprovalRejectedError()
     return ToolApprovalEvidence(
         approval_id=challenge.approval_id,
         run_id=challenge.run_id,
@@ -582,17 +706,55 @@ def _evidence(entry: _ApprovalEntry) -> ToolApprovalEvidence:
         approved_by=approved_by,
         approved_at=approved_at,
         expires_at=challenge.expires_at,
+        schema_version=_APPROVAL_V2,
+        principal_type=challenge.principal_type,
+        principal=challenge.principal,
+        session_id=challenge.session_id,
+        agent_id=challenge.agent_id,
+        resolver_id=challenge.resolver_id,
+        adapter_id=challenge.adapter_id,
     )
 
 
 def _evidence_digest(evidence: ToolApprovalEvidence) -> bytes:
-    material = (
-        f"phoenix-agent-approval-evidence:v1:{evidence.approval_id}:"
-        f"{evidence.run_id}:{evidence.step_id}:{evidence.call_id}:{evidence.tool_id}:"
-        f"{evidence.effect.value}:{evidence.resolved_resource}:{evidence.argument_digest}:"
-        f"{evidence.approved_by}:{evidence.approved_at.isoformat()}:"
-        f"{evidence.expires_at.isoformat()}"
-    ).encode()
+    principal_type = evidence.principal_type
+    principal = evidence.principal
+    agent_id = evidence.agent_id
+    resolver_id = evidence.resolver_id
+    adapter_id = evidence.adapter_id
+    if (
+        evidence.schema_version != _APPROVAL_V2
+        or principal_type is None
+        or principal is None
+        or agent_id is None
+        or resolver_id is None
+        or adapter_id is None
+    ):
+        raise AgentApprovalRejectedError()
+    material = json.dumps(
+        [
+            "phoenix-agent-approval-evidence:v2",
+            str(evidence.approval_id),
+            principal_type.value,
+            principal,
+            None if evidence.session_id is None else str(evidence.session_id),
+            str(agent_id),
+            str(evidence.run_id),
+            str(evidence.step_id),
+            str(evidence.call_id),
+            str(evidence.tool_id),
+            evidence.effect.value,
+            resolver_id,
+            adapter_id,
+            evidence.resolved_resource,
+            evidence.argument_digest,
+            evidence.approved_by,
+            evidence.approved_at.isoformat(),
+            evidence.expires_at.isoformat(),
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(material).digest()
 
 
