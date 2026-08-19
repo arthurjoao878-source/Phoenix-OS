@@ -212,6 +212,8 @@ class BoundedAgentExecutor:
             raise TypeError("adapter must implement ToolAdapter")
         if not isinstance(request, ToolInvocationRequest):
             raise TypeError("request must be ToolInvocationRequest")
+        if request.agent_id is None:
+            raise ToolExecutionError()
         if not isinstance(descriptor, ToolDescriptor):
             raise TypeError("descriptor must be ToolDescriptor")
         if context is not None and not isinstance(context, SecurityContext):

@@ -142,6 +142,8 @@ class PolicyEngineToolAuthorizer:
         if not isinstance(descriptor, ToolDescriptor):
             raise TypeError("descriptor must be ToolDescriptor")
         _require_authenticated_context(context)
+        if request.agent_id is None:
+            raise AgentAuthorizationRejectedError()
         if descriptor.tool_id != request.tool_id:
             raise AgentAuthorizationRejectedError()
 
@@ -153,6 +155,7 @@ class PolicyEngineToolAuthorizer:
                     resource=tool_invocation_resource(request),
                     context=context,
                     attributes={
+                        "agent_id": str(request.agent_id),
                         "tool_id": str(request.tool_id),
                         "effect": descriptor.effect.value,
                         "run_id": str(request.run_id),

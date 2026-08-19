@@ -405,6 +405,7 @@ class AgentLoop:
                     state.budget.require_argument_bytes(argument_bytes)
                     invocation_created_at = self._now()
                     invocation = ToolInvocationRequest(
+                        agent_id=request.agent_id,
                         run_id=request.run_id,
                         step_id=turn.step_id,
                         call_id=proposal.call_id,

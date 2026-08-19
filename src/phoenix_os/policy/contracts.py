@@ -70,6 +70,7 @@ class SecurityContext:
     correlation_id: str | None = None
     causation_id: UUID | None = None
     confirmed: bool = False
+    session_id: UUID | None = None
 
     def __post_init__(self) -> None:
         principal = self.principal.strip()
@@ -77,6 +78,11 @@ class SecurityContext:
             raise ValueError("principal must not be blank")
         if self.principal_type is PrincipalType.ANONYMOUS and self.authenticated:
             raise ValueError("anonymous principals cannot be authenticated")
+        if self.session_id is not None:
+            if not isinstance(self.session_id, UUID):
+                raise TypeError("session_id must be UUID or None")
+            if not self.authenticated:
+                raise ValueError("session_id requires an authenticated context")
         if self.correlation_id is not None and not self.correlation_id.strip():
             raise ValueError("correlation_id must not be blank")
         object.__setattr__(self, "principal", principal)

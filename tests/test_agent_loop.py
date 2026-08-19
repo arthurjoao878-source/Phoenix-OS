@@ -258,6 +258,7 @@ async def test_read_only_tool_cycle_is_serial_and_authorized_per_turn() -> None:
         != model_auth.requests[1].metadata["agent_step_id"]
     )
     assert len(tool_auth.requests) == 1
+    assert tool_auth.requests[0].agent_id == AgentId("assistant")
     assert len(adapter.requests) == 1
 
 

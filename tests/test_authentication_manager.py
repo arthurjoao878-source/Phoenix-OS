@@ -105,7 +105,12 @@ async def test_authenticate_with_sync_provider_and_resolve() -> None:
     assert context.principal == "arthur"
     assert context.authenticated
     assert context.confirmed
+    assert context.session_id == grant.session.id
     assert context.attributes["session_id"] == str(grant.session.id)
+
+    attribute_only = grant.session.identity.security_context(session_id=grant.session.id)
+    assert attribute_only.session_id is None
+    assert attribute_only.attributes["session_id"] == str(grant.session.id)
 
 
 @pytest.mark.asyncio
