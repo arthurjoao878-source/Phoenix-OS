@@ -58,6 +58,10 @@ the decision requires a new ADR that explicitly supersedes the previous one.
 | [ADR-0057](ADR-0057-phoenix-owned-logical-paths-and-host-confinement.md) | Accepted | Keep canonical logical artifact paths separate from native host paths and confine local backing fail closed. |
 | [ADR-0058](ADR-0058-authoritative-workspace-store-and-backing-boundary.md) | Accepted | Keep workspace records authoritative while backing adapters persist only digest-validated bytes behind opaque keys. |
 | [ADR-0059](ADR-0059-explicit-workspace-import-export-boundaries.md) | Accepted | Keep import and export explicit, independently authorized, provider-neutral bounded transfer boundaries. |
+| [ADR-0060](ADR-0060-host-state-is-data-effects-require-fresh-authority.md) | Accepted | Treat desktop state as data and require fresh exact authority for every host operation without transparent effect replay. |
+| [ADR-0061](ADR-0061-server-owned-configured-application-profiles.md) | Accepted | Launch only server-owned configured application profiles without model-selected executable or command-line authority. |
+| [ADR-0062](ADR-0062-opaque-phoenix-host-identities.md) | Accepted | Keep public process/window identities opaque and native PID/HWND correlations adapter-private and stale-safe. |
+| [ADR-0063](ADR-0063-immediate-ui-toctou-revalidation.md) | Accepted | Revalidate exact UI identity and desktop state immediately before effects and fail closed on TOCTOU changes. |
 
 ## Related specifications
 
@@ -78,3 +82,5 @@ the decision requires a new ADR that explicitly supersedes the previous one.
   [RFC-0030 — Secure Agent Memory and Context Retrieval](../rfcs/RFC-0030-secure-agent-memory-and-context-retrieval.md).
 - ADR-0056 through ADR-0059 record the principal durable choices implemented by
   [RFC-0031 — Secure Agent Workspaces and Artifact Handling](../rfcs/RFC-0031-secure-agent-workspaces-and-artifact-handling.md).
+- ADR-0060 through ADR-0063 record the principal durable choices implemented by
+  [RFC-0032 — Secure Host Automation and Desktop Control](../rfcs/RFC-0032-secure-host-automation-and-desktop-control.md).
