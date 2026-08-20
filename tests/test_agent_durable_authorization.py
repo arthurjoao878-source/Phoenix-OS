@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -48,6 +49,7 @@ from phoenix_os.agent import (
     durable_reconciliation_resource,
 )
 from phoenix_os.agent.durable_codec import seal_checkpoint_envelope
+from phoenix_os.agent.errors import AgentStateConflictError
 from phoenix_os.agent.state import AgentBudgetSnapshot
 from phoenix_os.policy import (
     PolicyDecision,
@@ -255,6 +257,73 @@ def _lease(
     )
 
 
+class _CurrentResumeLeaseManager:
+    def __init__(self, current: DurableLease | None) -> None:
+        self.current = current
+        self.require_current_calls: list[tuple[DurableLease, datetime]] = []
+
+    @property
+    def closed(self) -> bool:
+        return False
+
+    async def acquire(self, *args: object, **kwargs: object) -> DurableLease:
+        raise AssertionError("acquire is outside resume authorization")
+
+    async def get_current(self, *args: object, **kwargs: object) -> DurableLease | None:
+        raise AssertionError("get_current is outside resume authorization")
+
+    async def renew(self, *args: object, **kwargs: object) -> DurableLease:
+        raise AssertionError("renew is outside resume authorization")
+
+    async def require_current(
+        self,
+        lease: DurableLease,
+        *,
+        now: datetime,
+    ) -> DurableLease:
+        self.require_current_calls.append((lease, now))
+        current = self.current
+        if (
+            current is None
+            or current.run_id != lease.run_id
+            or current.lease_id != lease.lease_id
+            or current.owner_id != lease.owner_id
+            or current.generation != lease.generation
+            or not current.active_at(now)
+        ):
+            raise AgentStateConflictError()
+        return current
+
+    def guard_current(
+        self,
+        lease: DurableLease,
+        *,
+        now: datetime,
+    ) -> AbstractAsyncContextManager[DurableLease]:
+        raise AssertionError("guard_current is outside resume authorization")
+
+    async def release(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("release is outside resume authorization")
+
+    async def close(self) -> None:
+        raise AssertionError("close is outside resume authorization")
+
+
+def _resume_authorizer(
+    policy: PolicyEngine,
+    *,
+    current_lease: DurableLease | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> PolicyEngineDurableResumeAuthorizer:
+    selected_lease = _lease(_checkpoint()) if current_lease is None else current_lease
+    selected_clock = (lambda: REQUEST_TIME) if clock is None else clock
+    return PolicyEngineDurableResumeAuthorizer(
+        policy,
+        _CurrentResumeLeaseManager(selected_lease),
+        clock=selected_clock,
+    )
+
+
 def _evidence(
     *,
     observed_at: datetime = REQUEST_TIME - timedelta(seconds=1),
@@ -322,6 +391,23 @@ class _RecordingPolicyEngine(PolicyEngine):
         return await super().enforce(request)
 
 
+class _ReplacingPolicyEngine(_RecordingPolicyEngine):
+    def __init__(
+        self,
+        rules: tuple[PolicyRule, ...],
+        *,
+        lease_manager: _CurrentResumeLeaseManager,
+        replacement: DurableLease,
+    ) -> None:
+        super().__init__(rules)
+        self._lease_manager = lease_manager
+        self._replacement = replacement
+
+    async def enforce(self, request: PolicyRequest) -> PolicyDecision:
+        self._lease_manager.current = self._replacement
+        return await super().enforce(request)
+
+
 def test_actions_and_resources_are_exact() -> None:
     assert AGENT_RESUME_ACTION == "agent.resume"
     assert AGENT_RECONCILE_ACTION == "agent.reconcile"
@@ -350,7 +436,7 @@ def test_resource_helpers_reject_wrong_types(
 def test_public_authorizers_implement_protocols() -> None:
     policy = PolicyEngine()
     assert isinstance(
-        PolicyEngineDurableResumeAuthorizer(policy),
+        _resume_authorizer(policy),
         DurableResumeAuthorizer,
     )
     assert isinstance(
@@ -361,7 +447,18 @@ def test_public_authorizers_implement_protocols() -> None:
 
 def test_resume_authorizer_constructor_requires_policy_engine() -> None:
     with pytest.raises(TypeError, match="PolicyEngine"):
-        PolicyEngineDurableResumeAuthorizer(object())  # type: ignore[arg-type]
+        PolicyEngineDurableResumeAuthorizer(
+            object(),  # type: ignore[arg-type]
+            _CurrentResumeLeaseManager(_lease(_checkpoint())),
+        )
+
+
+def test_resume_authorizer_constructor_requires_lease_manager() -> None:
+    with pytest.raises(TypeError, match="DurableLeaseManager"):
+        PolicyEngineDurableResumeAuthorizer(
+            PolicyEngine(),
+            object(),  # type: ignore[arg-type]
+        )
 
 
 def test_reconciliation_authorizer_constructor_requires_policy_engine() -> None:
@@ -387,7 +484,7 @@ async def test_resume_authorization_allows_one_exact_request() -> None:
         )
     )
 
-    await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+    await _resume_authorizer(policy).authorize(
         request,
         checkpoint,
         _lease(checkpoint),
@@ -397,12 +494,241 @@ async def test_resume_authorization_allows_one_exact_request() -> None:
     assert (await policy.snapshot()).allowed == 1
 
 
+async def test_resume_rejects_noncurrent_lease_before_policy() -> None:
+    checkpoint = _checkpoint()
+    supplied = _lease(checkpoint)
+    replacement = _lease(
+        checkpoint,
+        generation=8,
+        acquired_at=REQUEST_TIME,
+        expires_at=REQUEST_TIME + timedelta(minutes=5),
+    )
+    manager = _CurrentResumeLeaseManager(replacement)
+    policy = PolicyEngine(
+        (
+            _allow_rule(
+                action=AGENT_RESUME_ACTION,
+                resource=durable_agent_run_resource(DURABLE_RUN_ID),
+            ),
+        )
+    )
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await PolicyEngineDurableResumeAuthorizer(
+            policy,
+            manager,
+            clock=lambda: REQUEST_TIME,
+        ).authorize(
+            _resume_request(checkpoint),
+            checkpoint,
+            supplied,
+            _context(),
+        )
+
+    assert (await policy.snapshot()).evaluations == 0
+    assert len(manager.require_current_calls) == 1
+
+
+async def test_resume_revalidates_current_lease_after_policy() -> None:
+    checkpoint = _checkpoint()
+    supplied = _lease(checkpoint)
+    replacement = _lease(
+        checkpoint,
+        generation=8,
+        acquired_at=REQUEST_TIME,
+        expires_at=REQUEST_TIME + timedelta(minutes=5),
+    )
+    manager = _CurrentResumeLeaseManager(supplied)
+    policy = _ReplacingPolicyEngine(
+        (
+            _allow_rule(
+                action=AGENT_RESUME_ACTION,
+                resource=durable_agent_run_resource(DURABLE_RUN_ID),
+            ),
+        ),
+        lease_manager=manager,
+        replacement=replacement,
+    )
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await PolicyEngineDurableResumeAuthorizer(
+            policy,
+            manager,
+            clock=lambda: REQUEST_TIME,
+        ).authorize(
+            _resume_request(checkpoint),
+            checkpoint,
+            supplied,
+            _context(),
+        )
+
+    assert (await policy.snapshot()).allowed == 1
+    assert len(manager.require_current_calls) == 2
+
+
+async def test_resume_accepts_renewed_current_lease_with_same_fenced_identity() -> None:
+    checkpoint = _checkpoint()
+    supplied = _lease(
+        checkpoint,
+        expires_at=REQUEST_TIME + timedelta(seconds=1),
+    )
+    renewed = DurableLease(
+        run_id=supplied.run_id,
+        lease_id=supplied.lease_id,
+        owner_id=supplied.owner_id,
+        generation=supplied.generation,
+        acquired_at=REQUEST_TIME + timedelta(seconds=1),
+        expires_at=REQUEST_TIME + timedelta(minutes=5),
+    )
+    manager = _CurrentResumeLeaseManager(renewed)
+    policy = PolicyEngine(
+        (
+            _allow_rule(
+                action=AGENT_RESUME_ACTION,
+                resource=durable_agent_run_resource(DURABLE_RUN_ID),
+            ),
+        )
+    )
+    admitted_at = REQUEST_TIME + timedelta(seconds=2)
+
+    await PolicyEngineDurableResumeAuthorizer(
+        policy,
+        manager,
+        clock=lambda: admitted_at,
+    ).authorize(
+        _resume_request(checkpoint),
+        checkpoint,
+        supplied,
+        _context(),
+    )
+
+    assert (await policy.snapshot()).allowed == 1
+    assert len(manager.require_current_calls) == 2
+    assert all(now == admitted_at for _, now in manager.require_current_calls)
+
+
+async def test_resume_rejects_lease_expiry_after_policy_before_admission() -> None:
+    checkpoint = _checkpoint()
+    lease = _lease(
+        checkpoint,
+        expires_at=REQUEST_TIME + timedelta(seconds=1),
+    )
+    manager = _CurrentResumeLeaseManager(lease)
+    policy = PolicyEngine(
+        (
+            _allow_rule(
+                action=AGENT_RESUME_ACTION,
+                resource=durable_agent_run_resource(DURABLE_RUN_ID),
+            ),
+        )
+    )
+    times = iter(
+        (
+            REQUEST_TIME,
+            REQUEST_TIME + timedelta(seconds=1),
+        )
+    )
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await PolicyEngineDurableResumeAuthorizer(
+            policy,
+            manager,
+            clock=lambda: next(times),
+        ).authorize(
+            _resume_request(checkpoint),
+            checkpoint,
+            lease,
+            _context(),
+        )
+
+    assert (await policy.snapshot()).allowed == 1
+    assert len(manager.require_current_calls) == 2
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    (
+        _checkpoint(budget_deadline=REQUEST_TIME + timedelta(seconds=1)),
+        _checkpoint(retention_deadline=REQUEST_TIME + timedelta(seconds=1)),
+    ),
+)
+async def test_resume_rejects_deadline_expiry_after_policy_before_admission(
+    checkpoint: CheckpointEnvelope,
+) -> None:
+    lease = _lease(checkpoint)
+    manager = _CurrentResumeLeaseManager(lease)
+    policy = PolicyEngine(
+        (
+            _allow_rule(
+                action=AGENT_RESUME_ACTION,
+                resource=durable_agent_run_resource(DURABLE_RUN_ID),
+            ),
+        )
+    )
+    times = iter(
+        (
+            REQUEST_TIME,
+            REQUEST_TIME + timedelta(seconds=1),
+        )
+    )
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await PolicyEngineDurableResumeAuthorizer(
+            policy,
+            manager,
+            clock=lambda: next(times),
+        ).authorize(
+            _resume_request(checkpoint),
+            checkpoint,
+            lease,
+            _context(),
+        )
+
+    assert (await policy.snapshot()).allowed == 1
+    assert len(manager.require_current_calls) == 1
+
+
+async def test_resume_rejects_clock_regression_after_policy() -> None:
+    checkpoint = _checkpoint()
+    lease = _lease(checkpoint)
+    manager = _CurrentResumeLeaseManager(lease)
+    policy = PolicyEngine(
+        (
+            _allow_rule(
+                action=AGENT_RESUME_ACTION,
+                resource=durable_agent_run_resource(DURABLE_RUN_ID),
+            ),
+        )
+    )
+    times = iter(
+        (
+            REQUEST_TIME,
+            REQUEST_TIME - timedelta(seconds=1),
+        )
+    )
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await PolicyEngineDurableResumeAuthorizer(
+            policy,
+            manager,
+            clock=lambda: next(times),
+        ).authorize(
+            _resume_request(checkpoint),
+            checkpoint,
+            lease,
+            _context(),
+        )
+
+    assert (await policy.snapshot()).allowed == 1
+    assert len(manager.require_current_calls) == 1
+
+
 async def test_resume_authorization_is_default_deny() -> None:
     checkpoint = _checkpoint()
     policy = PolicyEngine()
 
     with pytest.raises(AgentAuthorizationRejectedError):
-        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+        await _resume_authorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
             _lease(checkpoint),
@@ -445,7 +771,7 @@ async def test_reconcile_permission_does_not_grant_resume() -> None:
     )
 
     with pytest.raises(AgentAuthorizationRejectedError):
-        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+        await _resume_authorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
             _lease(checkpoint),
@@ -465,7 +791,7 @@ async def test_resume_resource_is_bound_to_exact_run() -> None:
     )
 
     with pytest.raises(AgentAuthorizationRejectedError):
-        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+        await _resume_authorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
             _lease(checkpoint),
@@ -492,7 +818,7 @@ async def test_resume_rejects_non_resumable_states_before_policy(
     policy = PolicyEngine()
 
     with pytest.raises(AgentAuthorizationRejectedError):
-        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+        await _resume_authorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
             _lease(checkpoint),
@@ -524,7 +850,7 @@ async def test_resume_rejects_started_attempt_before_policy(
     policy = PolicyEngine()
 
     with pytest.raises(AgentAuthorizationRejectedError):
-        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+        await _resume_authorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
             _lease(checkpoint),
@@ -552,7 +878,7 @@ async def test_resume_allows_prepared_attempt_after_exact_policy() -> None:
         )
     )
 
-    await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+    await _resume_authorizer(policy).authorize(
         _resume_request(checkpoint),
         checkpoint,
         _lease(checkpoint),
@@ -585,7 +911,7 @@ async def test_resume_rejects_identity_version_generation_or_time_mismatch_befor
     policy = PolicyEngine()
 
     with pytest.raises(AgentAuthorizationRejectedError):
-        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+        await _resume_authorizer(policy).authorize(
             request_factory(checkpoint),
             checkpoint,
             _lease(checkpoint),
@@ -621,7 +947,7 @@ async def test_resume_rejects_foreign_generation_or_inactive_lease_before_policy
     policy = PolicyEngine()
 
     with pytest.raises(AgentAuthorizationRejectedError):
-        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+        await _resume_authorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
             lease_factory(checkpoint),
@@ -644,7 +970,7 @@ async def test_resume_rejects_expired_budget_or_retention_before_policy(
     policy = PolicyEngine()
 
     with pytest.raises(AgentAuthorizationRejectedError):
-        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+        await _resume_authorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
             _lease(checkpoint),
@@ -659,14 +985,14 @@ async def test_resume_requires_authenticated_exact_actor() -> None:
     policy = PolicyEngine()
 
     with pytest.raises(AgentAuthorizationRejectedError):
-        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+        await _resume_authorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
             _lease(checkpoint),
             _context(actor_id="other-operator"),
         )
     with pytest.raises(AgentAuthorizationRejectedError):
-        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+        await _resume_authorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
             _lease(checkpoint),
@@ -687,7 +1013,7 @@ async def test_trusted_durable_actor_attribute_binds_namespaced_principal() -> N
         )
     )
 
-    await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+    await _resume_authorizer(policy).authorize(
         _resume_request(checkpoint),
         checkpoint,
         _lease(checkpoint),
@@ -709,7 +1035,7 @@ async def test_resume_policy_input_is_content_free_and_deterministic() -> None:
         )
     )
 
-    await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+    await _resume_authorizer(policy).authorize(
         _resume_request(checkpoint),
         checkpoint,
         _lease(checkpoint),
@@ -753,7 +1079,7 @@ async def test_resume_authorization_does_not_mutate_checkpoint() -> None:
         )
     )
 
-    await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+    await _resume_authorizer(policy).authorize(
         _resume_request(checkpoint),
         checkpoint,
         _lease(checkpoint),
@@ -1188,7 +1514,7 @@ async def test_reconciliation_authorization_does_not_mutate_checkpoint_or_lease(
 async def test_resume_authorizer_rejects_wrong_request_type() -> None:
     checkpoint = _checkpoint()
     with pytest.raises(TypeError, match="ResumeRequest"):
-        await PolicyEngineDurableResumeAuthorizer(PolicyEngine()).authorize(
+        await _resume_authorizer(PolicyEngine()).authorize(
             object(),  # type: ignore[arg-type]
             checkpoint,
             _lease(checkpoint),
@@ -1199,7 +1525,7 @@ async def test_resume_authorizer_rejects_wrong_request_type() -> None:
 async def test_resume_authorizer_rejects_wrong_lease_type() -> None:
     checkpoint = _checkpoint()
     with pytest.raises(TypeError, match="DurableLease"):
-        await PolicyEngineDurableResumeAuthorizer(PolicyEngine()).authorize(
+        await _resume_authorizer(PolicyEngine()).authorize(
             _resume_request(checkpoint),
             checkpoint,
             object(),  # type: ignore[arg-type]

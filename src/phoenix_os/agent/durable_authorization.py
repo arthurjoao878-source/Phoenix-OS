@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from phoenix_os.agent.durable_contracts import (
@@ -16,7 +18,11 @@ from phoenix_os.agent.durable_contracts import (
     ReconciliationRequest,
     ResumeRequest,
 )
-from phoenix_os.agent.errors import AgentAuthorizationRejectedError
+from phoenix_os.agent.durable_lease import DurableLeaseManager
+from phoenix_os.agent.errors import (
+    AgentAuthorizationRejectedError,
+    AgentStateConflictError,
+)
 from phoenix_os.policy import (
     PhoenixPolicyError,
     PolicyEngine,
@@ -87,12 +93,25 @@ class DurableReconciliationAuthorizer(Protocol):
 
 
 class PolicyEngineDurableResumeAuthorizer:
-    """Apply exact ``agent.resume`` policy to current content-free state."""
+    """Apply exact ``agent.resume`` policy under current fenced lease authority."""
 
-    def __init__(self, policy: PolicyEngine) -> None:
+    def __init__(
+        self,
+        policy: PolicyEngine,
+        lease_manager: DurableLeaseManager,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         if not isinstance(policy, PolicyEngine):
             raise TypeError("policy must be PolicyEngine")
+        if not isinstance(lease_manager, DurableLeaseManager):
+            raise TypeError("lease_manager must implement DurableLeaseManager")
+        selected_clock = (lambda: datetime.now(UTC)) if clock is None else clock
+        if not callable(selected_clock):
+            raise TypeError("clock must be callable")
         self._policy = policy
+        self._lease_manager = lease_manager
+        self._clock: Callable[[], datetime] = selected_clock
 
     async def authorize(
         self,
@@ -110,6 +129,17 @@ class PolicyEngineDurableResumeAuthorizer:
         _require_authenticated_actor(context, actor_id=request.actor_id)
         _validate_resume_request(request, checkpoint, lease)
 
+        admission_started_at = self._now()
+        _validate_resume_admission_time(
+            request,
+            checkpoint,
+            now=admission_started_at,
+        )
+        await self._require_current_lease(
+            lease,
+            now=admission_started_at,
+        )
+
         try:
             await self._policy.enforce(
                 PolicyRequest(
@@ -122,6 +152,78 @@ class PolicyEngineDurableResumeAuthorizer:
             )
         except PhoenixPolicyError as exception:
             raise AgentAuthorizationRejectedError() from exception
+
+        admitted_at = self._now()
+        if admitted_at < admission_started_at:
+            raise AgentAuthorizationRejectedError()
+        _validate_resume_admission_time(
+            request,
+            checkpoint,
+            now=admitted_at,
+        )
+        await self._require_current_lease(
+            lease,
+            now=admitted_at,
+        )
+
+    async def _require_current_lease(
+        self,
+        lease: DurableLease,
+        *,
+        now: datetime,
+    ) -> None:
+        try:
+            current = await self._lease_manager.require_current(
+                lease,
+                now=now,
+            )
+        except AgentStateConflictError as exception:
+            raise AgentAuthorizationRejectedError() from exception
+        _validate_authoritative_resume_lease(
+            current,
+            supplied=lease,
+            now=now,
+        )
+
+    def _now(self) -> datetime:
+        value = self._clock()
+        if not isinstance(value, datetime):
+            raise TypeError("clock must return datetime")
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware datetime")
+        return value
+
+
+def _validate_resume_admission_time(
+    request: ResumeRequest,
+    checkpoint: CheckpointEnvelope,
+    *,
+    now: datetime,
+) -> None:
+    if (
+        now < request.requested_at
+        or now < checkpoint.created_at
+        or now >= checkpoint.metadata.retention_deadline
+        or now >= checkpoint.metadata.budget.deadline
+    ):
+        raise AgentAuthorizationRejectedError()
+
+
+def _validate_authoritative_resume_lease(
+    current: DurableLease,
+    *,
+    supplied: DurableLease,
+    now: datetime,
+) -> None:
+    if (
+        not isinstance(current, DurableLease)
+        or current.run_id != supplied.run_id
+        or current.lease_id != supplied.lease_id
+        or current.owner_id != supplied.owner_id
+        or current.generation != supplied.generation
+        or not current.active_at(now)
+    ):
+        raise AgentAuthorizationRejectedError()
 
 
 class PolicyEngineDurableReconciliationAuthorizer:
