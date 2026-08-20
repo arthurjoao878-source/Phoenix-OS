@@ -11,6 +11,7 @@ from threading import Lock
 from typing import Any, Protocol
 
 from phoenix_os.host_automation.contracts import HostApplicationId
+from phoenix_os.host_automation.windows_window_lifetime import _WindowsWindowLifetimeGuard
 
 _WINDOWS_MAX_DESKTOP_NAME_CHARS = 256
 _WINDOWS_MAX_CLOSE_WINDOWS = 256
@@ -73,6 +74,7 @@ class _WindowsFocusTarget:
     hwnd: int
     pid: int
     creation_time: int
+    lifetime_revision: int = 0
 
     def __post_init__(self) -> None:
         if isinstance(self.hwnd, bool) or not isinstance(self.hwnd, int) or self.hwnd <= 0:
@@ -85,6 +87,12 @@ class _WindowsFocusTarget:
             or self.creation_time < 0
         ):
             raise ValueError("focus target creation_time must be non-negative")
+        if (
+            isinstance(self.lifetime_revision, bool)
+            or not isinstance(self.lifetime_revision, int)
+            or self.lifetime_revision < 0
+        ):
+            raise ValueError("focus target lifetime_revision must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +193,7 @@ class _CtypesWindowsEffectsBackend:
 
         self._ctypes: Any = ctypes
         self._wintypes: Any = wintypes
+        self._window_lifetime_guard: _WindowsWindowLifetimeGuard | None = None
         self._kernel32: Any = win_dll("kernel32", use_last_error=True)
         self._user32: Any = win_dll("user32", use_last_error=True)
 
@@ -297,6 +306,12 @@ class _CtypesWindowsEffectsBackend:
 
         # Revalidate again immediately before the exact effect admission boundary.
         self._revalidate_focus_target(target, expected_session_id=before[0])
+        guard = self._window_lifetime_guard
+        if guard is None:
+            raise RuntimeError("window lifetime guard is unavailable")
+        guard.barrier()
+        if guard.revision_for(target.hwnd) != target.lifetime_revision:
+            raise _WindowsEffectStaleIdentityError()
         if not attempt.begin_effect():
             raise _WindowsEffectPreventedError()
         if not bool(self._user32.SetForegroundWindow(target.hwnd)):
