@@ -200,7 +200,12 @@ def test_memory_write_rejects_blank_or_oversized_content() -> None:
 
 def test_direct_read_and_delete_bind_exact_record_and_version() -> None:
     scope = _scope()
-    read = MemoryReadRequest(scope=scope, memory_id=_MEMORY_ID, created_at=_NOW)
+    read = MemoryReadRequest(
+        scope=scope,
+        memory_id=_MEMORY_ID,
+        expected_version=MemoryRecordVersion(7),
+        created_at=_NOW,
+    )
     delete = MemoryDeleteRequest(
         scope=scope,
         memory_id=_MEMORY_ID,
@@ -209,6 +214,7 @@ def test_direct_read_and_delete_bind_exact_record_and_version() -> None:
     )
 
     assert read.memory_id == _MEMORY_ID
+    assert read.expected_version == MemoryRecordVersion(7)
     assert delete.memory_id == _MEMORY_ID
     assert delete.expected_version == MemoryRecordVersion(7)
 

@@ -186,6 +186,11 @@ class PolicyEngineMemoryAuthorizer:
             attributes={
                 **_scope_attributes(request.scope),
                 "memory_id": str(request.memory_id),
+                "expected_version": (
+                    str(request.expected_version.value)
+                    if request.expected_version is not None
+                    else "absent"
+                ),
             },
             created_at=request.created_at,
         )

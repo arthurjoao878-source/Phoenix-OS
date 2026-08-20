@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
@@ -13,7 +14,11 @@ from phoenix_os.agent.contracts import (
     AgentMessageRole,
     AgentRunRequest,
 )
-from phoenix_os.agent.errors import AgentCodecError, AgentLimitExceededError
+from phoenix_os.agent.errors import (
+    AgentCodecError,
+    AgentLimitExceededError,
+    AgentStateConflictError,
+)
 from phoenix_os.agent.memory_authorization import (
     MemoryAuthorizer,
     agent_memory_scope,
@@ -260,7 +265,20 @@ class AgentMemoryService:
         context: SecurityContext,
     ) -> MemoryRecord | None:
         await self._authorizer.authorize_read(request, context)
-        return await self._store.read(request)
+        initial = await self._store.read(request)
+        if initial is None:
+            return None
+
+        bound_request = replace(
+            request,
+            expected_version=initial.version,
+            created_at=self._now(),
+        )
+        await self._authorizer.authorize_read(bound_request, context)
+        admitted = await self._store.read(bound_request)
+        if admitted is None or admitted != initial:
+            raise AgentStateConflictError()
+        return admitted
 
     async def write(
         self,

@@ -371,7 +371,12 @@ async def test_opt_in_artifact_context_is_untrusted_user_data_only() -> None:
     result = await loop.run(request, _context())
 
     assert result.status is AgentRunStatus.COMPLETED
-    assert [read.artifact_id for read in authorizer.read_requests] == [record.artifact_id]
+    assert [read.artifact_id for read in authorizer.read_requests] == [
+        record.artifact_id,
+        record.artifact_id,
+    ]
+    assert authorizer.read_requests[0].expected_version is None
+    assert authorizer.read_requests[1].expected_version == record.version
     assert authorizer.list_calls == 0
     context_message = model.requests[0].messages[-1]
     assert context_message.role is AgentMessageRole.USER

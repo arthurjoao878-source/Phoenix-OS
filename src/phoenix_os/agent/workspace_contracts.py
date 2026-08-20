@@ -928,10 +928,11 @@ class ArtifactListRequest:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactReadRequest:
-    """One exact direct artifact read request."""
+    """One direct artifact read, optionally bound to an exact logical version."""
 
     scope: WorkspaceScope
     artifact_id: ArtifactId
+    expected_version: ArtifactVersion | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -939,6 +940,10 @@ class ArtifactReadRequest:
             raise TypeError("scope must be WorkspaceScope")
         if not isinstance(self.artifact_id, ArtifactId):
             raise TypeError("artifact_id must be ArtifactId")
+        if self.expected_version is not None and not isinstance(
+            self.expected_version, ArtifactVersion
+        ):
+            raise TypeError("expected_version must be ArtifactVersion")
         _aware(self.created_at, label="created_at")
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from math import inf, nan
 from uuid import UUID
@@ -10,6 +11,7 @@ from phoenix_os.agent import (
     MEMORY_CONTEXT_TRUST_LABEL,
     AgentLimitExceededError,
     AgentMemoryService,
+    AgentStateConflictError,
     DeterministicLexicalMemoryRetrievalAdapter,
     InMemoryAgentMemoryStore,
     MemoryContextBlock,
@@ -61,6 +63,7 @@ def _write(
     *,
     scope: MemoryScope | None = None,
     memory_id: MemoryId | None = None,
+    expected_version: MemoryRecordVersion | None = None,
 ) -> MemoryWriteRequest:
     digest = memory_content_digest(content)
     return MemoryWriteRequest(
@@ -74,6 +77,7 @@ def _write(
             attributes={"source": "test"},
         ),
         metadata={"kind": "note"},
+        expected_version=expected_version,
         created_at=_NOW,
     )
 
@@ -82,6 +86,7 @@ class _AllowMemoryAuthorizer:
     def __init__(self) -> None:
         self.search_calls = 0
         self.read_calls = 0
+        self.read_requests: list[MemoryReadRequest] = []
         self.write_calls = 0
         self.delete_calls = 0
 
@@ -99,6 +104,7 @@ class _AllowMemoryAuthorizer:
         context: SecurityContext,
     ) -> None:
         assert context.authenticated
+        self.read_requests.append(request)
         self.read_calls += 1
 
     async def authorize_write(
@@ -125,6 +131,23 @@ class _AllowMemoryAuthorizer:
         created_at: datetime | None = None,
     ) -> None:
         assert context.authenticated
+
+
+class _BlockingReadReauthorization(_AllowMemoryAuthorizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reauthorization_started = asyncio.Event()
+        self.release_reauthorization = asyncio.Event()
+
+    async def authorize_read(
+        self,
+        request: MemoryReadRequest,
+        context: SecurityContext,
+    ) -> None:
+        if self.read_calls == 1:
+            self.reauthorization_started.set()
+            await self.release_reauthorization.wait()
+        await super().authorize_read(request, context)
 
 
 class _StaticAdapter:
@@ -389,6 +412,48 @@ async def test_context_block_preserves_provenance_and_renders_user_data() -> Non
 
 
 @pytest.mark.asyncio
+async def test_direct_read_update_during_version_reauthorization_is_not_disclosed() -> None:
+    store = InMemoryAgentMemoryStore(clock=lambda: _NOW)
+    created = await store.write(_write("initial"))
+    authorizer = _BlockingReadReauthorization()
+    service = AgentMemoryService(
+        store=store,
+        authorizer=authorizer,
+        retrieval=DeterministicLexicalMemoryRetrievalAdapter(store),
+        clock=lambda: _NOW,
+    )
+
+    task = asyncio.create_task(
+        service.read(
+            MemoryReadRequest(
+                scope=created.scope,
+                memory_id=created.memory_id,
+                created_at=_NOW,
+            ),
+            _context(),
+        )
+    )
+    await authorizer.reauthorization_started.wait()
+
+    updated = await store.write(
+        _write(
+            "updated",
+            memory_id=created.memory_id,
+            expected_version=created.version,
+        )
+    )
+    authorizer.release_reauthorization.set()
+
+    with pytest.raises(AgentStateConflictError):
+        await task
+
+    assert updated.version == created.version.next()
+    assert authorizer.read_calls == 2
+    assert authorizer.read_requests[0].expected_version is None
+    assert authorizer.read_requests[1].expected_version == created.version
+
+
+@pytest.mark.asyncio
 async def test_service_direct_operations_use_independent_authorization() -> None:
     store = InMemoryAgentMemoryStore(clock=lambda: _NOW)
     authorizer = _AllowMemoryAuthorizer()
@@ -421,5 +486,7 @@ async def test_service_direct_operations_use_independent_authorization() -> None
 
     assert loaded == created
     assert authorizer.write_calls == 1
-    assert authorizer.read_calls == 1
+    assert authorizer.read_calls == 2
+    assert authorizer.read_requests[0].expected_version is None
+    assert authorizer.read_requests[1].expected_version == created.version
     assert authorizer.delete_calls == 1

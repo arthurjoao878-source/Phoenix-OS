@@ -515,6 +515,8 @@ class StateStoreMemoryStore:
         ) as exception:
             raise _safe_state_failure(exception) from None
         if stored is None:
+            if request.expected_version is not None:
+                raise AgentStateConflictError()
             return None
         record = _decode_record(
             stored.value,
@@ -524,7 +526,11 @@ class StateStoreMemoryStore:
         _require_state_identity(record, state_key=stored.key)
         now = _now(self._clock)
         if record.status is not MemoryRecordStatus.ACTIVE or record.expires_at <= now:
+            if request.expected_version is not None:
+                raise AgentStateConflictError()
             return None
+        if request.expected_version is not None and record.version != request.expected_version:
+            raise AgentStateConflictError()
         return record
 
     async def delete(self, request: MemoryDeleteRequest) -> None:

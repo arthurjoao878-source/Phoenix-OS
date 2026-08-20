@@ -254,7 +254,12 @@ async def test_write_authorization_binds_digest_path_and_size_without_exposing_b
 @pytest.mark.asyncio
 async def test_direct_read_and_delete_require_exact_artifact_authority() -> None:
     scope = _agent_scope()
-    read = ArtifactReadRequest(scope=scope, artifact_id=_ARTIFACT_ID, created_at=_NOW)
+    read = ArtifactReadRequest(
+        scope=scope,
+        artifact_id=_ARTIFACT_ID,
+        expected_version=ArtifactVersion(3),
+        created_at=_NOW,
+    )
     delete = ArtifactDeleteRequest(
         scope=scope,
         artifact_id=_ARTIFACT_ID,
@@ -271,6 +276,7 @@ async def test_direct_read_and_delete_require_exact_artifact_authority() -> None
                 resources=frozenset({resource}),
                 principals=frozenset({"service:workspace-owner"}),
                 authenticated=True,
+                attribute_equals={"expected_version": "3"},
             ),
         )
     )

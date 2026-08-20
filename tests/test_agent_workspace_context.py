@@ -410,7 +410,9 @@ async def test_provider_reads_only_copied_server_owned_ids_and_never_lists() -> 
     )
 
     assert [item.record.artifact_id for item in block.items] == [selected]
-    assert [read.artifact_id for read in authorizer.read_requests] == [selected]
+    assert [read.artifact_id for read in authorizer.read_requests] == [selected, selected]
+    assert authorizer.read_requests[0].expected_version is None
+    assert authorizer.read_requests[1].expected_version == block.items[0].record.version
     assert authorizer.list_calls == 0
 
 
@@ -435,13 +437,16 @@ async def test_provider_requires_fresh_exact_read_for_every_artifact_and_stops_o
             content=f"item {index}".encode(),
             logical_path=f"notes/{index}.txt",
         )
-    authorizer = _WorkspaceAuthorizer(read_grants=1)
+    authorizer = _WorkspaceAuthorizer(read_grants=2)
     provider = _provider(_service(store, authorizer, clock), ids, clock)
 
     with pytest.raises(AgentAuthorizationRejectedError):
         await provider.context_for_run(request, _context())
 
-    assert [read.artifact_id for read in authorizer.read_requests] == ids
+    assert [read.artifact_id for read in authorizer.read_requests] == [ids[0], ids[0], ids[1]]
+    assert authorizer.read_requests[0].expected_version is None
+    assert authorizer.read_requests[1].expected_version == ArtifactVersion()
+    assert authorizer.read_requests[2].expected_version is None
 
 
 @pytest.mark.asyncio
@@ -770,7 +775,16 @@ async def test_configured_rendered_budget_stops_before_unneeded_later_reads() ->
     with pytest.raises(AgentLimitExceededError):
         await provider.context_for_run(request, _context())
 
-    assert [read.artifact_id for read in authorizer.read_requests] == ids[:2]
+    assert [read.artifact_id for read in authorizer.read_requests] == [
+        ids[0],
+        ids[0],
+        ids[1],
+        ids[1],
+    ]
+    assert authorizer.read_requests[0].expected_version is None
+    assert authorizer.read_requests[1].expected_version == ArtifactVersion()
+    assert authorizer.read_requests[2].expected_version is None
+    assert authorizer.read_requests[3].expected_version == ArtifactVersion()
 
 
 @pytest.mark.asyncio

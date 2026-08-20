@@ -818,7 +818,10 @@ class StateStoreWorkspaceStore:
         try:
             await transaction.__aenter__()
             stored = await transaction.get(_record_key(request.scope, request.artifact_id))
-            if stored is not None:
+            if stored is None:
+                if request.expected_version is not None:
+                    raise AgentStateConflictError()
+            else:
                 record, backing_key = _decode_record(
                     stored.value,
                     limits=self._limits,
@@ -828,6 +831,11 @@ class StateStoreWorkspaceStore:
                 )
                 _require_state_identity(record, state_key=stored.key)
                 if record.status is ArtifactStatus.ACTIVE and record.expires_at > now:
+                    if (
+                        request.expected_version is not None
+                        and record.version != request.expected_version
+                    ):
+                        raise AgentStateConflictError()
                     await self._require_tracked_identity(
                         transaction,
                         request.scope,
@@ -836,6 +844,8 @@ class StateStoreWorkspaceStore:
                     assert backing_key is not None
                     content = await self._read_verified_backing(backing_key, record=record)
                     result = ArtifactReadResult(record=record, content=content)
+                elif request.expected_version is not None:
+                    raise AgentStateConflictError()
             await transaction.commit()
         except asyncio.CancelledError:
             if transaction.state is TransactionState.COMMITTED:

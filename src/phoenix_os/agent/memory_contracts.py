@@ -507,10 +507,11 @@ class MemoryWriteRequest:
 
 @dataclass(frozen=True, slots=True)
 class MemoryReadRequest:
-    """One exact direct memory-record read request."""
+    """One direct memory-record read, optionally bound to an exact logical version."""
 
     scope: MemoryScope
     memory_id: MemoryId
+    expected_version: MemoryRecordVersion | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -518,6 +519,10 @@ class MemoryReadRequest:
             raise TypeError("scope must be MemoryScope")
         if not isinstance(self.memory_id, MemoryId):
             raise TypeError("memory_id must be MemoryId")
+        if self.expected_version is not None and not isinstance(
+            self.expected_version, MemoryRecordVersion
+        ):
+            raise TypeError("expected_version must be MemoryRecordVersion")
         _aware(self.created_at, label="created_at")
 
 

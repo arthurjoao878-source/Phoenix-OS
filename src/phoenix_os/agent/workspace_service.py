@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from phoenix_os.agent.errors import (
@@ -157,7 +157,20 @@ class AgentWorkspaceService:
         started = time.perf_counter()
         try:
             await self._authorizer.authorize_read(request, context)
-            result = await self._store.read(request)
+            initial = await self._store.read(request)
+            if initial is None:
+                result = None
+            else:
+                bound_request = replace(
+                    request,
+                    expected_version=initial.record.version,
+                    created_at=self._now(),
+                )
+                await self._authorizer.authorize_read(bound_request, context)
+                admitted = await self._store.read(bound_request)
+                if admitted is None or admitted != initial:
+                    raise AgentStateConflictError()
+                result = admitted
         except BaseException as exception:
             self._observe_failure(
                 operation=AgentWorkspaceOperation.READ,

@@ -242,7 +242,12 @@ async def test_write_authorization_binds_record_digest_without_exposing_content(
 @pytest.mark.asyncio
 async def test_direct_read_and_delete_require_exact_record_authority() -> None:
     scope = _agent_scope()
-    read = MemoryReadRequest(scope=scope, memory_id=_MEMORY_ID, created_at=_NOW)
+    read = MemoryReadRequest(
+        scope=scope,
+        memory_id=_MEMORY_ID,
+        expected_version=MemoryRecordVersion(3),
+        created_at=_NOW,
+    )
     delete = MemoryDeleteRequest(
         scope=scope,
         memory_id=_MEMORY_ID,
@@ -259,6 +264,7 @@ async def test_direct_read_and_delete_require_exact_record_authority() -> None:
                 resources=frozenset({resource}),
                 principals=frozenset({"service:memory-owner"}),
                 authenticated=True,
+                attribute_equals={"expected_version": "3"},
             ),
         )
     )

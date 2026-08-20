@@ -88,10 +88,12 @@ def _read(
     *,
     scope: MemoryScope | None = None,
     memory_id: MemoryId | None = None,
+    expected_version: MemoryRecordVersion | None = None,
 ) -> MemoryReadRequest:
     return MemoryReadRequest(
         scope=_scope() if scope is None else scope,
         memory_id=_memory_id() if memory_id is None else memory_id,
+        expected_version=expected_version,
         created_at=_NOW,
     )
 
@@ -112,6 +114,24 @@ async def test_authoritative_store_creates_and_reads_exact_record() -> None:
     assert created.updated_at == _NOW
     assert created.expires_at == _NOW + store.limits.retention.record_ttl
     assert created.metadata == {"kind": "note"}
+
+
+@pytest.mark.asyncio
+async def test_exact_version_read_rejects_stale_or_missing_record() -> None:
+    store = InMemoryAgentMemoryStore(clock=FakeClock())
+    created = await store.write(_request("version-bound"))
+
+    assert await store.read(_read(expected_version=created.version)) == created
+
+    with pytest.raises(AgentStateConflictError):
+        await store.read(_read(expected_version=created.version.next()))
+    with pytest.raises(AgentStateConflictError):
+        await store.read(
+            _read(
+                memory_id=_memory_id(2),
+                expected_version=MemoryRecordVersion(),
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -258,11 +278,13 @@ async def test_expired_record_is_absent_from_read_and_listing() -> None:
         )
     )
     store = InMemoryAgentMemoryStore(limits=limits, clock=clock)
-    await store.write(_request("short lived"))
+    created = await store.write(_request("short lived"))
 
     clock.advance(timedelta(seconds=11))
 
     assert await store.read(_read()) is None
+    with pytest.raises(AgentStateConflictError):
+        await store.read(_read(expected_version=created.version))
     assert await store.list_scope(_scope()) == ()
 
 
@@ -335,6 +357,13 @@ async def test_explicit_delete_is_versioned_and_prevents_stale_resurrection() ->
     )
 
     assert await store.read(_read(memory_id=created.memory_id)) is None
+    with pytest.raises(AgentStateConflictError):
+        await store.read(
+            _read(
+                memory_id=created.memory_id,
+                expected_version=created.version,
+            )
+        )
 
     with pytest.raises(AgentStateConflictError):
         await store.write(
