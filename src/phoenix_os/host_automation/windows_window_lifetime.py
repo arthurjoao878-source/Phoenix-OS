@@ -28,6 +28,24 @@ class _WindowsWindowLifetimeGuard(Protocol):
 
 
 class _CtypesWindowsWindowLifetimeGuard:
+    # Keep these declarations outside the sys.platform-gated constructor so
+    # strict mypy can type-check this Windows-only implementation on Linux CI.
+    _user32: Any
+    _kernel32: Any
+    _msg_type: type[Any]
+    _callback_type: Any
+    _lock: Any
+    _ready: threading.Event
+    _stopped: threading.Event
+    _thread: threading.Thread
+    _thread_id: int
+    _sentinel_hwnd: int
+    _sentinel_object_id: int
+    _event_index: int
+    _started: bool
+    _closing: bool
+    _closed: bool
+
     def __init__(self) -> None:
         if sys.platform != "win32":
             raise RuntimeError("Windows window lifetime guard requires win32")
