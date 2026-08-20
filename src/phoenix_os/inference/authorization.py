@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Protocol
 
+from phoenix_os.inference.codec import canonical_inference_request_bytes
 from phoenix_os.inference.contracts import InferenceRequest, ModelId, ModelProviderId
 from phoenix_os.inference.errors import InferenceAuthorizationRejectedError
 from phoenix_os.policy import (
@@ -14,6 +16,16 @@ from phoenix_os.policy import (
 )
 
 INFERENCE_MODEL_ACTION = "model.infer"
+_INFERENCE_REQUEST_DIGEST_PREFIX = "sha256:"
+
+
+def _canonical_inference_request_digest(request: InferenceRequest) -> str:
+    """Return a content-free digest over one canonical normalized inference request."""
+
+    return (
+        _INFERENCE_REQUEST_DIGEST_PREFIX
+        + hashlib.sha256(canonical_inference_request_bytes(request)).hexdigest()
+    )
 
 
 def inference_model_resource(
@@ -72,6 +84,7 @@ class PolicyEngineInferenceAuthorizer:
                         "provider_id": str(request.provider_id),
                         "model_id": str(request.model_id),
                         "request_id": str(request.request_id),
+                        "request_digest": _canonical_inference_request_digest(request),
                     },
                 )
             )

@@ -1,3 +1,5 @@
+import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -11,6 +13,7 @@ from phoenix_os.inference import (
     ModelId,
     ModelProviderId,
     PolicyEngineInferenceAuthorizer,
+    canonical_inference_request_bytes,
     inference_model_resource,
 )
 from phoenix_os.policy import (
@@ -74,6 +77,39 @@ async def test_policy_authorizer_allows_only_matching_provider_and_model() -> No
 
     with pytest.raises(InferenceAuthorizationRejectedError):
         await authorizer.authorize(_request(model="other"), _context())
+    snapshot = await policy.snapshot()
+    assert snapshot.allowed == 1
+    assert snapshot.denied == 1
+
+
+@pytest.mark.asyncio
+async def test_policy_authorizer_binds_exact_canonical_request_digest() -> None:
+    request = _request()
+    digest = "sha256:" + hashlib.sha256(canonical_inference_request_bytes(request)).hexdigest()
+    policy = PolicyEngine(
+        (
+            PolicyRule(
+                rule_id="allow.exact.inference",
+                effect=PolicyEffect.ALLOW,
+                actions=frozenset({"model.infer"}),
+                resources=frozenset({"model-provider:hosted/model:chat"}),
+                principals=frozenset({"service:assistant"}),
+                authenticated=True,
+                attribute_equals={"request_digest": digest},
+            ),
+        )
+    )
+    authorizer = PolicyEngineInferenceAuthorizer(policy)
+
+    await authorizer.authorize(request, _context())
+
+    mutated = replace(
+        request,
+        messages=(InferenceMessage(InferenceRole.USER, "jello"),),
+    )
+    with pytest.raises(InferenceAuthorizationRejectedError):
+        await authorizer.authorize(mutated, _context())
+
     snapshot = await policy.snapshot()
     assert snapshot.allowed == 1
     assert snapshot.denied == 1

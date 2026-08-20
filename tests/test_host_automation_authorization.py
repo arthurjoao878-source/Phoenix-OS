@@ -1,3 +1,5 @@
+import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -277,9 +279,47 @@ async def test_clipboard_write_policy_attributes_never_include_clipboard_text() 
     captured = policy.requests[0]
     assert captured.attributes["text_characters"] == str(len(secret))
     assert captured.attributes["text_bytes"] == str(len(secret.encode("utf-8")))
+    assert captured.attributes["text_digest"] == (
+        "sha256:" + hashlib.sha256(secret.encode("utf-8")).hexdigest()
+    )
     assert secret not in captured.resource
     assert secret not in captured.attributes
     assert secret not in captured.attributes.values()
+
+
+@pytest.mark.asyncio
+async def test_clipboard_write_authorization_binds_exact_text_digest() -> None:
+    request = HostClipboardWriteRequest(
+        host_id=_HOST,
+        text="hello",
+        request_id=UUID(int=6),
+        created_at=_NOW,
+    )
+    digest = "sha256:" + hashlib.sha256(request.text.encode("utf-8")).hexdigest()
+    policy = PolicyEngine(
+        (
+            PolicyRule(
+                rule_id="allow.exact.clipboard-write",
+                effect=PolicyEffect.ALLOW,
+                actions=frozenset({HOST_CLIPBOARD_WRITE_ACTION}),
+                resources=frozenset({host_clipboard_resource(_HOST)}),
+                principals=frozenset({"service:assistant"}),
+                authenticated=True,
+                attribute_equals={"text_digest": digest},
+            ),
+        )
+    )
+    authorizer = PolicyEngineHostAutomationAuthorizer(policy)
+
+    await authorizer.authorize_clipboard_write(request, _context())
+
+    mutated = replace(request, text="jello")
+    with pytest.raises(HostAutomationAuthorizationRejectedError):
+        await authorizer.authorize_clipboard_write(mutated, _context())
+
+    snapshot = await policy.snapshot()
+    assert snapshot.allowed == 1
+    assert snapshot.denied == 1
 
 
 @pytest.mark.asyncio
