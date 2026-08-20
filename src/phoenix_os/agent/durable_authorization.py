@@ -68,6 +68,7 @@ class DurableResumeAuthorizer(Protocol):
         self,
         request: ResumeRequest,
         checkpoint: CheckpointEnvelope,
+        lease: DurableLease,
         context: SecurityContext,
     ) -> None: ...
 
@@ -97,14 +98,17 @@ class PolicyEngineDurableResumeAuthorizer:
         self,
         request: ResumeRequest,
         checkpoint: CheckpointEnvelope,
+        lease: DurableLease,
         context: SecurityContext,
     ) -> None:
         if not isinstance(request, ResumeRequest):
             raise TypeError("request must be ResumeRequest")
         if not isinstance(checkpoint, CheckpointEnvelope):
             raise TypeError("checkpoint must be CheckpointEnvelope")
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
         _require_authenticated_actor(context, actor_id=request.actor_id)
-        _validate_resume_request(request, checkpoint)
+        _validate_resume_request(request, checkpoint, lease)
 
         try:
             await self._policy.enforce(
@@ -182,10 +186,14 @@ def _require_authenticated_actor(
 def _validate_resume_request(
     request: ResumeRequest,
     checkpoint: CheckpointEnvelope,
+    lease: DurableLease,
 ) -> None:
     if (
         request.run_id != checkpoint.durable_run_id
         or request.expected_version != checkpoint.run_version
+        or lease.run_id != request.run_id
+        or lease.generation != request.generation
+        or not lease.active_at(request.requested_at)
         or checkpoint.status not in _ALLOWED_RESUME_STATUSES
         or checkpoint.status.terminal
         or checkpoint.status.indeterminate
@@ -268,6 +276,7 @@ def _resume_attributes(
         "checkpoint_sequence": str(checkpoint.sequence.value),
         "current_status": checkpoint.status.value,
         "expected_version": str(request.expected_version.value),
+        "fencing_generation": str(request.generation.value),
         "next_operation": checkpoint.metadata.next_operation.value,
         "payload_profile": checkpoint.metadata.payload_profile.value,
         "resume_reason": request.reason.value,

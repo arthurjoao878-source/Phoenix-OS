@@ -223,6 +223,7 @@ def _resume_request(
     actor_id: str = "operator-1",
     run_id: DurableAgentRunId | None = None,
     version: DurableRunVersion | None = None,
+    generation: FencingGeneration | None = None,
     reason: ResumeReason = ResumeReason.OPERATOR_REQUEST,
     requested_at: datetime = REQUEST_TIME,
 ) -> ResumeRequest:
@@ -231,6 +232,7 @@ def _resume_request(
         actor_id=actor_id,
         reason=reason,
         expected_version=checkpoint.run_version if version is None else version,
+        generation=FencingGeneration(7) if generation is None else generation,
         requested_at=requested_at,
     )
 
@@ -378,6 +380,7 @@ async def test_resume_authorization_allows_one_exact_request() -> None:
                 attributes={
                     "current_status": DurableRunStatus.PAUSED_SHUTDOWN.value,
                     "expected_version": "3",
+                    "fencing_generation": "7",
                     "resume_reason": ResumeReason.OPERATOR_REQUEST.value,
                 },
             ),
@@ -387,6 +390,7 @@ async def test_resume_authorization_allows_one_exact_request() -> None:
     await PolicyEngineDurableResumeAuthorizer(policy).authorize(
         request,
         checkpoint,
+        _lease(checkpoint),
         _context(),
     )
 
@@ -401,6 +405,7 @@ async def test_resume_authorization_is_default_deny() -> None:
         await PolicyEngineDurableResumeAuthorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
+            _lease(checkpoint),
             _context(),
         )
 
@@ -443,6 +448,7 @@ async def test_reconcile_permission_does_not_grant_resume() -> None:
         await PolicyEngineDurableResumeAuthorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
+            _lease(checkpoint),
             _context(),
         )
 
@@ -462,6 +468,7 @@ async def test_resume_resource_is_bound_to_exact_run() -> None:
         await PolicyEngineDurableResumeAuthorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
+            _lease(checkpoint),
             _context(),
         )
 
@@ -488,6 +495,7 @@ async def test_resume_rejects_non_resumable_states_before_policy(
         await PolicyEngineDurableResumeAuthorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
+            _lease(checkpoint),
             _context(),
         )
 
@@ -519,6 +527,7 @@ async def test_resume_rejects_started_attempt_before_policy(
         await PolicyEngineDurableResumeAuthorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
+            _lease(checkpoint),
             _context(),
         )
 
@@ -546,6 +555,7 @@ async def test_resume_allows_prepared_attempt_after_exact_policy() -> None:
     await PolicyEngineDurableResumeAuthorizer(policy).authorize(
         _resume_request(checkpoint),
         checkpoint,
+        _lease(checkpoint),
         _context(),
     )
 
@@ -560,11 +570,15 @@ async def test_resume_allows_prepared_attempt_after_exact_policy() -> None:
         ),
         lambda checkpoint: _resume_request(
             checkpoint,
+            generation=FencingGeneration(8),
+        ),
+        lambda checkpoint: _resume_request(
+            checkpoint,
             requested_at=checkpoint.created_at - timedelta(seconds=1),
         ),
     ),
 )
-async def test_resume_rejects_identity_version_or_time_mismatch_before_policy(
+async def test_resume_rejects_identity_version_generation_or_time_mismatch_before_policy(
     request_factory: Callable[[CheckpointEnvelope], ResumeRequest],
 ) -> None:
     checkpoint = _checkpoint()
@@ -574,6 +588,43 @@ async def test_resume_rejects_identity_version_or_time_mismatch_before_policy(
         await PolicyEngineDurableResumeAuthorizer(policy).authorize(
             request_factory(checkpoint),
             checkpoint,
+            _lease(checkpoint),
+            _context(),
+        )
+
+    assert (await policy.snapshot()).evaluations == 0
+
+
+@pytest.mark.parametrize(
+    "lease_factory",
+    (
+        lambda checkpoint: _lease(checkpoint, run_id=OTHER_RUN_ID),
+        lambda checkpoint: _lease(
+            checkpoint,
+            generation=8,
+        ),
+        lambda checkpoint: _lease(
+            checkpoint,
+            expires_at=REQUEST_TIME,
+        ),
+        lambda checkpoint: _lease(
+            checkpoint,
+            acquired_at=REQUEST_TIME + timedelta(seconds=1),
+            expires_at=REQUEST_TIME + timedelta(minutes=5),
+        ),
+    ),
+)
+async def test_resume_rejects_foreign_generation_or_inactive_lease_before_policy(
+    lease_factory: Callable[[CheckpointEnvelope], DurableLease],
+) -> None:
+    checkpoint = _checkpoint()
+    policy = PolicyEngine()
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await PolicyEngineDurableResumeAuthorizer(policy).authorize(
+            _resume_request(checkpoint),
+            checkpoint,
+            lease_factory(checkpoint),
             _context(),
         )
 
@@ -596,6 +647,7 @@ async def test_resume_rejects_expired_budget_or_retention_before_policy(
         await PolicyEngineDurableResumeAuthorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
+            _lease(checkpoint),
             _context(),
         )
 
@@ -610,12 +662,14 @@ async def test_resume_requires_authenticated_exact_actor() -> None:
         await PolicyEngineDurableResumeAuthorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
+            _lease(checkpoint),
             _context(actor_id="other-operator"),
         )
     with pytest.raises(AgentAuthorizationRejectedError):
         await PolicyEngineDurableResumeAuthorizer(policy).authorize(
             _resume_request(checkpoint),
             checkpoint,
+            _lease(checkpoint),
             _context(authenticated=False),
         )
 
@@ -636,6 +690,7 @@ async def test_trusted_durable_actor_attribute_binds_namespaced_principal() -> N
     await PolicyEngineDurableResumeAuthorizer(policy).authorize(
         _resume_request(checkpoint),
         checkpoint,
+        _lease(checkpoint),
         _context(
             principal="service:recovery",
             trusted_actor_id="operator-1",
@@ -657,6 +712,7 @@ async def test_resume_policy_input_is_content_free_and_deterministic() -> None:
     await PolicyEngineDurableResumeAuthorizer(policy).authorize(
         _resume_request(checkpoint),
         checkpoint,
+        _lease(checkpoint),
         _context(),
     )
 
@@ -675,6 +731,7 @@ async def test_resume_policy_input_is_content_free_and_deterministic() -> None:
         "current_status",
         "effect",
         "expected_version",
+        "fencing_generation",
         "next_operation",
         "payload_profile",
         "resume_reason",
@@ -699,6 +756,7 @@ async def test_resume_authorization_does_not_mutate_checkpoint() -> None:
     await PolicyEngineDurableResumeAuthorizer(policy).authorize(
         _resume_request(checkpoint),
         checkpoint,
+        _lease(checkpoint),
         _context(),
     )
 
@@ -1133,6 +1191,18 @@ async def test_resume_authorizer_rejects_wrong_request_type() -> None:
         await PolicyEngineDurableResumeAuthorizer(PolicyEngine()).authorize(
             object(),  # type: ignore[arg-type]
             checkpoint,
+            _lease(checkpoint),
+            _context(),
+        )
+
+
+async def test_resume_authorizer_rejects_wrong_lease_type() -> None:
+    checkpoint = _checkpoint()
+    with pytest.raises(TypeError, match="DurableLease"):
+        await PolicyEngineDurableResumeAuthorizer(PolicyEngine()).authorize(
+            _resume_request(checkpoint),
+            checkpoint,
+            object(),  # type: ignore[arg-type]
             _context(),
         )
 

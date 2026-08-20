@@ -802,6 +802,7 @@ class ResumeRequest:
     actor_id: str
     reason: ResumeReason
     expected_version: DurableRunVersion
+    generation: FencingGeneration
     requested_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -816,6 +817,8 @@ class ResumeRequest:
             raise TypeError("reason must be ResumeReason")
         if not isinstance(self.expected_version, DurableRunVersion):
             raise TypeError("expected_version must be DurableRunVersion")
+        if not isinstance(self.generation, FencingGeneration):
+            raise TypeError("generation must be FencingGeneration")
         _require_timezone_aware(self.requested_at, label="requested_at")
 
 
