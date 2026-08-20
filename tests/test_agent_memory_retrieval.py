@@ -23,6 +23,7 @@ from phoenix_os.agent import (
     MemoryProvenance,
     MemoryReadRequest,
     MemoryRecord,
+    MemoryRecordIncarnation,
     MemoryRecordVersion,
     MemoryRetrievalCandidate,
     MemoryScope,
@@ -64,6 +65,7 @@ def _write(
     scope: MemoryScope | None = None,
     memory_id: MemoryId | None = None,
     expected_version: MemoryRecordVersion | None = None,
+    expected_incarnation: MemoryRecordIncarnation | None = None,
 ) -> MemoryWriteRequest:
     digest = memory_content_digest(content)
     return MemoryWriteRequest(
@@ -78,6 +80,7 @@ def _write(
         ),
         metadata={"kind": "note"},
         expected_version=expected_version,
+        expected_incarnation=expected_incarnation,
         created_at=_NOW,
     )
 
@@ -170,12 +173,14 @@ def _candidate(
     *,
     score: float = 1.0,
     scope: MemoryScope | None = None,
+    incarnation: MemoryRecordIncarnation | None = None,
     version: MemoryRecordVersion | None = None,
     digest: str | None = None,
 ) -> MemoryRetrievalCandidate:
     return MemoryRetrievalCandidate(
         scope=record.scope if scope is None else scope,
         memory_id=record.memory_id,
+        incarnation=record.incarnation if incarnation is None else incarnation,
         version=record.version if version is None else version,
         content_digest=record.content_digest if digest is None else digest,
         score=score,
@@ -198,6 +203,7 @@ async def test_deterministic_lexical_adapter_returns_matching_candidates() -> No
     )
 
     assert [candidate.memory_id for candidate in candidates] == [blue.memory_id]
+    assert candidates[0].incarnation == blue.incarnation
     assert candidates[0].score > 0
 
 
@@ -266,6 +272,36 @@ async def test_stale_version_candidate_cannot_resurrect_record() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_incarnation_candidate_cannot_match_reborn_identity() -> None:
+    store = InMemoryAgentMemoryStore(clock=lambda: _NOW)
+    record = await store.write(_write("same bytes"))
+    stale_incarnation = MemoryRecordIncarnation(UUID("80000000-0000-4000-8000-000000000030"))
+    assert stale_incarnation != record.incarnation
+    service = AgentMemoryService(
+        store=store,
+        authorizer=_AllowMemoryAuthorizer(),
+        retrieval=_StaticAdapter(
+            (
+                _candidate(
+                    record,
+                    incarnation=stale_incarnation,
+                    version=record.version,
+                    digest=record.content_digest,
+                ),
+            )
+        ),
+        clock=lambda: _NOW,
+    )
+
+    result = await service.search(
+        MemorySearchRequest(scope=_scope(), query="same", created_at=_NOW),
+        _context(),
+    )
+
+    assert result.hits == ()
+
+
+@pytest.mark.asyncio
 async def test_wrong_digest_candidate_is_rejected() -> None:
     store = InMemoryAgentMemoryStore(clock=lambda: _NOW)
     record = await store.write(_write("digest"))
@@ -294,6 +330,7 @@ async def test_deleted_candidate_is_absent_after_authoritative_revalidation() ->
             scope=record.scope,
             memory_id=record.memory_id,
             expected_version=record.version,
+            expected_incarnation=record.incarnation,
             created_at=_NOW,
         )
     )
@@ -377,6 +414,7 @@ def test_candidate_scores_must_be_finite_and_bounded(score: float) -> None:
         MemoryRetrievalCandidate(
             scope=_scope(),
             memory_id=_memory_id(1),
+            incarnation=MemoryRecordIncarnation(UUID(int=123)),
             version=MemoryRecordVersion(),
             content_digest="sha256:" + "a" * 64,
             score=score,
@@ -440,6 +478,7 @@ async def test_direct_read_update_during_version_reauthorization_is_not_disclose
             "updated",
             memory_id=created.memory_id,
             expected_version=created.version,
+            expected_incarnation=created.incarnation,
         )
     )
     authorizer.release_reauthorization.set()
@@ -451,6 +490,7 @@ async def test_direct_read_update_during_version_reauthorization_is_not_disclose
     assert authorizer.read_calls == 2
     assert authorizer.read_requests[0].expected_version is None
     assert authorizer.read_requests[1].expected_version == created.version
+    assert authorizer.read_requests[1].expected_incarnation == created.incarnation
 
 
 @pytest.mark.asyncio
@@ -479,6 +519,7 @@ async def test_service_direct_operations_use_independent_authorization() -> None
             scope=created.scope,
             memory_id=created.memory_id,
             expected_version=created.version,
+            expected_incarnation=created.incarnation,
             created_at=_NOW,
         ),
         _context(),
@@ -489,4 +530,5 @@ async def test_service_direct_operations_use_independent_authorization() -> None
     assert authorizer.read_calls == 2
     assert authorizer.read_requests[0].expected_version is None
     assert authorizer.read_requests[1].expected_version == created.version
+    assert authorizer.read_requests[1].expected_incarnation == created.incarnation
     assert authorizer.delete_calls == 1

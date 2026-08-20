@@ -21,6 +21,7 @@ from phoenix_os.agent import (
     MemoryProvenance,
     MemoryReadRequest,
     MemoryRecord,
+    MemoryRecordIncarnation,
     MemoryRecordStatus,
     MemoryRecordVersion,
     MemoryRetentionPolicy,
@@ -65,6 +66,7 @@ def _request(
     scope: MemoryScope | None = None,
     memory_id: MemoryId | None = None,
     expected_version: MemoryRecordVersion | None = None,
+    expected_incarnation: MemoryRecordIncarnation | None = None,
     created_at: datetime = _NOW,
 ) -> MemoryWriteRequest:
     digest = memory_content_digest(content)
@@ -80,6 +82,7 @@ def _request(
         ),
         metadata={"kind": "note"},
         expected_version=expected_version,
+        expected_incarnation=expected_incarnation,
         created_at=created_at,
     )
 
@@ -89,11 +92,13 @@ def _read(
     scope: MemoryScope | None = None,
     memory_id: MemoryId | None = None,
     expected_version: MemoryRecordVersion | None = None,
+    expected_incarnation: MemoryRecordIncarnation | None = None,
 ) -> MemoryReadRequest:
     return MemoryReadRequest(
         scope=_scope() if scope is None else scope,
         memory_id=_memory_id() if memory_id is None else memory_id,
         expected_version=expected_version,
+        expected_incarnation=expected_incarnation,
         created_at=_NOW,
     )
 
@@ -107,6 +112,7 @@ async def test_authoritative_store_creates_and_reads_exact_record() -> None:
     loaded = await store.read(_read())
 
     assert loaded == created
+    assert created.incarnation.value.version == 4
     assert created.version == MemoryRecordVersion(1)
     assert created.status is MemoryRecordStatus.ACTIVE
     assert created.content_digest == memory_content_digest("remember the blue folder")
@@ -121,15 +127,29 @@ async def test_exact_version_read_rejects_stale_or_missing_record() -> None:
     store = InMemoryAgentMemoryStore(clock=FakeClock())
     created = await store.write(_request("version-bound"))
 
-    assert await store.read(_read(expected_version=created.version)) == created
+    assert (
+        await store.read(
+            _read(
+                expected_version=created.version,
+                expected_incarnation=created.incarnation,
+            )
+        )
+        == created
+    )
 
     with pytest.raises(AgentStateConflictError):
-        await store.read(_read(expected_version=created.version.next()))
+        await store.read(
+            _read(
+                expected_version=created.version.next(),
+                expected_incarnation=created.incarnation,
+            )
+        )
     with pytest.raises(AgentStateConflictError):
         await store.read(
             _read(
                 memory_id=_memory_id(2),
                 expected_version=MemoryRecordVersion(),
+                expected_incarnation=MemoryRecordIncarnation(UUID(int=99)),
             )
         )
 
@@ -163,12 +183,14 @@ async def test_update_requires_exact_logical_version_and_preserves_identity() ->
             "second",
             memory_id=created.memory_id,
             expected_version=created.version,
+            expected_incarnation=created.incarnation,
             created_at=clock(),
         )
     )
 
     assert updated.memory_id == created.memory_id
     assert updated.scope == created.scope
+    assert updated.incarnation == created.incarnation
     assert updated.version == created.version.next()
     assert updated.created_at == created.created_at
     assert updated.updated_at == clock()
@@ -180,6 +202,7 @@ async def test_update_requires_exact_logical_version_and_preserves_identity() ->
                 "stale",
                 memory_id=created.memory_id,
                 expected_version=created.version,
+                expected_incarnation=created.incarnation,
                 created_at=clock(),
             )
         )
@@ -208,6 +231,7 @@ async def test_concurrent_updates_allow_only_one_winner() -> None:
                 "left",
                 memory_id=created.memory_id,
                 expected_version=created.version,
+                expected_incarnation=created.incarnation,
                 created_at=clock(),
             )
         ),
@@ -216,6 +240,7 @@ async def test_concurrent_updates_allow_only_one_winner() -> None:
                 "right",
                 memory_id=created.memory_id,
                 expected_version=created.version,
+                expected_incarnation=created.incarnation,
                 created_at=clock(),
             )
         ),
@@ -284,7 +309,12 @@ async def test_expired_record_is_absent_from_read_and_listing() -> None:
 
     assert await store.read(_read()) is None
     with pytest.raises(AgentStateConflictError):
-        await store.read(_read(expected_version=created.version))
+        await store.read(
+            _read(
+                expected_version=created.version,
+                expected_incarnation=created.incarnation,
+            )
+        )
     assert await store.list_scope(_scope()) == ()
 
 
@@ -352,6 +382,7 @@ async def test_explicit_delete_is_versioned_and_prevents_stale_resurrection() ->
             scope=created.scope,
             memory_id=created.memory_id,
             expected_version=created.version,
+            expected_incarnation=created.incarnation,
             created_at=clock(),
         )
     )
@@ -362,6 +393,7 @@ async def test_explicit_delete_is_versioned_and_prevents_stale_resurrection() ->
             _read(
                 memory_id=created.memory_id,
                 expected_version=created.version,
+                expected_incarnation=created.incarnation,
             )
         )
 
@@ -371,6 +403,7 @@ async def test_explicit_delete_is_versioned_and_prevents_stale_resurrection() ->
                 "stale resurrection",
                 memory_id=created.memory_id,
                 expected_version=created.version,
+                expected_incarnation=created.incarnation,
                 created_at=clock(),
             )
         )
@@ -395,6 +428,7 @@ async def test_delete_with_stale_version_fails_without_mutation() -> None:
                 scope=created.scope,
                 memory_id=created.memory_id,
                 expected_version=created.version.next(),
+                expected_incarnation=created.incarnation,
                 created_at=_NOW,
             )
         )
@@ -419,6 +453,7 @@ async def test_tombstone_retention_is_finite_in_backing_state_store() -> None:
             scope=created.scope,
             memory_id=created.memory_id,
             expected_version=created.version,
+            expected_incarnation=created.incarnation,
             created_at=clock(),
         )
     )
@@ -440,6 +475,7 @@ async def test_snapshot_restore_does_not_resurrect_tombstoned_memory() -> None:
             scope=created.scope,
             memory_id=created.memory_id,
             expected_version=created.version,
+            expected_incarnation=created.incarnation,
             created_at=clock(),
         )
     )
@@ -554,6 +590,7 @@ def test_active_memory_record_validates_digest_and_is_frozen() -> None:
     record = MemoryRecord(
         scope=_scope(),
         memory_id=_memory_id(),
+        incarnation=MemoryRecordIncarnation(),
         version=MemoryRecordVersion(),
         status=MemoryRecordStatus.ACTIVE,
         content_digest=digest,
@@ -581,6 +618,7 @@ def test_tombstone_contract_rejects_retained_content() -> None:
         MemoryRecord(
             scope=_scope(),
             memory_id=_memory_id(),
+            incarnation=MemoryRecordIncarnation(),
             version=MemoryRecordVersion(2),
             status=MemoryRecordStatus.TOMBSTONED,
             content_digest=memory_content_digest("former"),
@@ -590,3 +628,124 @@ def test_tombstone_contract_rejects_retained_content() -> None:
             content="former",
             deleted_at=_NOW + timedelta(seconds=1),
         )
+
+
+@pytest.mark.asyncio
+async def test_legacy_v1_record_gets_stable_synthetic_incarnation_and_upgrades_on_write() -> None:
+    clock = FakeClock()
+    backing = MemoryStateStore(clock=clock)
+    store = StateStoreMemoryStore(backing, clock=clock)
+    created = await store.write(_request("legacy"))
+    stored = (await backing.list(namespace="agent-memory"))[0]
+    assert isinstance(stored.value, dict)
+
+    legacy_document = dict(stored.value)
+    legacy_document["schema_version"] = 1
+    legacy_document.pop("incarnation")
+    key = StateKey(stored.key.namespace, stored.key.name, dict)
+    await backing.put(key, legacy_document, expected_version=stored.version)
+
+    first_read = await store.read(_read(memory_id=created.memory_id))
+    second_read = await store.read(_read(memory_id=created.memory_id))
+    assert first_read is not None
+    assert second_read is not None
+    assert first_read.incarnation == second_read.incarnation
+    assert first_read.incarnation.value.version == 5
+
+    clock.advance(timedelta(seconds=1))
+    updated = await store.write(
+        _request(
+            "legacy updated",
+            memory_id=first_read.memory_id,
+            expected_version=first_read.version,
+            expected_incarnation=first_read.incarnation,
+            created_at=clock(),
+        )
+    )
+    assert updated.incarnation == first_read.incarnation
+
+    upgraded = (await backing.list(namespace="agent-memory"))[0]
+    assert isinstance(upgraded.value, dict)
+    assert upgraded.value["schema_version"] == 2
+    assert upgraded.value["incarnation"] == str(first_read.incarnation)
+
+
+@pytest.mark.asyncio
+async def test_rebirth_gets_new_incarnation_and_rejects_predecessor_bindings() -> None:
+    clock = FakeClock()
+    limits = MemoryLimits(
+        retention=MemoryRetentionPolicy(
+            record_ttl=timedelta(seconds=10),
+            tombstone_retention=timedelta(seconds=10),
+        )
+    )
+    backing = MemoryStateStore(clock=clock)
+    store = StateStoreMemoryStore(backing, limits=limits, clock=clock)
+    first = await store.write(_request("same bytes"))
+
+    await store.delete(
+        MemoryDeleteRequest(
+            scope=first.scope,
+            memory_id=first.memory_id,
+            expected_version=first.version,
+            expected_incarnation=first.incarnation,
+            created_at=clock(),
+        )
+    )
+    clock.advance(timedelta(seconds=11))
+    assert await backing.list(namespace="agent-memory") == ()
+
+    reborn = await store.write(
+        _request(
+            "same bytes",
+            memory_id=first.memory_id,
+            created_at=clock(),
+        )
+    )
+    assert reborn.memory_id == first.memory_id
+    assert reborn.version == first.version
+    assert reborn.content_digest == first.content_digest
+    assert reborn.incarnation != first.incarnation
+
+    stale_read = MemoryReadRequest(
+        scope=first.scope,
+        memory_id=first.memory_id,
+        expected_version=first.version,
+        expected_incarnation=first.incarnation,
+        created_at=clock(),
+    )
+    with pytest.raises(AgentStateConflictError):
+        await store.read(stale_read)
+
+    with pytest.raises(AgentStateConflictError):
+        await store.write(
+            _request(
+                "predecessor update",
+                memory_id=first.memory_id,
+                expected_version=first.version,
+                expected_incarnation=first.incarnation,
+                created_at=clock(),
+            )
+        )
+
+    with pytest.raises(AgentStateConflictError):
+        await store.delete(
+            MemoryDeleteRequest(
+                scope=first.scope,
+                memory_id=first.memory_id,
+                expected_version=first.version,
+                expected_incarnation=first.incarnation,
+                created_at=clock(),
+            )
+        )
+
+    assert (
+        await store.read(
+            _read(
+                memory_id=reborn.memory_id,
+                expected_version=reborn.version,
+                expected_incarnation=reborn.incarnation,
+            )
+        )
+        == reborn
+    )

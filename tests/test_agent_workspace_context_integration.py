@@ -37,6 +37,7 @@ from phoenix_os.agent import (
     MemoryOriginKind,
     MemoryProvenance,
     MemoryRecord,
+    MemoryRecordIncarnation,
     MemoryRecordStatus,
     MemoryRecordVersion,
     MemorySearchHit,
@@ -207,6 +208,7 @@ def _memory_block(request: AgentRunRequest) -> MemoryContextBlock:
     record = MemoryRecord(
         scope=scope,
         memory_id=MemoryId(),
+        incarnation=MemoryRecordIncarnation(),
         version=MemoryRecordVersion(),
         status=MemoryRecordStatus.ACTIVE,
         content_digest=digest,

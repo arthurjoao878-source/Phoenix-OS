@@ -24,6 +24,7 @@ from phoenix_os.agent import (
     MemoryOriginKind,
     MemoryProvenance,
     MemoryReadRequest,
+    MemoryRecordIncarnation,
     MemoryRecordStatus,
     MemoryRecordVersion,
     MemoryRetentionPolicy,
@@ -37,6 +38,7 @@ from phoenix_os.agent import (
 
 _NOW = datetime(2026, 8, 11, 23, tzinfo=UTC)
 _MEMORY_ID = MemoryId(UUID("10000000-0000-0000-0000-000000000030"))
+_INCARNATION = MemoryRecordIncarnation(UUID("50000000-0000-4000-8000-000000000030"))
 
 
 def _scope() -> MemoryScope:
@@ -94,6 +96,15 @@ def test_memory_scope_id_rejects_resource_injection(value: str) -> None:
 def test_memory_scope_kinds_and_statuses_are_finite() -> None:
     assert tuple(item.value for item in MemoryScopeKind) == ("run", "agent", "principal")
     assert tuple(item.value for item in MemoryRecordStatus) == ("active", "tombstoned")
+
+
+def test_memory_record_incarnation_is_opaque_uuid_and_generated_as_v4() -> None:
+    generated = MemoryRecordIncarnation()
+
+    assert generated.value.version == 4
+    assert str(_INCARNATION) == "50000000-0000-4000-8000-000000000030"
+    with pytest.raises(TypeError):
+        MemoryRecordIncarnation("not-a-uuid")  # type: ignore[arg-type]
 
 
 def test_record_version_is_positive_monotonic_and_bounded() -> None:
@@ -172,6 +183,7 @@ def test_memory_write_is_explicit_preserves_content_and_freezes_metadata() -> No
     assert request.metadata == {"kind": "note"}
     assert isinstance(request.metadata, MappingProxyType)
     assert request.expected_version is None
+    assert request.expected_incarnation is None
 
     with pytest.raises(ValueError):
         MemoryWriteRequest(
@@ -204,19 +216,68 @@ def test_direct_read_and_delete_bind_exact_record_and_version() -> None:
         scope=scope,
         memory_id=_MEMORY_ID,
         expected_version=MemoryRecordVersion(7),
+        expected_incarnation=_INCARNATION,
         created_at=_NOW,
     )
     delete = MemoryDeleteRequest(
         scope=scope,
         memory_id=_MEMORY_ID,
         expected_version=MemoryRecordVersion(7),
+        expected_incarnation=_INCARNATION,
         created_at=_NOW,
     )
 
     assert read.memory_id == _MEMORY_ID
     assert read.expected_version == MemoryRecordVersion(7)
+    assert read.expected_incarnation == _INCARNATION
     assert delete.memory_id == _MEMORY_ID
     assert delete.expected_version == MemoryRecordVersion(7)
+    assert delete.expected_incarnation == _INCARNATION
+
+
+def test_delete_requires_non_null_exact_binding() -> None:
+    with pytest.raises(TypeError, match="expected_version"):
+        MemoryDeleteRequest(
+            scope=_scope(),
+            memory_id=_MEMORY_ID,
+            expected_version=None,  # type: ignore[arg-type]
+            expected_incarnation=None,  # type: ignore[arg-type]
+            created_at=_NOW,
+        )
+    with pytest.raises(TypeError, match="expected_incarnation"):
+        MemoryDeleteRequest(
+            scope=_scope(),
+            memory_id=_MEMORY_ID,
+            expected_version=MemoryRecordVersion(7),
+            expected_incarnation=None,  # type: ignore[arg-type]
+            created_at=_NOW,
+        )
+
+
+def test_exact_record_bindings_reject_partial_version_or_incarnation() -> None:
+    with pytest.raises(ValueError, match="provided together"):
+        MemoryReadRequest(
+            scope=_scope(),
+            memory_id=_MEMORY_ID,
+            expected_version=MemoryRecordVersion(3),
+            created_at=_NOW,
+        )
+    with pytest.raises(ValueError, match="provided together"):
+        MemoryReadRequest(
+            scope=_scope(),
+            memory_id=_MEMORY_ID,
+            expected_incarnation=_INCARNATION,
+            created_at=_NOW,
+        )
+    with pytest.raises(ValueError, match="provided together"):
+        MemoryWriteRequest(
+            scope=_scope(),
+            memory_id=_MEMORY_ID,
+            content="update",
+            provenance=_provenance("update"),
+            expected_version=MemoryRecordVersion(3),
+            created_at=_NOW,
+        )
 
 
 def test_search_request_is_trimmed_and_globally_bounded() -> None:

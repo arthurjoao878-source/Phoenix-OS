@@ -123,6 +123,7 @@ class DeterministicLexicalMemoryRetrievalAdapter:
                 MemoryRetrievalCandidate(
                     scope=record.scope,
                     memory_id=record.memory_id,
+                    incarnation=record.incarnation,
                     version=record.version,
                     content_digest=record.content_digest,
                     score=score,
@@ -208,7 +209,8 @@ class AgentMemoryService:
             if record is None:
                 continue
             if (
-                record.version != candidate.version
+                record.incarnation != candidate.incarnation
+                or record.version != candidate.version
                 or record.content_digest != candidate.content_digest
             ):
                 continue
@@ -272,6 +274,7 @@ class AgentMemoryService:
         bound_request = replace(
             request,
             expected_version=initial.version,
+            expected_incarnation=initial.incarnation,
             created_at=self._now(),
         )
         await self._authorizer.authorize_read(bound_request, context)
