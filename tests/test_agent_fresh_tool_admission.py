@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -7,7 +8,10 @@ from uuid import UUID
 import pytest
 
 from phoenix_os.agent import (
+    AgentAdmissionController,
+    AgentCancellationToken,
     AgentId,
+    AgentLimits,
     AgentLoop,
     AgentMessage,
     AgentMessageRole,
@@ -210,6 +214,7 @@ def _loop(
     approval_service: InMemoryToolApprovalService | None = None,
     approval_resolver: object | None = None,
     authority_freshness: CurrentSessionFreshnessValidator | None = None,
+    admission: AgentAdmissionController | None = None,
 ) -> AgentLoop:
     registry = ToolRegistry()
     registry.register_tool(
@@ -232,8 +237,26 @@ def _loop(
         approval_service=approval_service,
         approval_resolver=approval_resolver,  # type: ignore[arg-type]
         authority_freshness=authority_freshness,
+        admission=admission,
         clock=lambda: _NOW,
     )
+
+
+def _single_tool_admission() -> AgentAdmissionController:
+    return AgentAdmissionController(
+        AgentLimits(
+            max_concurrent_tool_calls=1,
+        )
+    )
+
+
+async def _wait_for_tool_queue(admission: AgentAdmissionController) -> None:
+    for _ in range(500):
+        snapshot = await admission.snapshot()
+        if snapshot.active_tool_calls == 1 and snapshot.queued == 1:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("tool invocation did not enter the admission queue")
 
 
 @pytest.mark.asyncio
@@ -336,6 +359,105 @@ async def test_session_revocation_during_approval_is_denied_before_side_effect_a
     assert adapter.effect_count == 0
     approval_snapshot = await approvals.snapshot()
     assert approval_snapshot.consumed == 1
+
+
+@pytest.mark.asyncio
+async def test_policy_change_while_waiting_for_tool_lease_is_denied_after_queue() -> None:
+    descriptor = _descriptor()
+    adapter = DeterministicReadOnlyTool("lookup", {"value": "not reached"})
+    policy = PolicyEngine()
+    registration = await policy.register(
+        PolicyRule(
+            rule_id="allow.lookup.before-queue",
+            effect=PolicyEffect.ALLOW,
+            actions=frozenset({"tool.invoke"}),
+            resources=frozenset({"tool:lookup/record:fixed"}),
+            principals=frozenset({"service:assistant"}),
+            authenticated=True,
+            attribute_equals={
+                "agent_id": "assistant",
+                "effect": "read_only",
+            },
+        )
+    )
+    admission = _single_tool_admission()
+    holder = await admission.acquire_tool(
+        timeout_seconds=1,
+        cancellation=AgentCancellationToken(),
+    )
+    loop = _loop(
+        descriptor=descriptor,
+        adapter=adapter,
+        tool_authorizer=PolicyEngineToolAuthorizer(policy),
+        admission=admission,
+    )
+    task = asyncio.create_task(loop.run(_request(), _service_context()))
+
+    try:
+        await _wait_for_tool_queue(admission)
+        assert await policy.unregister(registration)
+    finally:
+        await holder.release()
+
+    result = await task
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert result.tool_calls == 0
+    assert len(adapter.requests) == 0
+    policy_snapshot = await policy.snapshot()
+    assert policy_snapshot.evaluations == 2
+    assert policy_snapshot.allowed == 1
+    assert policy_snapshot.denied == 1
+    admission_snapshot = await admission.snapshot()
+    assert admission_snapshot.active_tool_calls == 0
+    assert admission_snapshot.queued == 0
+
+
+@pytest.mark.asyncio
+async def test_session_revocation_while_waiting_for_tool_lease_is_denied_after_queue() -> None:
+    descriptor = _descriptor()
+    adapter = DeterministicReadOnlyTool("lookup", {"value": "not reached"})
+    active_session = _session()
+    source = _MutableSessionSource(active_session)
+    validator = CurrentSessionFreshnessValidator(source, clock=lambda: _NOW)
+    authorizer = _AllowToolAuthorizer()
+    admission = _single_tool_admission()
+    holder = await admission.acquire_tool(
+        timeout_seconds=1,
+        cancellation=AgentCancellationToken(),
+    )
+    loop = _loop(
+        descriptor=descriptor,
+        adapter=adapter,
+        tool_authorizer=authorizer,
+        authority_freshness=validator,
+        admission=admission,
+    )
+    task = asyncio.create_task(loop.run(_request(), active_session.security_context()))
+
+    try:
+        await _wait_for_tool_queue(admission)
+        source.current = replace(
+            active_session,
+            status=SessionStatus.REVOKED,
+            revoked_at=_NOW,
+            revocation_reason="revoked while queued",
+        )
+    finally:
+        await holder.release()
+
+    result = await task
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert result.tool_calls == 0
+    assert authorizer.calls == 1
+    assert source.calls == [_SESSION_ID]
+    assert len(adapter.requests) == 0
+    admission_snapshot = await admission.snapshot()
+    assert admission_snapshot.active_tool_calls == 0
+    assert admission_snapshot.queued == 0
 
 
 @pytest.mark.asyncio

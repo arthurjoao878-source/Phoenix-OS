@@ -247,6 +247,48 @@ async def test_tool_authorization_uses_resolved_resource_effect_and_argument_dig
 
 
 @pytest.mark.asyncio
+async def test_tool_authorization_rejects_security_context_attribute_collision() -> None:
+    invocation = _invocation()
+    descriptor = _descriptor(effect=ToolEffect.READ_ONLY)
+    digest = canonical_tool_argument_digest(invocation.arguments)
+    policy = PolicyEngine(
+        (
+            PolicyRule(
+                rule_id="allow.exact.read",
+                effect=PolicyEffect.ALLOW,
+                actions=frozenset({"tool.invoke"}),
+                resources=frozenset({"tool:files.read/workspace:docs/readme.md"}),
+                principals=frozenset({"service:assistant"}),
+                authenticated=True,
+                attribute_equals={
+                    "agent_id": "assistant",
+                    "effect": "read_only",
+                    "argument_digest": digest,
+                },
+            ),
+        )
+    )
+    context = SecurityContext(
+        principal="service:assistant",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+        attributes={"agent_id": "assistant"},
+    )
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await PolicyEngineToolAuthorizer(policy).authorize(
+            invocation,
+            descriptor,
+            context,
+        )
+
+    snapshot = await policy.snapshot()
+    assert snapshot.evaluations == 1
+    assert snapshot.allowed == 0
+    assert snapshot.denied == 1
+
+
+@pytest.mark.asyncio
 async def test_missing_agent_binding_fails_before_policy_evaluation() -> None:
     policy = PolicyEngine()
     authorizer = PolicyEngineToolAuthorizer(policy)
