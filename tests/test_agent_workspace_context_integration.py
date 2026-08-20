@@ -163,23 +163,17 @@ class _WorkspaceAuthorizer:
 
     async def authorize_import(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: object,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None:
-        return None
+        del request, context
 
     async def authorize_export(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: object,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None:
-        return None
+        del request, context
 
     async def authorize_admin(
         self,

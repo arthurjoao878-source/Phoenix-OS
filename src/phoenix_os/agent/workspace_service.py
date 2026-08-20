@@ -264,12 +264,7 @@ class AgentWorkspaceService:
         try:
             # Import is its own authority. The source cannot be touched before the
             # first exact policy decision and this path intentionally bypasses write().
-            await self._authorizer.authorize_import(
-                request.scope,
-                request.artifact_id,
-                context,
-                created_at=request.created_at,
-            )
+            await self._authorizer.authorize_import(request, context)
             adapter, adapter_id = self._require_transfer_adapter()
             imported = await self._call_import_adapter(
                 adapter,
@@ -279,12 +274,8 @@ class AgentWorkspaceService:
             validated = self._validated_import_result(imported)
 
             mutation_time = self._now()
-            await self._authorizer.authorize_import(
-                request.scope,
-                request.artifact_id,
-                context,
-                created_at=mutation_time,
-            )
+            admission_request = replace(request, created_at=mutation_time)
+            await self._authorizer.authorize_import(admission_request, context)
             # Runtime shutdown may close this boundary while a cancellation-suppressing
             # source adapter is still returning. Never begin an authoritative mutation
             # after the service has been closed.
@@ -353,17 +344,13 @@ class AgentWorkspaceService:
         try:
             # Export authority permits this one transfer but never exposes read() as
             # a public capability. Denial occurs before the store or adapter is used.
-            await self._authorizer.authorize_export(
-                request.scope,
-                request.artifact_id,
-                context,
-                created_at=request.created_at,
-            )
+            await self._authorizer.authorize_export(request, context)
             adapter, adapter_id = self._require_transfer_adapter()
             loaded = await self._store.read(
                 ArtifactReadRequest(
                     scope=request.scope,
                     artifact_id=request.artifact_id,
+                    expected_version=request.expected_version,
                     created_at=request.created_at,
                 )
             )
@@ -374,17 +361,14 @@ class AgentWorkspaceService:
                 raise AgentStateConflictError()
 
             side_effect_time = self._now()
-            await self._authorizer.authorize_export(
-                request.scope,
-                request.artifact_id,
-                context,
-                created_at=side_effect_time,
-            )
+            admission_request = replace(request, created_at=side_effect_time)
+            await self._authorizer.authorize_export(admission_request, context)
             admission_time = self._now()
             admitted = await self._store.read(
                 ArtifactReadRequest(
                     scope=request.scope,
                     artifact_id=request.artifact_id,
+                    expected_version=admission_request.expected_version,
                     created_at=admission_time,
                 )
             )
@@ -420,7 +404,7 @@ class AgentWorkspaceService:
                     media_type=record.media_type,
                     content_digest=record.content_digest,
                     content=content,
-                    destination_reference=request.destination_reference,
+                    destination_reference=admission_request.destination_reference,
                 ),
             )
             # A malformed post-side-effect result is a server-owned adapter contract

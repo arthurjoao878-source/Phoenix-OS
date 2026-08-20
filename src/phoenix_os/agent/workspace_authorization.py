@@ -10,7 +10,9 @@ from phoenix_os.agent.contracts import AgentId, AgentRunId
 from phoenix_os.agent.errors import AgentAuthorizationRejectedError
 from phoenix_os.agent.workspace_contracts import (
     ArtifactDeleteRequest,
+    ArtifactExportRequest,
     ArtifactId,
+    ArtifactImportRequest,
     ArtifactListRequest,
     ArtifactReadRequest,
     ArtifactWriteRequest,
@@ -18,6 +20,7 @@ from phoenix_os.agent.workspace_contracts import (
     WorkspaceScope,
     WorkspaceScopeId,
     WorkspaceScopeKind,
+    WorkspaceTransferReference,
     canonical_artifact_path_digest,
 )
 from phoenix_os.policy import PhoenixPolicyError, PolicyEngine, PolicyRequest, SecurityContext
@@ -100,6 +103,12 @@ def workspace_artifact_resource(scope: WorkspaceScope, artifact_id: ArtifactId) 
     return f"{workspace_scope_resource(scope)}/artifact:{artifact_id}"
 
 
+def _canonical_transfer_reference_digest(reference: WorkspaceTransferReference) -> str:
+    if not isinstance(reference, WorkspaceTransferReference):
+        raise TypeError("reference must be WorkspaceTransferReference")
+    return "sha256:" + hashlib.sha256(reference.value.encode("utf-8")).hexdigest()
+
+
 @runtime_checkable
 class WorkspaceAuthorizer(Protocol):
     """Authorize exact workspace operations without touching artifact bytes."""
@@ -130,20 +139,14 @@ class WorkspaceAuthorizer(Protocol):
 
     async def authorize_import(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: ArtifactImportRequest,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None: ...
 
     async def authorize_export(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: ArtifactExportRequest,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None: ...
 
     async def authorize_admin(
@@ -267,34 +270,54 @@ class PolicyEngineWorkspaceAuthorizer:
 
     async def authorize_import(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: ArtifactImportRequest,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None:
-        await self._authorize_transfer(
+        if not isinstance(request, ArtifactImportRequest):
+            raise TypeError("request must be ArtifactImportRequest")
+        _require_authenticated_context(context)
+        _validate_principal_scope_binding(request.scope, context)
+        await self._enforce(
             action=WORKSPACE_IMPORT_ACTION,
-            scope=scope,
-            artifact_id=artifact_id,
+            resource=workspace_artifact_resource(request.scope, request.artifact_id),
             context=context,
-            created_at=created_at,
+            attributes={
+                **_scope_attributes(request.scope),
+                "artifact_id": str(request.artifact_id),
+                "expected_version": (
+                    str(request.expected_version.value)
+                    if request.expected_version is not None
+                    else "absent"
+                ),
+                "source_reference_digest": _canonical_transfer_reference_digest(
+                    request.source_reference
+                ),
+            },
+            created_at=request.created_at,
         )
 
     async def authorize_export(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: ArtifactExportRequest,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None:
-        await self._authorize_transfer(
+        if not isinstance(request, ArtifactExportRequest):
+            raise TypeError("request must be ArtifactExportRequest")
+        _require_authenticated_context(context)
+        _validate_principal_scope_binding(request.scope, context)
+        await self._enforce(
             action=WORKSPACE_EXPORT_ACTION,
-            scope=scope,
-            artifact_id=artifact_id,
+            resource=workspace_artifact_resource(request.scope, request.artifact_id),
             context=context,
-            created_at=created_at,
+            attributes={
+                **_scope_attributes(request.scope),
+                "artifact_id": str(request.artifact_id),
+                "expected_version": str(request.expected_version.value),
+                "destination_reference_digest": _canonical_transfer_reference_digest(
+                    request.destination_reference
+                ),
+            },
+            created_at=request.created_at,
         )
 
     async def authorize_admin(
@@ -310,29 +333,6 @@ class PolicyEngineWorkspaceAuthorizer:
             resource=workspace_scope_resource(scope),
             context=context,
             attributes=_scope_attributes(scope),
-            created_at=_validated_timestamp(created_at),
-        )
-
-    async def _authorize_transfer(
-        self,
-        *,
-        action: str,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
-        context: SecurityContext,
-        created_at: datetime | None,
-    ) -> None:
-        _validate_scope_and_context(scope, context)
-        if not isinstance(artifact_id, ArtifactId):
-            raise TypeError("artifact_id must be ArtifactId")
-        await self._enforce(
-            action=action,
-            resource=workspace_artifact_resource(scope, artifact_id),
-            context=context,
-            attributes={
-                **_scope_attributes(scope),
-                "artifact_id": str(artifact_id),
-            },
             created_at=_validated_timestamp(created_at),
         )
 
