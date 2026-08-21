@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime
 from typing import Protocol, runtime_checkable
@@ -224,6 +224,23 @@ class InMemoryDurableLeaseManager(DurableLeaseManager):
         async with self._lock:
             self._ensure_open()
             yield self._require_current_locked(lease, now=now)
+
+    @asynccontextmanager
+    async def guard_new_incarnation(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> AsyncIterator[Callable[[], None]]:
+        "Serialize one accepted birth before it can inherit pre-birth lease authority."
+
+        self._require_run_id(run_id)
+
+        async with self._lock:
+            self._ensure_open()
+
+            def fence_preexisting_authority() -> None:
+                self._active.pop(run_id, None)
+
+            yield fence_preexisting_authority
 
     async def release(
         self,
