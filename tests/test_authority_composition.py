@@ -1,29 +1,53 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 
 from phoenix_os.agent import (
+    MEMORY_WRITE_ACTION,
     AgentId,
     AgentLoop,
+    AgentMemoryService,
     AgentMessage,
     AgentMessageRole,
     AgentRunRequest,
     AgentRunStatus,
     BoundedAgentExecutor,
     DeterministicFinalTurn,
+    DeterministicLexicalMemoryRetrievalAdapter,
     DeterministicModelTurnAdapter,
     DeterministicToolTurn,
+    InMemoryAgentMemoryStore,
     InMemoryToolApprovalService,
+    MemoryId,
+    MemoryNamespace,
+    MemoryOriginKind,
+    MemoryProvenance,
+    MemoryWriteRequest,
     PolicyEngineAgentRunAuthorizer,
+    PolicyEngineMemoryAuthorizer,
     PolicyEngineToolAuthorizer,
+    StaticToolResourceResolver,
     ToolApprovalChallenge,
     ToolApprovalEvidence,
     ToolDescriptor,
+    ToolEffect,
+    ToolExecutionError,
+    ToolId,
+    ToolInputSchema,
     ToolInvocationRequest,
+    ToolInvocationResult,
+    ToolOutputSchema,
     ToolRegistry,
+    ToolResultStatus,
+    ToolSchema,
+    ToolSchemaType,
+    agent_memory_scope,
     agent_run_resource,
+    memory_content_digest,
+    memory_record_resource,
 )
 from phoenix_os.host_automation import (
     HOST_APPLICATION_LAUNCH_ACTION,
@@ -65,6 +89,15 @@ _APP_ID = HostApplicationId("editor")
 _REQUESTER = "service:requester"
 _INTERNAL_HOST = "service:host-internal"
 _APPROVER = "service:approver"
+
+_MEMORY_NAMESPACE = MemoryNamespace("composition")
+_MEMORY_SCOPE = agent_memory_scope(namespace=_MEMORY_NAMESPACE, agent_id=_AGENT_ID)
+_MEMORY_ID = MemoryId(UUID("50000000-0000-0000-0000-000000000033"))
+_MEMORY_WRITE_TOOL_ID = ToolId(MEMORY_WRITE_ACTION)
+_MEMORY_RESOURCE = memory_record_resource(_MEMORY_SCOPE, _MEMORY_ID)
+_MEMORY_CONTENT = "composition memory write"
+_MEMORY_TOOL_RESOLVER_ID = "memory-write-composition-resource"
+_MEMORY_TOOL_ADAPTER_ID = "memory-write-composition"
 
 
 def _context(principal: str = _REQUESTER) -> SecurityContext:
@@ -180,6 +213,68 @@ def _launch_host_policy(principal: str) -> PolicyEngine:
     )
 
 
+def _memory_write_tool_policy(principal: str) -> PolicyEngine:
+    return PolicyEngine(
+        (
+            _allow_rule(
+                "allow-memory-write-tool-invoke",
+                action="tool.invoke",
+                resource=f"tool:{_MEMORY_WRITE_TOOL_ID}/{_MEMORY_RESOURCE}",
+                principal=principal,
+            ),
+        )
+    )
+
+
+def _memory_write_policy(principal: str) -> PolicyEngine:
+    return PolicyEngine(
+        (
+            _allow_rule(
+                "allow-memory-write",
+                action=MEMORY_WRITE_ACTION,
+                resource=_MEMORY_RESOURCE,
+                principal=principal,
+            ),
+        )
+    )
+
+
+def _memory_write_tool_descriptor() -> ToolDescriptor:
+    input_schema = ToolSchema(
+        kind=ToolSchemaType.OBJECT,
+        properties={
+            "content": ToolSchema(
+                kind=ToolSchemaType.STRING,
+                min_length=1,
+                max_length=512,
+            )
+        },
+        required=frozenset({"content"}),
+    )
+    output_schema = ToolSchema(
+        kind=ToolSchemaType.OBJECT,
+        properties={"stored": ToolSchema(kind=ToolSchemaType.BOOLEAN)},
+        required=frozenset({"stored"}),
+    )
+    return ToolDescriptor(
+        tool_id=_MEMORY_WRITE_TOOL_ID,
+        name="Write one composition-test memory",
+        description=(
+            "Write one bounded value to one server-owned memory record for "
+            "authority-composition conformance."
+        ),
+        input_schema=ToolInputSchema(input_schema),
+        output_schema=ToolOutputSchema(output_schema),
+        effect=ToolEffect.REVERSIBLE_WRITE,
+        approval_may_be_required=True,
+        max_input_bytes=1_024,
+        max_output_bytes=64,
+        timeout=timedelta(seconds=10),
+        resolver_id=_MEMORY_TOOL_RESOLVER_ID,
+        adapter_id=_MEMORY_TOOL_ADAPTER_ID,
+    )
+
+
 class _AllowModelAuthorizer:
     async def authorize(
         self,
@@ -238,6 +333,95 @@ class _RecordingToolAuthorizer(PolicyEngineToolAuthorizer):
         await super().authorize(request, descriptor, context)
 
 
+class _RecordingMemoryAuthorizer(PolicyEngineMemoryAuthorizer):
+    def __init__(self, policy: PolicyEngine) -> None:
+        super().__init__(policy)
+        self.write_requests: list[MemoryWriteRequest] = []
+        self.write_contexts: list[SecurityContext] = []
+
+    async def authorize_write(
+        self,
+        request: MemoryWriteRequest,
+        context: SecurityContext,
+    ) -> None:
+        self.write_requests.append(request)
+        self.write_contexts.append(context)
+        await super().authorize_write(request, context)
+
+
+class _MemoryWriteCompositionAdapter:
+    adapter_id = _MEMORY_TOOL_ADAPTER_ID
+    tool_id = _MEMORY_WRITE_TOOL_ID
+
+    def __init__(self, service: AgentMemoryService) -> None:
+        if not isinstance(service, AgentMemoryService):
+            raise TypeError("service must be AgentMemoryService")
+        self._service = service
+        self.requests: list[ToolInvocationRequest] = []
+        self.contexts: list[SecurityContext] = []
+
+    async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+        del request
+        raise ToolExecutionError()
+
+    async def invoke_with_context(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+    ) -> ToolInvocationResult:
+        if not isinstance(request, ToolInvocationRequest):
+            raise TypeError("request must be ToolInvocationRequest")
+        if not isinstance(context, SecurityContext):
+            raise TypeError("context must be SecurityContext")
+        if (
+            request.tool_id != self.tool_id
+            or request.resolved_resource != _MEMORY_RESOURCE
+            or request.agent_id is None
+            or frozenset(request.arguments) != frozenset({"content"})
+        ):
+            raise ToolExecutionError()
+
+        content = request.arguments.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ToolExecutionError()
+
+        self.requests.append(request)
+        self.contexts.append(context)
+
+        digest = memory_content_digest(content)
+        memory_request = MemoryWriteRequest(
+            scope=_MEMORY_SCOPE,
+            memory_id=_MEMORY_ID,
+            content=content,
+            provenance=MemoryProvenance(
+                origin=MemoryOriginKind.AGENT_REQUEST,
+                content_digest=digest,
+                created_at=request.created_at,
+                source_run_id=request.run_id,
+                source_agent_id=request.agent_id,
+            ),
+            created_at=request.created_at,
+        )
+        record = await self._service.write(memory_request, context)
+        if (
+            record.scope != _MEMORY_SCOPE
+            or record.memory_id != _MEMORY_ID
+            or record.content_digest != digest
+        ):
+            raise ToolExecutionError()
+
+        return ToolInvocationResult(
+            run_id=request.run_id,
+            step_id=request.step_id,
+            call_id=request.call_id,
+            tool_id=request.tool_id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={"stored": True},
+            started_at=request.created_at,
+            completed_at=request.created_at,
+        )
+
+
 class _RecordingHostAuthorizer(PolicyEngineHostAutomationAuthorizer):
     def __init__(self, policy: PolicyEngine) -> None:
         super().__init__(policy)
@@ -284,6 +468,79 @@ class _CountingHostAdapter(DeterministicHostAutomationAdapter):
     ) -> HostApplicationLaunchResult:
         self.application_launch_calls += 1
         return await super().launch_application(request)
+
+
+def _memory_write_composition_path(
+    *,
+    run_policy: PolicyEngine,
+    tool_policy: PolicyEngine,
+    memory_policy: PolicyEngine,
+) -> tuple[
+    AgentLoop,
+    _RecordingRunAuthorizer,
+    _RecordingToolAuthorizer,
+    _RecordingMemoryAuthorizer,
+    _MemoryWriteCompositionAdapter,
+    InMemoryAgentMemoryStore,
+    InMemoryToolApprovalService,
+    _ImmediateApprovalResolver,
+]:
+    store = InMemoryAgentMemoryStore(clock=lambda: _NOW)
+    memory_authorizer = _RecordingMemoryAuthorizer(memory_policy)
+    memory_service = AgentMemoryService(
+        store=store,
+        authorizer=memory_authorizer,
+        retrieval=DeterministicLexicalMemoryRetrievalAdapter(store),
+        clock=lambda: _NOW,
+    )
+    memory_adapter = _MemoryWriteCompositionAdapter(memory_service)
+
+    registry = ToolRegistry()
+    registry.register_tool(
+        _memory_write_tool_descriptor(),
+        resolver=StaticToolResourceResolver(
+            _MEMORY_TOOL_RESOLVER_ID,
+            _MEMORY_RESOURCE,
+        ),
+        adapter=memory_adapter,
+    )
+
+    approval_service = InMemoryToolApprovalService(clock=lambda: _NOW)
+    approval_resolver = _ImmediateApprovalResolver(
+        approval_service,
+        _context(_APPROVER),
+    )
+    run_authorizer = _RecordingRunAuthorizer(run_policy)
+    tool_authorizer = _RecordingToolAuthorizer(tool_policy)
+    loop = AgentLoop(
+        run_authorizer=run_authorizer,
+        model_authorizer=_AllowModelAuthorizer(),
+        tool_authorizer=tool_authorizer,
+        model_adapter=DeterministicModelTurnAdapter(
+            (
+                DeterministicToolTurn(
+                    _MEMORY_WRITE_TOOL_ID,
+                    {"content": _MEMORY_CONTENT},
+                ),
+                DeterministicFinalTurn("complete"),
+            )
+        ),
+        registry=registry,
+        executor=BoundedAgentExecutor(clock=lambda: _NOW),
+        approval_service=approval_service,
+        approval_resolver=approval_resolver,
+        clock=lambda: _NOW,
+    )
+    return (
+        loop,
+        run_authorizer,
+        tool_authorizer,
+        memory_authorizer,
+        memory_adapter,
+        store,
+        approval_service,
+        approval_resolver,
+    )
 
 
 def _composition_path(
@@ -643,3 +900,215 @@ async def test_effectful_agent_tool_host_requires_approval_and_full_intersection
     assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
     assert (host_snapshot.allowed, host_snapshot.denied) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_memory_path_cannot_bypass_agent_run_boundary() -> None:
+    context = _context()
+    request = _request()
+    run_policy = _run_policy(_APPROVER)
+    tool_policy = _memory_write_tool_policy(_REQUESTER)
+    memory_policy = _memory_write_policy(_REQUESTER)
+    (
+        loop,
+        run_authorizer,
+        tool_authorizer,
+        memory_authorizer,
+        memory_adapter,
+        store,
+        approval_service,
+        approval_resolver,
+    ) = _memory_write_composition_path(
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+        memory_policy=memory_policy,
+    )
+
+    result = await loop.run(request, context)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert run_authorizer.contexts == [context]
+    assert tool_authorizer.contexts == []
+    assert memory_authorizer.write_contexts == []
+    assert memory_adapter.contexts == []
+    assert approval_resolver.challenges == []
+    assert await store.list_scope(_MEMORY_SCOPE) == ()
+
+    approval_snapshot = await approval_service.snapshot()
+    assert approval_snapshot.consumed == 0
+    assert approval_snapshot.pending == 0
+
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    memory_snapshot = await memory_policy.snapshot()
+    assert (run_snapshot.allowed, run_snapshot.denied) == (0, 1)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 0)
+    assert (memory_snapshot.allowed, memory_snapshot.denied) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_memory_path_cannot_bypass_tool_boundary() -> None:
+    context = _context()
+    request = _request()
+    run_policy = _run_policy(_REQUESTER)
+    tool_policy = _memory_write_tool_policy(_APPROVER)
+    memory_policy = _memory_write_policy(_REQUESTER)
+    (
+        loop,
+        run_authorizer,
+        tool_authorizer,
+        memory_authorizer,
+        memory_adapter,
+        store,
+        approval_service,
+        approval_resolver,
+    ) = _memory_write_composition_path(
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+        memory_policy=memory_policy,
+    )
+
+    result = await loop.run(request, context)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert run_authorizer.contexts == [context]
+    assert tool_authorizer.contexts == [context]
+    assert tool_authorizer.contexts[0] is context
+    assert memory_authorizer.write_contexts == []
+    assert memory_adapter.contexts == []
+    assert approval_resolver.challenges == []
+    assert await store.list_scope(_MEMORY_SCOPE) == ()
+
+    approval_snapshot = await approval_service.snapshot()
+    assert approval_snapshot.consumed == 0
+    assert approval_snapshot.pending == 0
+
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    memory_snapshot = await memory_policy.snapshot()
+    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 1)
+    assert (memory_snapshot.allowed, memory_snapshot.denied) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_memory_approval_cannot_replace_requester_subject() -> None:
+    context = _context()
+    request = _request()
+    run_policy = _run_policy(_REQUESTER)
+    tool_policy = _memory_write_tool_policy(_REQUESTER)
+    memory_policy = _memory_write_policy(_APPROVER)
+    (
+        loop,
+        run_authorizer,
+        tool_authorizer,
+        memory_authorizer,
+        memory_adapter,
+        store,
+        approval_service,
+        approval_resolver,
+    ) = _memory_write_composition_path(
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+        memory_policy=memory_policy,
+    )
+
+    result = await loop.run(request, context)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "tool_failed"
+    assert run_authorizer.contexts == [context]
+    assert len(tool_authorizer.contexts) == 2
+    assert all(item is context for item in tool_authorizer.contexts)
+    assert len(approval_resolver.challenges) == 1
+    assert approval_resolver.approver.principal == _APPROVER
+
+    assert memory_adapter.contexts == [context]
+    assert memory_adapter.contexts[0] is context
+    assert memory_authorizer.write_contexts == [context]
+    assert memory_authorizer.write_contexts[0] is context
+    assert memory_authorizer.write_contexts[0].principal == _REQUESTER
+    assert memory_authorizer.write_contexts[0].principal != _APPROVER
+    assert await store.list_scope(_MEMORY_SCOPE) == ()
+
+    approval_snapshot = await approval_service.snapshot()
+    assert approval_snapshot.consumed == 1
+    assert approval_snapshot.pending == 0
+
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    memory_snapshot = await memory_policy.snapshot()
+    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
+    assert (memory_snapshot.allowed, memory_snapshot.denied) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_memory_requires_full_intersection_and_preserves_subject() -> None:
+    context = _context()
+    request = _request()
+    run_policy = _run_policy(_REQUESTER)
+    tool_policy = _memory_write_tool_policy(_REQUESTER)
+    memory_policy = _memory_write_policy(_REQUESTER)
+    (
+        loop,
+        run_authorizer,
+        tool_authorizer,
+        memory_authorizer,
+        memory_adapter,
+        store,
+        approval_service,
+        approval_resolver,
+    ) = _memory_write_composition_path(
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+        memory_policy=memory_policy,
+    )
+
+    result = await loop.run(request, context)
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert result.final_output == "complete"
+    assert run_authorizer.contexts == [context]
+
+    assert len(tool_authorizer.requests) == 2
+    assert tool_authorizer.requests[0] is tool_authorizer.requests[1]
+    assert tool_authorizer.requests[0].agent_id == request.agent_id
+    assert tool_authorizer.requests[0].run_id == request.run_id
+    assert all(item is context for item in tool_authorizer.contexts)
+
+    assert len(approval_resolver.challenges) == 1
+    assert approval_resolver.approver.principal == _APPROVER
+
+    assert len(memory_adapter.requests) == 1
+    assert memory_adapter.requests[0] is tool_authorizer.requests[0]
+    assert memory_adapter.contexts == [context]
+    assert memory_adapter.contexts[0] is context
+    assert memory_authorizer.write_contexts == [context]
+    assert memory_authorizer.write_contexts[0] is context
+    assert memory_authorizer.write_contexts[0].principal == _REQUESTER
+    assert memory_authorizer.write_contexts[0].principal != _APPROVER
+
+    records = await store.list_scope(_MEMORY_SCOPE)
+    assert len(records) == 1
+    record = records[0]
+    assert record.memory_id == _MEMORY_ID
+    assert record.content == _MEMORY_CONTENT
+    assert record.content_digest == memory_content_digest(_MEMORY_CONTENT)
+    assert record.provenance is not None
+    assert record.provenance.origin is MemoryOriginKind.AGENT_REQUEST
+    assert record.provenance.source_run_id == request.run_id
+    assert record.provenance.source_agent_id == request.agent_id
+
+    approval_snapshot = await approval_service.snapshot()
+    assert approval_snapshot.consumed == 1
+    assert approval_snapshot.pending == 0
+
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    memory_snapshot = await memory_policy.snapshot()
+    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
+    assert (memory_snapshot.allowed, memory_snapshot.denied) == (1, 0)
