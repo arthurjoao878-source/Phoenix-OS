@@ -49,6 +49,27 @@ from phoenix_os.agent import (
     memory_content_digest,
     memory_record_resource,
 )
+from phoenix_os.agent.workspace_authorization import (
+    WORKSPACE_WRITE_ACTION,
+    PolicyEngineWorkspaceAuthorizer,
+    agent_workspace_scope,
+    workspace_artifact_resource,
+)
+from phoenix_os.agent.workspace_backing import InMemoryWorkspaceBackingAdapter
+from phoenix_os.agent.workspace_contracts import (
+    ArtifactId,
+    ArtifactLogicalPath,
+    ArtifactOriginKind,
+    ArtifactProvenance,
+    ArtifactReadRequest,
+    ArtifactRecord,
+    ArtifactWriteRequest,
+    WorkspaceLimits,
+    WorkspaceNamespace,
+    artifact_content_digest,
+)
+from phoenix_os.agent.workspace_service import AgentWorkspaceService
+from phoenix_os.agent.workspace_store import StateStoreWorkspaceStore
 from phoenix_os.host_automation import (
     HOST_APPLICATION_LAUNCH_ACTION,
     HOST_APPLICATION_LAUNCH_TOOL_ID,
@@ -81,6 +102,7 @@ from phoenix_os.policy import (
     PrincipalType,
     SecurityContext,
 )
+from phoenix_os.state import MemoryStateStore
 
 _NOW = datetime(2026, 8, 21, 18, tzinfo=UTC)
 _AGENT_ID = AgentId("assistant")
@@ -98,6 +120,16 @@ _MEMORY_RESOURCE = memory_record_resource(_MEMORY_SCOPE, _MEMORY_ID)
 _MEMORY_CONTENT = "composition memory write"
 _MEMORY_TOOL_RESOLVER_ID = "memory-write-composition-resource"
 _MEMORY_TOOL_ADAPTER_ID = "memory-write-composition"
+
+_WORKSPACE_NAMESPACE = WorkspaceNamespace("composition")
+_WORKSPACE_SCOPE = agent_workspace_scope(namespace=_WORKSPACE_NAMESPACE, agent_id=_AGENT_ID)
+_WORKSPACE_ARTIFACT_ID = ArtifactId(UUID("60000000-0000-0000-0000-000000000033"))
+_WORKSPACE_WRITE_TOOL_ID = ToolId(WORKSPACE_WRITE_ACTION)
+_WORKSPACE_RESOURCE = workspace_artifact_resource(_WORKSPACE_SCOPE, _WORKSPACE_ARTIFACT_ID)
+_WORKSPACE_CONTENT = "composition workspace write"
+_WORKSPACE_LOGICAL_PATH = ArtifactLogicalPath("composition/result.txt")
+_WORKSPACE_TOOL_RESOLVER_ID = "workspace-write-composition-resource"
+_WORKSPACE_TOOL_ADAPTER_ID = "workspace-write-composition"
 
 
 def _context(principal: str = _REQUESTER) -> SecurityContext:
@@ -239,6 +271,32 @@ def _memory_write_policy(principal: str) -> PolicyEngine:
     )
 
 
+def _workspace_write_tool_policy(principal: str) -> PolicyEngine:
+    return PolicyEngine(
+        (
+            _allow_rule(
+                "allow-workspace-write-tool-invoke",
+                action="tool.invoke",
+                resource=f"tool:{_WORKSPACE_WRITE_TOOL_ID}/{_WORKSPACE_RESOURCE}",
+                principal=principal,
+            ),
+        )
+    )
+
+
+def _workspace_write_policy(principal: str) -> PolicyEngine:
+    return PolicyEngine(
+        (
+            _allow_rule(
+                "allow-workspace-write",
+                action=WORKSPACE_WRITE_ACTION,
+                resource=_WORKSPACE_RESOURCE,
+                principal=principal,
+            ),
+        )
+    )
+
+
 def _memory_write_tool_descriptor() -> ToolDescriptor:
     input_schema = ToolSchema(
         kind=ToolSchemaType.OBJECT,
@@ -272,6 +330,42 @@ def _memory_write_tool_descriptor() -> ToolDescriptor:
         timeout=timedelta(seconds=10),
         resolver_id=_MEMORY_TOOL_RESOLVER_ID,
         adapter_id=_MEMORY_TOOL_ADAPTER_ID,
+    )
+
+
+def _workspace_write_tool_descriptor() -> ToolDescriptor:
+    input_schema = ToolSchema(
+        kind=ToolSchemaType.OBJECT,
+        properties={
+            "content": ToolSchema(
+                kind=ToolSchemaType.STRING,
+                min_length=1,
+                max_length=512,
+            )
+        },
+        required=frozenset({"content"}),
+    )
+    output_schema = ToolSchema(
+        kind=ToolSchemaType.OBJECT,
+        properties={"stored": ToolSchema(kind=ToolSchemaType.BOOLEAN)},
+        required=frozenset({"stored"}),
+    )
+    return ToolDescriptor(
+        tool_id=_WORKSPACE_WRITE_TOOL_ID,
+        name="Write one composition-test workspace artifact",
+        description=(
+            "Write one bounded value to one server-owned workspace artifact for "
+            "authority-composition conformance."
+        ),
+        input_schema=ToolInputSchema(input_schema),
+        output_schema=ToolOutputSchema(output_schema),
+        effect=ToolEffect.REVERSIBLE_WRITE,
+        approval_may_be_required=True,
+        max_input_bytes=1_024,
+        max_output_bytes=64,
+        timeout=timedelta(seconds=10),
+        resolver_id=_WORKSPACE_TOOL_RESOLVER_ID,
+        adapter_id=_WORKSPACE_TOOL_ADAPTER_ID,
     )
 
 
@@ -349,6 +443,22 @@ class _RecordingMemoryAuthorizer(PolicyEngineMemoryAuthorizer):
         await super().authorize_write(request, context)
 
 
+class _RecordingWorkspaceAuthorizer(PolicyEngineWorkspaceAuthorizer):
+    def __init__(self, policy: PolicyEngine) -> None:
+        super().__init__(policy)
+        self.write_requests: list[ArtifactWriteRequest] = []
+        self.write_contexts: list[SecurityContext] = []
+
+    async def authorize_write(
+        self,
+        request: ArtifactWriteRequest,
+        context: SecurityContext,
+    ) -> None:
+        self.write_requests.append(request)
+        self.write_contexts.append(context)
+        await super().authorize_write(request, context)
+
+
 class _MemoryWriteCompositionAdapter:
     adapter_id = _MEMORY_TOOL_ADAPTER_ID
     tool_id = _MEMORY_WRITE_TOOL_ID
@@ -406,6 +516,103 @@ class _MemoryWriteCompositionAdapter:
         if (
             record.scope != _MEMORY_SCOPE
             or record.memory_id != _MEMORY_ID
+            or record.content_digest != digest
+        ):
+            raise ToolExecutionError()
+
+        return ToolInvocationResult(
+            run_id=request.run_id,
+            step_id=request.step_id,
+            call_id=request.call_id,
+            tool_id=request.tool_id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={"stored": True},
+            started_at=request.created_at,
+            completed_at=request.created_at,
+        )
+
+
+class _CountingWorkspaceStore(StateStoreWorkspaceStore):
+    def __init__(self) -> None:
+        limits = WorkspaceLimits()
+        super().__init__(
+            MemoryStateStore(clock=lambda: _NOW),
+            InMemoryWorkspaceBackingAdapter(),
+            limits=limits,
+            clock=lambda: _NOW,
+            owns_state_store=True,
+            owns_backing=True,
+        )
+        self.write_calls = 0
+
+    async def write(self, request: ArtifactWriteRequest) -> ArtifactRecord:
+        self.write_calls += 1
+        return await super().write(request)
+
+
+class _WorkspaceWriteCompositionAdapter:
+    adapter_id = _WORKSPACE_TOOL_ADAPTER_ID
+    tool_id = _WORKSPACE_WRITE_TOOL_ID
+
+    def __init__(self, service: AgentWorkspaceService) -> None:
+        if not isinstance(service, AgentWorkspaceService):
+            raise TypeError("service must be AgentWorkspaceService")
+        self._service = service
+        self.requests: list[ToolInvocationRequest] = []
+        self.contexts: list[SecurityContext] = []
+
+    async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+        del request
+        raise ToolExecutionError()
+
+    async def invoke_with_context(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+    ) -> ToolInvocationResult:
+        if not isinstance(request, ToolInvocationRequest):
+            raise TypeError("request must be ToolInvocationRequest")
+        if not isinstance(context, SecurityContext):
+            raise TypeError("context must be SecurityContext")
+        if (
+            request.tool_id != self.tool_id
+            or request.resolved_resource != _WORKSPACE_RESOURCE
+            or request.agent_id != _AGENT_ID
+            or frozenset(request.arguments) != frozenset({"content"})
+        ):
+            raise ToolExecutionError()
+
+        content_value = request.arguments.get("content")
+        if not isinstance(content_value, str) or not content_value.strip():
+            raise ToolExecutionError()
+        try:
+            content = content_value.encode("utf-8", errors="strict")
+        except UnicodeEncodeError as exception:
+            raise ToolExecutionError() from exception
+
+        self.requests.append(request)
+        self.contexts.append(context)
+
+        digest = artifact_content_digest(content)
+        workspace_request = ArtifactWriteRequest(
+            scope=_WORKSPACE_SCOPE,
+            artifact_id=_WORKSPACE_ARTIFACT_ID,
+            logical_path=_WORKSPACE_LOGICAL_PATH,
+            content=content,
+            provenance=ArtifactProvenance(
+                origin=ArtifactOriginKind.AGENT_REQUEST,
+                content_digest=digest,
+                created_at=request.created_at,
+                source_run_id=request.run_id,
+                source_agent_id=request.agent_id,
+            ),
+            created_at=request.created_at,
+        )
+        record = await self._service.write(workspace_request, context)
+        if (
+            record.scope != _WORKSPACE_SCOPE
+            or record.artifact_id != _WORKSPACE_ARTIFACT_ID
+            or record.logical_path != _WORKSPACE_LOGICAL_PATH
             or record.content_digest != digest
         ):
             raise ToolExecutionError()
@@ -537,6 +744,78 @@ def _memory_write_composition_path(
         tool_authorizer,
         memory_authorizer,
         memory_adapter,
+        store,
+        approval_service,
+        approval_resolver,
+    )
+
+
+def _workspace_write_composition_path(
+    *,
+    run_policy: PolicyEngine,
+    tool_policy: PolicyEngine,
+    workspace_policy: PolicyEngine,
+) -> tuple[
+    AgentLoop,
+    _RecordingRunAuthorizer,
+    _RecordingToolAuthorizer,
+    _RecordingWorkspaceAuthorizer,
+    _WorkspaceWriteCompositionAdapter,
+    _CountingWorkspaceStore,
+    InMemoryToolApprovalService,
+    _ImmediateApprovalResolver,
+]:
+    store = _CountingWorkspaceStore()
+    workspace_authorizer = _RecordingWorkspaceAuthorizer(workspace_policy)
+    workspace_service = AgentWorkspaceService(
+        store=store,
+        authorizer=workspace_authorizer,
+        clock=lambda: _NOW,
+    )
+    workspace_adapter = _WorkspaceWriteCompositionAdapter(workspace_service)
+
+    registry = ToolRegistry()
+    registry.register_tool(
+        _workspace_write_tool_descriptor(),
+        resolver=StaticToolResourceResolver(
+            _WORKSPACE_TOOL_RESOLVER_ID,
+            _WORKSPACE_RESOURCE,
+        ),
+        adapter=workspace_adapter,
+    )
+
+    approval_service = InMemoryToolApprovalService(clock=lambda: _NOW)
+    approval_resolver = _ImmediateApprovalResolver(
+        approval_service,
+        _context(_APPROVER),
+    )
+    run_authorizer = _RecordingRunAuthorizer(run_policy)
+    tool_authorizer = _RecordingToolAuthorizer(tool_policy)
+    loop = AgentLoop(
+        run_authorizer=run_authorizer,
+        model_authorizer=_AllowModelAuthorizer(),
+        tool_authorizer=tool_authorizer,
+        model_adapter=DeterministicModelTurnAdapter(
+            (
+                DeterministicToolTurn(
+                    _WORKSPACE_WRITE_TOOL_ID,
+                    {"content": _WORKSPACE_CONTENT},
+                ),
+                DeterministicFinalTurn("complete"),
+            )
+        ),
+        registry=registry,
+        executor=BoundedAgentExecutor(clock=lambda: _NOW),
+        approval_service=approval_service,
+        approval_resolver=approval_resolver,
+        clock=lambda: _NOW,
+    )
+    return (
+        loop,
+        run_authorizer,
+        tool_authorizer,
+        workspace_authorizer,
+        workspace_adapter,
         store,
         approval_service,
         approval_resolver,
@@ -1112,3 +1391,265 @@ async def test_agent_tool_memory_requires_full_intersection_and_preserves_subjec
     assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
     assert (memory_snapshot.allowed, memory_snapshot.denied) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_workspace_path_cannot_bypass_agent_run_boundary() -> None:
+    context = _context()
+    request = _request()
+    run_policy = _run_policy(_APPROVER)
+    tool_policy = _workspace_write_tool_policy(_REQUESTER)
+    workspace_policy = _workspace_write_policy(_REQUESTER)
+    (
+        loop,
+        run_authorizer,
+        tool_authorizer,
+        workspace_authorizer,
+        workspace_adapter,
+        store,
+        approval_service,
+        approval_resolver,
+    ) = _workspace_write_composition_path(
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+        workspace_policy=workspace_policy,
+    )
+
+    result = await loop.run(request, context)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert run_authorizer.contexts == [context]
+    assert tool_authorizer.contexts == []
+    assert workspace_authorizer.write_contexts == []
+    assert workspace_adapter.contexts == []
+    assert approval_resolver.challenges == []
+    assert store.write_calls == 0
+    assert (
+        await store.read(
+            ArtifactReadRequest(
+                scope=_WORKSPACE_SCOPE,
+                artifact_id=_WORKSPACE_ARTIFACT_ID,
+                created_at=_NOW,
+            )
+        )
+        is None
+    )
+
+    approval_snapshot = await approval_service.snapshot()
+    assert approval_snapshot.consumed == 0
+    assert approval_snapshot.pending == 0
+
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    workspace_snapshot = await workspace_policy.snapshot()
+    assert (run_snapshot.allowed, run_snapshot.denied) == (0, 1)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 0)
+    assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_workspace_path_cannot_bypass_tool_boundary() -> None:
+    context = _context()
+    request = _request()
+    run_policy = _run_policy(_REQUESTER)
+    tool_policy = _workspace_write_tool_policy(_APPROVER)
+    workspace_policy = _workspace_write_policy(_REQUESTER)
+    (
+        loop,
+        run_authorizer,
+        tool_authorizer,
+        workspace_authorizer,
+        workspace_adapter,
+        store,
+        approval_service,
+        approval_resolver,
+    ) = _workspace_write_composition_path(
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+        workspace_policy=workspace_policy,
+    )
+
+    result = await loop.run(request, context)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert run_authorizer.contexts == [context]
+    assert tool_authorizer.contexts == [context]
+    assert tool_authorizer.contexts[0] is context
+    assert workspace_authorizer.write_contexts == []
+    assert workspace_adapter.contexts == []
+    assert approval_resolver.challenges == []
+    assert store.write_calls == 0
+    assert (
+        await store.read(
+            ArtifactReadRequest(
+                scope=_WORKSPACE_SCOPE,
+                artifact_id=_WORKSPACE_ARTIFACT_ID,
+                created_at=_NOW,
+            )
+        )
+        is None
+    )
+
+    approval_snapshot = await approval_service.snapshot()
+    assert approval_snapshot.consumed == 0
+    assert approval_snapshot.pending == 0
+
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    workspace_snapshot = await workspace_policy.snapshot()
+    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 1)
+    assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_workspace_approval_cannot_replace_requester_subject() -> None:
+    context = _context()
+    request = _request()
+    run_policy = _run_policy(_REQUESTER)
+    tool_policy = _workspace_write_tool_policy(_REQUESTER)
+    workspace_policy = _workspace_write_policy(_APPROVER)
+    (
+        loop,
+        run_authorizer,
+        tool_authorizer,
+        workspace_authorizer,
+        workspace_adapter,
+        store,
+        approval_service,
+        approval_resolver,
+    ) = _workspace_write_composition_path(
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+        workspace_policy=workspace_policy,
+    )
+
+    result = await loop.run(request, context)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "tool_failed"
+    assert run_authorizer.contexts == [context]
+    assert len(tool_authorizer.contexts) == 2
+    assert all(item is context for item in tool_authorizer.contexts)
+    assert len(approval_resolver.challenges) == 1
+    assert approval_resolver.approver.principal == _APPROVER
+
+    assert workspace_adapter.contexts == [context]
+    assert workspace_adapter.contexts[0] is context
+    assert workspace_authorizer.write_contexts == [context]
+    assert workspace_authorizer.write_contexts[0] is context
+    assert workspace_authorizer.write_contexts[0].principal == _REQUESTER
+    assert workspace_authorizer.write_contexts[0].principal != _APPROVER
+    assert store.write_calls == 0
+    assert (
+        await store.read(
+            ArtifactReadRequest(
+                scope=_WORKSPACE_SCOPE,
+                artifact_id=_WORKSPACE_ARTIFACT_ID,
+                created_at=_NOW,
+            )
+        )
+        is None
+    )
+
+    approval_snapshot = await approval_service.snapshot()
+    assert approval_snapshot.consumed == 1
+    assert approval_snapshot.pending == 0
+
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    workspace_snapshot = await workspace_policy.snapshot()
+    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
+    assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_workspace_requires_full_intersection_and_preserves_subject() -> None:
+    context = _context()
+    request = _request()
+    run_policy = _run_policy(_REQUESTER)
+    tool_policy = _workspace_write_tool_policy(_REQUESTER)
+    workspace_policy = _workspace_write_policy(_REQUESTER)
+    (
+        loop,
+        run_authorizer,
+        tool_authorizer,
+        workspace_authorizer,
+        workspace_adapter,
+        store,
+        approval_service,
+        approval_resolver,
+    ) = _workspace_write_composition_path(
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+        workspace_policy=workspace_policy,
+    )
+
+    result = await loop.run(request, context)
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert result.final_output == "complete"
+    assert run_authorizer.contexts == [context]
+
+    assert len(tool_authorizer.requests) == 2
+    assert tool_authorizer.requests[0] is tool_authorizer.requests[1]
+    assert tool_authorizer.requests[0].agent_id == request.agent_id
+    assert tool_authorizer.requests[0].run_id == request.run_id
+    assert all(item is context for item in tool_authorizer.contexts)
+
+    assert len(approval_resolver.challenges) == 1
+    assert approval_resolver.approver.principal == _APPROVER
+
+    assert len(workspace_adapter.requests) == 1
+    assert workspace_adapter.requests[0] is tool_authorizer.requests[0]
+    assert workspace_adapter.contexts == [context]
+    assert workspace_adapter.contexts[0] is context
+    assert workspace_authorizer.write_contexts == [context]
+    assert workspace_authorizer.write_contexts[0] is context
+    assert workspace_authorizer.write_contexts[0].principal == _REQUESTER
+    assert workspace_authorizer.write_contexts[0].principal != _APPROVER
+
+    assert len(workspace_authorizer.write_requests) == 1
+    write_request = workspace_authorizer.write_requests[0]
+    assert write_request.scope == _WORKSPACE_SCOPE
+    assert write_request.artifact_id == _WORKSPACE_ARTIFACT_ID
+    assert write_request.logical_path == _WORKSPACE_LOGICAL_PATH
+    assert write_request.content == _WORKSPACE_CONTENT.encode("utf-8")
+    assert write_request.provenance.origin is ArtifactOriginKind.AGENT_REQUEST
+    assert write_request.provenance.content_digest == artifact_content_digest(write_request.content)
+    assert write_request.provenance.source_run_id == request.run_id
+    assert write_request.provenance.source_agent_id == request.agent_id
+
+    assert store.write_calls == 1
+    stored = await store.read(
+        ArtifactReadRequest(
+            scope=_WORKSPACE_SCOPE,
+            artifact_id=_WORKSPACE_ARTIFACT_ID,
+            created_at=_NOW,
+        )
+    )
+    assert stored is not None
+    assert stored.content == _WORKSPACE_CONTENT.encode("utf-8")
+    record = stored.record
+    assert record.scope == _WORKSPACE_SCOPE
+    assert record.artifact_id == _WORKSPACE_ARTIFACT_ID
+    assert record.logical_path == _WORKSPACE_LOGICAL_PATH
+    assert record.content_digest == artifact_content_digest(stored.content)
+    assert record.provenance is not None
+    assert record.provenance.origin is ArtifactOriginKind.AGENT_REQUEST
+    assert record.provenance.source_run_id == request.run_id
+    assert record.provenance.source_agent_id == request.agent_id
+
+    approval_snapshot = await approval_service.snapshot()
+    assert approval_snapshot.consumed == 1
+    assert approval_snapshot.pending == 0
+
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    workspace_snapshot = await workspace_policy.snapshot()
+    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
+    assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (1, 0)
