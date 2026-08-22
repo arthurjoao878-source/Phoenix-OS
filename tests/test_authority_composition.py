@@ -51,7 +51,7 @@ from phoenix_os.agent import (
 )
 from phoenix_os.agent.admission import AgentAdmissionController
 from phoenix_os.agent.configuration import AgentServiceConfiguration, AgentToolConfiguration
-from phoenix_os.agent.contracts import AgentRunId, AgentRunResult
+from phoenix_os.agent.contracts import AgentRunId, AgentRunResult, AgentStepId
 from phoenix_os.agent.coordination import AgentDelegationCoordinator
 from phoenix_os.agent.coordination_authorization import (
     AGENT_DELEGATE_ACTION,
@@ -77,9 +77,33 @@ from phoenix_os.agent.coordination_runtime import (
     AgentCoordinationConfiguration,
     AgentCoordinationRuntime,
 )
+from phoenix_os.agent.durable_authorization import (
+    AGENT_RESUME_ACTION,
+    PolicyEngineDurableResumeAuthorizer,
+    durable_agent_run_resource,
+)
+from phoenix_os.agent.durable_codec import seal_checkpoint_envelope
+from phoenix_os.agent.durable_contracts import (
+    CheckpointDigest,
+    CheckpointEnvelope,
+    CheckpointId,
+    CheckpointMetadata,
+    CheckpointNextOperation,
+    CheckpointPayloadProfile,
+    CheckpointSchemaVersion,
+    CheckpointSequence,
+    CompatibilityDigests,
+    DurableAgentRunId,
+    DurableLease,
+    DurableRunStatus,
+    DurableRunVersion,
+    ResumeReason,
+    ResumeRequest,
+)
+from phoenix_os.agent.durable_lease import InMemoryDurableLeaseManager
 from phoenix_os.agent.errors import AgentAuthorizationRejectedError
 from phoenix_os.agent.service import AgentService
-from phoenix_os.agent.state import AgentCancellationToken
+from phoenix_os.agent.state import AgentBudgetSnapshot, AgentCancellationToken
 from phoenix_os.agent.workspace_authorization import (
     WORKSPACE_WRITE_ACTION,
     PolicyEngineWorkspaceAuthorizer,
@@ -176,6 +200,13 @@ _CHILD_TOOL_RESOURCE = "composition:child-tool"
 _CHILD_TOOL_RESOLVER_ID = "child-composition-resource"
 _CHILD_TOOL_ADAPTER_ID = "child-composition"
 _CHILD_TOOL_VALUE = "child composition value"
+
+_DURABLE_RUN_ID = DurableAgentRunId(UUID("72000000-0000-0000-0000-000000000033"))
+_DURABLE_AGENT_RUN_ID = AgentRunId(UUID("73000000-0000-0000-0000-000000000033"))
+_DURABLE_CHECKPOINT_ID = CheckpointId(UUID("74000000-0000-0000-0000-000000000033"))
+_DURABLE_STEP_ID = AgentStepId(UUID("75000000-0000-0000-0000-000000000033"))
+_DURABLE_RESUME_ACTOR = "resume-operator"
+_DURABLE_LEASE_OWNER = "resume-worker"
 
 
 def _context(principal: str = _REQUESTER) -> SecurityContext:
@@ -2227,5 +2258,390 @@ async def test_parent_child_tool_requires_full_intersection_and_preserves_subjec
     run_snapshot = await child_run_policy.snapshot()
     tool_snapshot = await child_tool_policy.snapshot()
     assert (delegation_snapshot.allowed, delegation_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
+
+
+def _durable_resume_context(principal: str = _REQUESTER) -> SecurityContext:
+    return SecurityContext(
+        principal=principal,
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+        attributes={"durable_actor_id": _DURABLE_RESUME_ACTOR},
+    )
+
+
+def _durable_digest(character: str) -> CheckpointDigest:
+    return CheckpointDigest(character * 64)
+
+
+def _durable_resume_checkpoint() -> CheckpointEnvelope:
+    created_at = _NOW - timedelta(minutes=1)
+    return seal_checkpoint_envelope(
+        CheckpointEnvelope(
+            schema_version=CheckpointSchemaVersion(),
+            durable_run_id=_DURABLE_RUN_ID,
+            checkpoint_id=_DURABLE_CHECKPOINT_ID,
+            sequence=CheckpointSequence(1),
+            previous_digest=None,
+            run_version=DurableRunVersion(1),
+            status=DurableRunStatus.PAUSED_SHUTDOWN,
+            agent_run_id=_DURABLE_AGENT_RUN_ID,
+            step_id=_DURABLE_STEP_ID,
+            metadata=CheckpointMetadata(
+                agent_id=_CHILD_AGENT_ID,
+                actor_id="origin-worker",
+                next_operation=CheckpointNextOperation.MODEL_TURN,
+                budget=AgentBudgetSnapshot(
+                    steps=1,
+                    model_turns=0,
+                    tool_calls=0,
+                    model_output_bytes=0,
+                    tool_result_bytes=0,
+                    input_tokens=8,
+                    output_tokens=0,
+                    started_at=created_at,
+                    deadline=_NOW + timedelta(minutes=2),
+                ),
+                compatibility=CompatibilityDigests(
+                    configuration=_durable_digest("a"),
+                    tool_registry=_durable_digest("b"),
+                    model_provider=_durable_digest("c"),
+                    checkpoint_codec=_durable_digest("d"),
+                ),
+                payload_profile=CheckpointPayloadProfile.METADATA_ONLY,
+                retention_deadline=_NOW + timedelta(days=1),
+                active_attempt=None,
+                metadata={"tenant": "composition"},
+            ),
+            created_at=created_at,
+            digest=_durable_digest("0"),
+        )
+    )
+
+
+def _durable_resume_policy(principal: str) -> PolicyEngine:
+    return PolicyEngine(
+        (
+            _allow_rule(
+                "allow-durable-agent-resume",
+                action=AGENT_RESUME_ACTION,
+                resource=durable_agent_run_resource(_DURABLE_RUN_ID),
+                principal=principal,
+            ),
+        )
+    )
+
+
+def _durable_resumed_agent_request(checkpoint: CheckpointEnvelope) -> AgentRunRequest:
+    return AgentRunRequest(
+        agent_id=checkpoint.metadata.agent_id,
+        provider_id=ModelProviderId("local"),
+        model_id=ModelId("chat"),
+        messages=(
+            AgentMessage(
+                AgentMessageRole.USER,
+                "resume and invoke the bounded child composition tool",
+            ),
+        ),
+        run_id=checkpoint.agent_run_id,
+        created_at=_NOW,
+        deadline=_NOW + timedelta(minutes=2),
+    )
+
+
+class _RecordingDurableResumeAuthorizer(PolicyEngineDurableResumeAuthorizer):
+    def __init__(self, policy: PolicyEngine, lease_manager: InMemoryDurableLeaseManager) -> None:
+        super().__init__(policy, lease_manager, clock=lambda: _NOW)
+        self.requests: list[ResumeRequest] = []
+        self.checkpoints: list[CheckpointEnvelope] = []
+        self.leases: list[DurableLease] = []
+        self.contexts: list[SecurityContext] = []
+
+    async def authorize(
+        self,
+        request: ResumeRequest,
+        checkpoint: CheckpointEnvelope,
+        lease: DurableLease,
+        context: SecurityContext,
+    ) -> None:
+        self.requests.append(request)
+        self.checkpoints.append(checkpoint)
+        self.leases.append(lease)
+        self.contexts.append(context)
+        await super().authorize(request, checkpoint, lease, context)
+
+
+class _DurableResumeAgentToolPath:
+    def __init__(
+        self,
+        *,
+        resume_authorizer: _RecordingDurableResumeAuthorizer,
+        service: _RecordingChildAgentService,
+        run_authorizer: _RecordingRunAuthorizer,
+        tool_authorizer: _RecordingToolAuthorizer,
+        adapter: _ChildCompositionToolAdapter,
+        checkpoint: CheckpointEnvelope,
+        lease: DurableLease,
+        resume_request: ResumeRequest,
+        agent_request: AgentRunRequest,
+        lease_manager: InMemoryDurableLeaseManager,
+    ) -> None:
+        self.resume_authorizer = resume_authorizer
+        self.service = service
+        self.run_authorizer = run_authorizer
+        self.tool_authorizer = tool_authorizer
+        self.adapter = adapter
+        self.checkpoint = checkpoint
+        self.lease = lease
+        self.resume_request = resume_request
+        self.agent_request = agent_request
+        self.lease_manager = lease_manager
+
+    async def run(self, context: SecurityContext) -> AgentRunResult:
+        await self.resume_authorizer.authorize(
+            self.resume_request,
+            self.checkpoint,
+            self.lease,
+            context,
+        )
+        return await self.service.run(self.agent_request, context)
+
+
+async def _durable_resume_agent_tool_path(
+    *,
+    resume_policy: PolicyEngine,
+    run_policy: PolicyEngine,
+    tool_policy: PolicyEngine,
+) -> _DurableResumeAgentToolPath:
+    checkpoint = _durable_resume_checkpoint()
+    lease_manager = InMemoryDurableLeaseManager()
+    lease = await lease_manager.acquire(
+        checkpoint.durable_run_id,
+        owner_id=_DURABLE_LEASE_OWNER,
+        now=_NOW,
+    )
+    resume_request = ResumeRequest(
+        run_id=checkpoint.durable_run_id,
+        actor_id=_DURABLE_RESUME_ACTOR,
+        reason=ResumeReason.OPERATOR_REQUEST,
+        expected_version=checkpoint.run_version,
+        generation=lease.generation,
+        requested_at=_NOW,
+    )
+    resume_authorizer = _RecordingDurableResumeAuthorizer(resume_policy, lease_manager)
+
+    descriptor = _child_tool_descriptor()
+    configuration = AgentServiceConfiguration(
+        agent_id=checkpoint.metadata.agent_id,
+        provider_id=ModelProviderId("local"),
+        model_id=ModelId("chat"),
+        tools=(AgentToolConfiguration(descriptor),),
+    )
+    registry = ToolRegistry()
+    adapter = _ChildCompositionToolAdapter()
+    registry.register_tool(
+        descriptor,
+        resolver=StaticToolResourceResolver(_CHILD_TOOL_RESOLVER_ID, _CHILD_TOOL_RESOURCE),
+        adapter=adapter,
+    )
+
+    run_authorizer = _RecordingRunAuthorizer(run_policy)
+    tool_authorizer = _RecordingToolAuthorizer(tool_policy)
+    admission = AgentAdmissionController(configuration.limits)
+    model_adapter = DeterministicModelTurnAdapter(
+        (
+            DeterministicToolTurn(_CHILD_TOOL_ID, {"value": _CHILD_TOOL_VALUE}),
+            DeterministicFinalTurn("durable child complete"),
+        )
+    )
+    loop = AgentLoop(
+        run_authorizer=run_authorizer,
+        model_authorizer=_AllowModelAuthorizer(),
+        tool_authorizer=tool_authorizer,
+        model_adapter=model_adapter,
+        registry=registry,
+        executor=BoundedAgentExecutor(clock=lambda: _NOW),
+        admission=admission,
+        clock=lambda: _NOW,
+    )
+    service = _RecordingChildAgentService(
+        loop,
+        registry,
+        admission,
+        configuration,
+        events=EventBus(),
+        model_adapter=model_adapter,
+        tool_adapters=(adapter,),
+    )
+    await service.start(RuntimeContext(services={}))
+
+    return _DurableResumeAgentToolPath(
+        resume_authorizer=resume_authorizer,
+        service=service,
+        run_authorizer=run_authorizer,
+        tool_authorizer=tool_authorizer,
+        adapter=adapter,
+        checkpoint=checkpoint,
+        lease=lease,
+        resume_request=resume_request,
+        agent_request=_durable_resumed_agent_request(checkpoint),
+        lease_manager=lease_manager,
+    )
+
+
+@pytest.mark.asyncio
+async def test_durable_resume_agent_tool_path_cannot_bypass_resume_boundary() -> None:
+    context = _durable_resume_context()
+    resume_policy = _durable_resume_policy(_INTERNAL_CHILD)
+    run_policy = _child_run_policy(_REQUESTER)
+    tool_policy = _child_tool_policy(_REQUESTER)
+    path = await _durable_resume_agent_tool_path(
+        resume_policy=resume_policy,
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+    )
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await path.run(context)
+
+    assert path.resume_authorizer.contexts == [context]
+    assert path.resume_authorizer.contexts[0] is context
+    assert path.service.run_contexts == []
+    assert path.run_authorizer.contexts == []
+    assert path.tool_authorizer.contexts == []
+    assert path.adapter.contexts == []
+    assert path.adapter.calls == 0
+
+    resume_snapshot = await resume_policy.snapshot()
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    assert (resume_snapshot.allowed, resume_snapshot.denied) == (0, 1)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (0, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_durable_resume_agent_tool_path_cannot_bypass_agent_run_boundary() -> None:
+    context = _durable_resume_context()
+    resume_policy = _durable_resume_policy(_REQUESTER)
+    run_policy = _child_run_policy(_INTERNAL_CHILD)
+    tool_policy = _child_tool_policy(_REQUESTER)
+    path = await _durable_resume_agent_tool_path(
+        resume_policy=resume_policy,
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+    )
+
+    result = await path.run(context)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert path.resume_authorizer.contexts == [context]
+    assert path.service.run_contexts == [context]
+    assert path.service.run_contexts[0] is context
+    assert path.run_authorizer.contexts == [context]
+    assert path.run_authorizer.contexts[0] is context
+    assert path.tool_authorizer.contexts == []
+    assert path.adapter.contexts == []
+    assert path.adapter.calls == 0
+
+    resume_snapshot = await resume_policy.snapshot()
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    assert (resume_snapshot.allowed, resume_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (0, 1)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_durable_resume_agent_tool_path_cannot_bypass_tool_boundary() -> None:
+    context = _durable_resume_context()
+    resume_policy = _durable_resume_policy(_REQUESTER)
+    run_policy = _child_run_policy(_REQUESTER)
+    tool_policy = _child_tool_policy(_INTERNAL_CHILD)
+    path = await _durable_resume_agent_tool_path(
+        resume_policy=resume_policy,
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+    )
+
+    result = await path.run(context)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert path.resume_authorizer.contexts == [context]
+    assert path.service.run_contexts == [context]
+    assert path.run_authorizer.contexts == [context, context]
+    assert all(item is context for item in path.run_authorizer.contexts)
+    assert path.tool_authorizer.contexts == [context]
+    assert path.tool_authorizer.contexts[0] is context
+    assert path.adapter.contexts == []
+    assert path.adapter.calls == 0
+
+    resume_snapshot = await resume_policy.snapshot()
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    assert (resume_snapshot.allowed, resume_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_durable_resume_agent_tool_requires_full_intersection_and_preserves_subject() -> None:
+    context = _durable_resume_context()
+    resume_policy = _durable_resume_policy(_REQUESTER)
+    run_policy = _child_run_policy(_REQUESTER)
+    tool_policy = _child_tool_policy(_REQUESTER)
+    path = await _durable_resume_agent_tool_path(
+        resume_policy=resume_policy,
+        run_policy=run_policy,
+        tool_policy=tool_policy,
+    )
+
+    result = await path.run(context)
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert result.error_code is None
+    assert result.final_output == "durable child complete"
+
+    assert path.resume_authorizer.requests == [path.resume_request]
+    assert path.resume_authorizer.checkpoints == [path.checkpoint]
+    assert path.resume_authorizer.checkpoints[0] is path.checkpoint
+    assert path.resume_authorizer.leases == [path.lease]
+    assert path.resume_authorizer.leases[0] is path.lease
+    assert path.resume_authorizer.contexts == [context]
+    assert path.resume_authorizer.contexts[0] is context
+
+    assert path.service.run_requests == [path.agent_request]
+    assert path.service.run_contexts == [context]
+    assert path.service.run_contexts[0] is context
+    assert path.agent_request.agent_id == path.checkpoint.metadata.agent_id
+    assert path.agent_request.run_id == path.checkpoint.agent_run_id
+
+    assert path.run_authorizer.requests == [path.agent_request, path.agent_request]
+    assert path.run_authorizer.requests[0] is path.run_authorizer.requests[1]
+    assert path.run_authorizer.contexts == [context, context]
+    assert all(item is context for item in path.run_authorizer.contexts)
+
+    assert len(path.tool_authorizer.requests) == 2
+    assert path.tool_authorizer.requests[0] is path.tool_authorizer.requests[1]
+    assert path.tool_authorizer.contexts == [context, context]
+    assert all(item is context for item in path.tool_authorizer.contexts)
+
+    assert path.adapter.calls == 1
+    assert path.adapter.contexts == [context]
+    assert path.adapter.contexts[0] is context
+    assert len(path.adapter.requests) == 1
+    tool_request = path.adapter.requests[0]
+    assert tool_request.agent_id == path.checkpoint.metadata.agent_id
+    assert tool_request.run_id == path.checkpoint.agent_run_id
+    assert tool_request.resolved_resource == _CHILD_TOOL_RESOURCE
+    assert tool_request.arguments == {"value": _CHILD_TOOL_VALUE}
+
+    resume_snapshot = await resume_policy.snapshot()
+    run_snapshot = await run_policy.snapshot()
+    tool_snapshot = await tool_policy.snapshot()
+    assert (resume_snapshot.allowed, resume_snapshot.denied) == (1, 0)
     assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
