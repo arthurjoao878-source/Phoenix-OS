@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 
@@ -47,6 +48,12 @@ class _AllowAuthorizer:
         context: object,
     ) -> None:
         del request, descriptor, context
+
+
+class _NeverCalledSessionSource:
+    async def session(self, session_id: UUID) -> object:
+        del session_id
+        raise AssertionError("session lookup must not occur during stack construction")
 
 
 class _StubChildService:
@@ -251,4 +258,35 @@ def test_coordination_composition_requires_exact_child_installation() -> None:
             descriptors=(descriptor,),
             child_services={},
             policy=PolicyEngine(),
+        )
+
+
+def test_coordination_composition_accepts_session_freshness_source() -> None:
+    child_configuration = _child_configuration()
+    service = _StubChildService(child_configuration)
+    descriptor = _descriptor(child_configuration)
+
+    stack = create_agent_coordination_runtime_stack(
+        configuration=_configuration(),
+        descriptors=(descriptor,),
+        child_services={child_configuration.agent_id: service},
+        policy=PolicyEngine(),
+        session_freshness_source=_NeverCalledSessionSource(),  # type: ignore[arg-type]
+    )
+
+    assert isinstance(stack, AgentCoordinationRuntimeStack)
+
+
+def test_coordination_composition_rejects_invalid_session_freshness_source() -> None:
+    child_configuration = _child_configuration()
+    service = _StubChildService(child_configuration)
+    descriptor = _descriptor(child_configuration)
+
+    with pytest.raises(TypeError, match="SessionFreshnessSource"):
+        create_agent_coordination_runtime_stack(
+            configuration=_configuration(),
+            descriptors=(descriptor,),
+            child_services={child_configuration.agent_id: service},
+            policy=PolicyEngine(),
+            session_freshness_source=object(),  # type: ignore[arg-type]
         )

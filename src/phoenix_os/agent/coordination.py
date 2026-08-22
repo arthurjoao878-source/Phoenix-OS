@@ -27,6 +27,7 @@ from phoenix_os.agent.coordination_state import (
     DelegationStateMachine,
 )
 from phoenix_os.agent.errors import (
+    AgentAuthorizationRejectedError,
     AgentCancelledError,
     AgentLimitExceededError,
     AgentStateConflictError,
@@ -35,6 +36,10 @@ from phoenix_os.agent.errors import (
     DelegationNotFoundError,
 )
 from phoenix_os.agent.state import AgentCancellationToken
+from phoenix_os.authority import (
+    AuthorityFreshnessRejectedError,
+    AuthorityFreshnessValidator,
+)
 from phoenix_os.policy import SecurityContext
 
 
@@ -148,6 +153,7 @@ class AgentDelegationCoordinator:
         *,
         limits: DelegationLimits,
         root_budget_limit: DelegationBudget,
+        authority_freshness: AuthorityFreshnessValidator | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(registry, AgentDelegationRegistry):
@@ -158,11 +164,17 @@ class AgentDelegationCoordinator:
             raise TypeError("limits must be DelegationLimits")
         if not isinstance(root_budget_limit, DelegationBudget):
             raise TypeError("root_budget_limit must be DelegationBudget")
+        if authority_freshness is not None and not isinstance(
+            authority_freshness,
+            AuthorityFreshnessValidator,
+        ):
+            raise TypeError("authority_freshness must implement AuthorityFreshnessValidator")
         if not callable(clock):
             raise TypeError("clock must be callable")
 
         self._registry = registry
         self._authorizer = authorizer
+        self._authority_freshness = authority_freshness
         self._limits = limits
         self._budget = DelegationBudgetLedger(
             root_budget_limit,
@@ -210,10 +222,11 @@ class AgentDelegationCoordinator:
         if not self._limits.contains(request.limits):
             raise AgentLimitExceededError()
 
-        descriptor = self._registry.resolve_request(request)
-        await self._authorizer.authorize(request, descriptor, context)
-        if cancellation is not None:
-            cancellation.raise_if_cancelled()
+        descriptor = await self._authorize_current_delegation(
+            request,
+            context,
+            cancellation=cancellation,
+        )
 
         child_run_id = _trusted_child_run_id or AgentRunId()
         lifecycle = DelegationStateMachine(
@@ -296,12 +309,51 @@ class AgentDelegationCoordinator:
                 except TimeoutError:
                     await self._expire_queued(record)
                     raise AgentTimeoutError() from None
+
+                record.descriptor = await self._authorize_current_delegation(
+                    request,
+                    context,
+                    cancellation=cancellation,
+                )
         except AgentCancelledError:
             await self._cancel_queued(record)
             raise
         except asyncio.CancelledError:
             await self._fail_queued(record)
             raise
+        except Exception:
+            await self._fail_queued(record)
+            raise
+
+    async def _authorize_current_delegation(
+        self,
+        request: DelegationRequest,
+        context: SecurityContext,
+        *,
+        cancellation: AgentCancellationToken | None,
+    ) -> DelegableAgentDescriptor:
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+        await self._validate_authority_freshness(context)
+        descriptor = self._registry.resolve_request(request)
+        await self._authorizer.authorize(request, descriptor, context)
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+        return descriptor
+
+    async def _validate_authority_freshness(
+        self,
+        context: SecurityContext,
+    ) -> None:
+        validator = self._authority_freshness
+        if validator is None:
+            if context.session_id is not None:
+                raise AgentAuthorizationRejectedError()
+            return
+        try:
+            await validator.validate(context)
+        except AuthorityFreshnessRejectedError as exception:
+            raise AgentAuthorizationRejectedError() from exception
 
     async def start(
         self,

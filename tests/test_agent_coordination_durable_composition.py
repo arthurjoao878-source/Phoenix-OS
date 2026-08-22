@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 
@@ -31,6 +32,12 @@ from phoenix_os.policy import PolicyEngine, SecurityContext
 from phoenix_os.runtime import RuntimeContext
 
 _NOW = datetime(2026, 8, 11, 1, tzinfo=UTC)
+
+
+class _NeverCalledSessionSource:
+    async def session(self, session_id: UUID) -> object:
+        del session_id
+        raise AssertionError("session lookup must not occur during stack construction")
 
 
 class _StubChildService:
@@ -197,4 +204,38 @@ async def test_durable_composition_requires_explicit_open_store() -> None:
             child_services={child_configuration.agent_id: service},
             policy=PolicyEngine(),
             store=store,
+        )
+
+
+def test_durable_composition_accepts_session_freshness_source() -> None:
+    child_configuration = _child_configuration()
+    descriptor = _descriptor(child_configuration)
+    service = _StubChildService(child_configuration)
+
+    stack = create_durable_agent_coordination_runtime_stack(
+        configuration=_configuration(),
+        descriptors=(descriptor,),
+        child_services={child_configuration.agent_id: service},
+        policy=PolicyEngine(),
+        store=InMemoryDurableDelegationStore(),
+        session_freshness_source=_NeverCalledSessionSource(),  # type: ignore[arg-type]
+        clock=lambda: _NOW,
+    )
+
+    assert isinstance(stack, DurableAgentCoordinationRuntimeStack)
+
+
+def test_durable_composition_rejects_invalid_session_freshness_source() -> None:
+    child_configuration = _child_configuration()
+    descriptor = _descriptor(child_configuration)
+    service = _StubChildService(child_configuration)
+
+    with pytest.raises(TypeError, match="SessionFreshnessSource"):
+        create_durable_agent_coordination_runtime_stack(
+            configuration=_configuration(),
+            descriptors=(descriptor,),
+            child_services={child_configuration.agent_id: service},
+            policy=PolicyEngine(),
+            store=InMemoryDurableDelegationStore(),
+            session_freshness_source=object(),  # type: ignore[arg-type]
         )

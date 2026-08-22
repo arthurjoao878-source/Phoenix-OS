@@ -49,6 +49,37 @@ from phoenix_os.agent import (
     memory_content_digest,
     memory_record_resource,
 )
+from phoenix_os.agent.admission import AgentAdmissionController
+from phoenix_os.agent.configuration import AgentServiceConfiguration, AgentToolConfiguration
+from phoenix_os.agent.contracts import AgentRunId, AgentRunResult
+from phoenix_os.agent.coordination import AgentDelegationCoordinator
+from phoenix_os.agent.coordination_authorization import (
+    AGENT_DELEGATE_ACTION,
+    PolicyEngineDelegationAuthorizer,
+    agent_delegation_resource,
+)
+from phoenix_os.agent.coordination_contracts import (
+    CoordinationNamespace,
+    DelegationBudget,
+    DelegationDepth,
+    DelegationId,
+    DelegationLimits,
+    DelegationLineage,
+    DelegationLineageEntry,
+    DelegationRequest,
+)
+from phoenix_os.agent.coordination_registry import (
+    AgentDelegationRegistry,
+    DelegableAgentDescriptor,
+)
+from phoenix_os.agent.coordination_results import ChildResultStatus
+from phoenix_os.agent.coordination_runtime import (
+    AgentCoordinationConfiguration,
+    AgentCoordinationRuntime,
+)
+from phoenix_os.agent.errors import AgentAuthorizationRejectedError
+from phoenix_os.agent.service import AgentService
+from phoenix_os.agent.state import AgentCancellationToken
 from phoenix_os.agent.workspace_authorization import (
     WORKSPACE_WRITE_ACTION,
     PolicyEngineWorkspaceAuthorizer,
@@ -70,6 +101,7 @@ from phoenix_os.agent.workspace_contracts import (
 )
 from phoenix_os.agent.workspace_service import AgentWorkspaceService
 from phoenix_os.agent.workspace_store import StateStoreWorkspaceStore
+from phoenix_os.events import EventBus
 from phoenix_os.host_automation import (
     HOST_APPLICATION_LAUNCH_ACTION,
     HOST_APPLICATION_LAUNCH_TOOL_ID,
@@ -102,6 +134,7 @@ from phoenix_os.policy import (
     PrincipalType,
     SecurityContext,
 )
+from phoenix_os.runtime import RuntimeContext
 from phoenix_os.state import MemoryStateStore
 
 _NOW = datetime(2026, 8, 21, 18, tzinfo=UTC)
@@ -130,6 +163,19 @@ _WORKSPACE_CONTENT = "composition workspace write"
 _WORKSPACE_LOGICAL_PATH = ArtifactLogicalPath("composition/result.txt")
 _WORKSPACE_TOOL_RESOLVER_ID = "workspace-write-composition-resource"
 _WORKSPACE_TOOL_ADAPTER_ID = "workspace-write-composition"
+
+
+_PARENT_AGENT_ID = AgentId("parent")
+_CHILD_AGENT_ID = AgentId("child")
+_INTERNAL_CHILD = "service:child-internal"
+_COORDINATION_NAMESPACE = CoordinationNamespace("composition")
+_PARENT_RUN_ID = AgentRunId(UUID("70000000-0000-0000-0000-000000000033"))
+_DELEGATION_ID = DelegationId(UUID("71000000-0000-0000-0000-000000000033"))
+_CHILD_TOOL_ID = ToolId("composition.child.read")
+_CHILD_TOOL_RESOURCE = "composition:child-tool"
+_CHILD_TOOL_RESOLVER_ID = "child-composition-resource"
+_CHILD_TOOL_ADAPTER_ID = "child-composition"
+_CHILD_TOOL_VALUE = "child composition value"
 
 
 def _context(principal: str = _REQUESTER) -> SecurityContext:
@@ -297,6 +343,105 @@ def _workspace_write_policy(principal: str) -> PolicyEngine:
     )
 
 
+def _delegation_policy(principal: str) -> PolicyEngine:
+    return PolicyEngine(
+        (
+            _allow_rule(
+                "allow-agent-delegate",
+                action=AGENT_DELEGATE_ACTION,
+                resource=agent_delegation_resource(
+                    namespace=_COORDINATION_NAMESPACE,
+                    parent_agent_id=_PARENT_AGENT_ID,
+                    child_agent_id=_CHILD_AGENT_ID,
+                ),
+                principal=principal,
+            ),
+        )
+    )
+
+
+def _child_run_policy(principal: str) -> PolicyEngine:
+    return PolicyEngine(
+        (
+            _allow_rule(
+                "allow-child-agent-run",
+                action="agent.run",
+                resource=agent_run_resource(_CHILD_AGENT_ID),
+                principal=principal,
+            ),
+        )
+    )
+
+
+def _child_tool_policy(principal: str) -> PolicyEngine:
+    return PolicyEngine(
+        (
+            _allow_rule(
+                "allow-child-tool-invoke",
+                action="tool.invoke",
+                resource=f"tool:{_CHILD_TOOL_ID}/{_CHILD_TOOL_RESOURCE}",
+                principal=principal,
+            ),
+        )
+    )
+
+
+def _delegation_limits() -> DelegationLimits:
+    return DelegationLimits(
+        max_depth=1,
+        max_fan_out=2,
+        max_total_children=4,
+        max_concurrent_children=2,
+        max_queue_depth=2,
+        max_input_bytes=16_384,
+        max_result_bytes=65_536,
+        max_result_depth=8,
+        child_timeout=timedelta(minutes=5),
+    )
+
+
+def _delegation_budget() -> DelegationBudget:
+    return DelegationBudget(
+        max_model_turns=2,
+        max_tool_calls=1,
+        max_input_tokens=4_096,
+        max_output_tokens=2_048,
+        max_prompt_bytes=8_192,
+        max_result_bytes=16_384,
+        duration=timedelta(minutes=2),
+    )
+
+
+def _delegation_root_budget() -> DelegationBudget:
+    child = _delegation_budget()
+    return DelegationBudget(
+        max_model_turns=child.max_model_turns * 4,
+        max_tool_calls=child.max_tool_calls * 4,
+        max_input_tokens=child.max_input_tokens * 4,
+        max_output_tokens=child.max_output_tokens * 4,
+        max_prompt_bytes=child.max_prompt_bytes * 4,
+        max_result_bytes=child.max_result_bytes * 4,
+        duration=child.duration * 4,
+    )
+
+
+def _delegation_request() -> DelegationRequest:
+    limits = _delegation_limits()
+    return DelegationRequest(
+        parent_agent_id=_PARENT_AGENT_ID,
+        parent_run_id=_PARENT_RUN_ID,
+        child_agent_id=_CHILD_AGENT_ID,
+        namespace=_COORDINATION_NAMESPACE,
+        lineage=DelegationLineage((DelegationLineageEntry(_PARENT_AGENT_ID, _PARENT_RUN_ID),)),
+        input={"task": "invoke the bounded child composition tool"},
+        budget=_delegation_budget(),
+        limits=limits,
+        delegation_id=_DELEGATION_ID,
+        created_at=_NOW,
+        deadline=_NOW + timedelta(minutes=2),
+    )
+
+
 def _memory_write_tool_descriptor() -> ToolDescriptor:
     input_schema = ToolSchema(
         kind=ToolSchemaType.OBJECT,
@@ -366,6 +511,37 @@ def _workspace_write_tool_descriptor() -> ToolDescriptor:
         timeout=timedelta(seconds=10),
         resolver_id=_WORKSPACE_TOOL_RESOLVER_ID,
         adapter_id=_WORKSPACE_TOOL_ADAPTER_ID,
+    )
+
+
+def _child_tool_descriptor() -> ToolDescriptor:
+    schema = ToolSchema(
+        kind=ToolSchemaType.OBJECT,
+        properties={
+            "value": ToolSchema(
+                kind=ToolSchemaType.STRING,
+                min_length=1,
+                max_length=128,
+            )
+        },
+        required=frozenset({"value"}),
+    )
+    return ToolDescriptor(
+        tool_id=_CHILD_TOOL_ID,
+        name="Read one child composition value",
+        description=(
+            "Return one bounded deterministic value for parent-child-tool "
+            "authority-composition conformance."
+        ),
+        input_schema=ToolInputSchema(schema),
+        output_schema=ToolOutputSchema(schema),
+        effect=ToolEffect.READ_ONLY,
+        approval_may_be_required=False,
+        max_input_bytes=512,
+        max_output_bytes=512,
+        timeout=timedelta(seconds=10),
+        resolver_id=_CHILD_TOOL_RESOLVER_ID,
+        adapter_id=_CHILD_TOOL_ADAPTER_ID,
     )
 
 
@@ -457,6 +633,107 @@ class _RecordingWorkspaceAuthorizer(PolicyEngineWorkspaceAuthorizer):
         self.write_requests.append(request)
         self.write_contexts.append(context)
         await super().authorize_write(request, context)
+
+
+class _RecordingDelegationAuthorizer(PolicyEngineDelegationAuthorizer):
+    def __init__(self, policy: PolicyEngine) -> None:
+        super().__init__(policy)
+        self.requests: list[DelegationRequest] = []
+        self.descriptors: list[DelegableAgentDescriptor] = []
+        self.contexts: list[SecurityContext] = []
+
+    async def authorize(
+        self,
+        request: DelegationRequest,
+        descriptor: DelegableAgentDescriptor,
+        context: SecurityContext,
+    ) -> None:
+        self.requests.append(request)
+        self.descriptors.append(descriptor)
+        self.contexts.append(context)
+        await super().authorize(request, descriptor, context)
+
+
+class _ChildCompositionToolAdapter:
+    adapter_id = _CHILD_TOOL_ADAPTER_ID
+    tool_id = _CHILD_TOOL_ID
+
+    def __init__(self) -> None:
+        self.requests: list[ToolInvocationRequest] = []
+        self.contexts: list[SecurityContext] = []
+        self.calls = 0
+
+    async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+        del request
+        raise ToolExecutionError()
+
+    async def invoke_with_context(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+    ) -> ToolInvocationResult:
+        if not isinstance(request, ToolInvocationRequest):
+            raise TypeError("request must be ToolInvocationRequest")
+        if not isinstance(context, SecurityContext):
+            raise TypeError("context must be SecurityContext")
+        if (
+            request.tool_id != _CHILD_TOOL_ID
+            or request.resolved_resource != _CHILD_TOOL_RESOURCE
+            or request.agent_id != _CHILD_AGENT_ID
+            or frozenset(request.arguments) != frozenset({"value"})
+            or request.arguments.get("value") != _CHILD_TOOL_VALUE
+        ):
+            raise ToolExecutionError()
+
+        self.requests.append(request)
+        self.contexts.append(context)
+        self.calls += 1
+        return ToolInvocationResult(
+            run_id=request.run_id,
+            step_id=request.step_id,
+            call_id=request.call_id,
+            tool_id=request.tool_id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={"value": _CHILD_TOOL_VALUE},
+            started_at=request.created_at,
+            completed_at=request.created_at,
+        )
+
+
+class _RecordingChildAgentService(AgentService):
+    def __init__(
+        self,
+        runtime: AgentLoop,
+        registry: ToolRegistry,
+        admission: AgentAdmissionController,
+        configuration: AgentServiceConfiguration,
+        *,
+        events: EventBus,
+        model_adapter: DeterministicModelTurnAdapter,
+        tool_adapters: tuple[_ChildCompositionToolAdapter, ...],
+    ) -> None:
+        super().__init__(
+            runtime,
+            registry,
+            admission,
+            configuration,
+            events=events,
+            model_adapter=model_adapter,
+            tool_adapters=tool_adapters,
+        )
+        self.run_requests: list[AgentRunRequest] = []
+        self.run_contexts: list[SecurityContext] = []
+
+    async def run(
+        self,
+        request: AgentRunRequest,
+        context: SecurityContext,
+        *,
+        cancellation: AgentCancellationToken | None = None,
+    ) -> AgentRunResult:
+        self.run_requests.append(request)
+        self.run_contexts.append(context)
+        return await super().run(request, context, cancellation=cancellation)
 
 
 class _MemoryWriteCompositionAdapter:
@@ -822,6 +1099,118 @@ def _workspace_write_composition_path(
     )
 
 
+async def _parent_child_tool_composition_path(
+    *,
+    delegation_policy: PolicyEngine,
+    child_run_policy: PolicyEngine,
+    child_tool_policy: PolicyEngine,
+) -> tuple[
+    AgentCoordinationRuntime,
+    _RecordingDelegationAuthorizer,
+    _RecordingChildAgentService,
+    _RecordingRunAuthorizer,
+    _RecordingToolAuthorizer,
+    _ChildCompositionToolAdapter,
+]:
+    descriptor = _child_tool_descriptor()
+    child_configuration = AgentServiceConfiguration(
+        agent_id=_CHILD_AGENT_ID,
+        provider_id=ModelProviderId("local"),
+        model_id=ModelId("chat"),
+        tools=(AgentToolConfiguration(descriptor),),
+    )
+
+    child_registry = ToolRegistry()
+    child_adapter = _ChildCompositionToolAdapter()
+    child_registry.register_tool(
+        descriptor,
+        resolver=StaticToolResourceResolver(
+            _CHILD_TOOL_RESOLVER_ID,
+            _CHILD_TOOL_RESOURCE,
+        ),
+        adapter=child_adapter,
+    )
+
+    child_run_authorizer = _RecordingRunAuthorizer(child_run_policy)
+    child_tool_authorizer = _RecordingToolAuthorizer(child_tool_policy)
+    child_admission = AgentAdmissionController(child_configuration.limits)
+    child_model_adapter = DeterministicModelTurnAdapter(
+        (
+            DeterministicToolTurn(
+                _CHILD_TOOL_ID,
+                {"value": _CHILD_TOOL_VALUE},
+            ),
+            DeterministicFinalTurn("child complete"),
+        )
+    )
+    child_loop = AgentLoop(
+        run_authorizer=child_run_authorizer,
+        model_authorizer=_AllowModelAuthorizer(),
+        tool_authorizer=child_tool_authorizer,
+        model_adapter=child_model_adapter,
+        registry=child_registry,
+        executor=BoundedAgentExecutor(clock=lambda: _NOW),
+        admission=child_admission,
+        clock=lambda: _NOW,
+    )
+    child_service = _RecordingChildAgentService(
+        child_loop,
+        child_registry,
+        child_admission,
+        child_configuration,
+        events=EventBus(),
+        model_adapter=child_model_adapter,
+        tool_adapters=(child_adapter,),
+    )
+
+    limits = _delegation_limits()
+    delegation_registry = AgentDelegationRegistry()
+    delegation_registry.register_agent(
+        DelegableAgentDescriptor(
+            configuration=child_configuration,
+            namespace=_COORDINATION_NAMESPACE,
+            allowed_parent_agents=(_PARENT_AGENT_ID,),
+            compatibility_digest="sha256:" + "5" * 64,
+            allow_inbound=True,
+            allow_nested_delegation=False,
+            max_accepted_depth=DelegationDepth(1),
+            delegation_limits=limits,
+        )
+    )
+    delegation_authorizer = _RecordingDelegationAuthorizer(delegation_policy)
+    coordinator = AgentDelegationCoordinator(
+        delegation_registry,
+        delegation_authorizer,
+        limits=limits,
+        root_budget_limit=_delegation_root_budget(),
+        clock=lambda: _NOW,
+    )
+    runtime = AgentCoordinationRuntime(
+        coordinator,
+        AgentCoordinationConfiguration(
+            namespace=_COORDINATION_NAMESPACE,
+            limits=limits,
+            root_budget_limit=_delegation_root_budget(),
+            shutdown_grace=timedelta(seconds=1),
+            cancellation_grace=timedelta(seconds=1),
+        ),
+        {_CHILD_AGENT_ID: child_service},
+        clock=lambda: _NOW,
+    )
+
+    runtime_context = RuntimeContext(services={})
+    await child_service.start(runtime_context)
+    await runtime.start(runtime_context)
+    return (
+        runtime,
+        delegation_authorizer,
+        child_service,
+        child_run_authorizer,
+        child_tool_authorizer,
+        child_adapter,
+    )
+
+
 def _composition_path(
     *,
     run_policy: PolicyEngine,
@@ -994,7 +1383,8 @@ async def test_agent_tool_host_path_cannot_bypass_tool_boundary() -> None:
 
     assert result.status is AgentRunStatus.FAILED
     assert result.error_code == "authorization_rejected"
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
     assert tool_authorizer.contexts == [context]
     assert tool_authorizer.contexts[0] is context
     assert host_authorizer.process_list_contexts == []
@@ -1003,7 +1393,7 @@ async def test_agent_tool_host_path_cannot_bypass_tool_boundary() -> None:
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     host_snapshot = await host_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 1)
     assert (host_snapshot.allowed, host_snapshot.denied) == (0, 0)
 
@@ -1025,7 +1415,8 @@ async def test_agent_tool_host_path_does_not_substitute_stronger_internal_identi
 
     assert result.status is AgentRunStatus.FAILED
     assert result.error_code == "tool_failed"
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
     assert len(tool_authorizer.contexts) == 2
     assert all(item is context for item in tool_authorizer.contexts)
     assert host_authorizer.process_list_contexts == [context]
@@ -1037,7 +1428,7 @@ async def test_agent_tool_host_path_does_not_substitute_stronger_internal_identi
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     host_snapshot = await host_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
     assert (host_snapshot.allowed, host_snapshot.denied) == (0, 1)
 
@@ -1059,8 +1450,10 @@ async def test_agent_tool_host_path_requires_full_intersection_and_preserves_sub
 
     assert result.status is AgentRunStatus.COMPLETED
     assert result.final_output == "complete"
-    assert run_authorizer.requests == [request]
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.requests == [request, request]
+    assert run_authorizer.requests[0] is run_authorizer.requests[1]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
     assert run_authorizer.contexts[0] is context
 
     assert len(tool_authorizer.requests) == 2
@@ -1077,7 +1470,7 @@ async def test_agent_tool_host_path_requires_full_intersection_and_preserves_sub
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     host_snapshot = await host_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
     assert (host_snapshot.allowed, host_snapshot.denied) == (1, 0)
 
@@ -1107,7 +1500,8 @@ async def test_effectful_agent_tool_host_approval_cannot_replace_requester_subje
 
     assert result.status is AgentRunStatus.FAILED
     assert result.error_code == "tool_failed"
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
     assert len(tool_authorizer.contexts) == 2
     assert all(item is context for item in tool_authorizer.contexts)
     assert len(approval_resolver.challenges) == 1
@@ -1125,7 +1519,7 @@ async def test_effectful_agent_tool_host_approval_cannot_replace_requester_subje
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     host_snapshot = await host_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
     assert (host_snapshot.allowed, host_snapshot.denied) == (0, 1)
 
@@ -1155,7 +1549,8 @@ async def test_effectful_agent_tool_host_requires_approval_and_full_intersection
 
     assert result.status is AgentRunStatus.COMPLETED
     assert result.final_output == "complete"
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
     assert len(tool_authorizer.requests) == 2
     assert tool_authorizer.requests[0] is tool_authorizer.requests[1]
     assert tool_authorizer.requests[0].agent_id == request.agent_id
@@ -1176,7 +1571,7 @@ async def test_effectful_agent_tool_host_requires_approval_and_full_intersection
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     host_snapshot = await host_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
     assert (host_snapshot.allowed, host_snapshot.denied) == (1, 0)
 
@@ -1252,7 +1647,8 @@ async def test_agent_tool_memory_path_cannot_bypass_tool_boundary() -> None:
 
     assert result.status is AgentRunStatus.FAILED
     assert result.error_code == "authorization_rejected"
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
     assert tool_authorizer.contexts == [context]
     assert tool_authorizer.contexts[0] is context
     assert memory_authorizer.write_contexts == []
@@ -1267,7 +1663,7 @@ async def test_agent_tool_memory_path_cannot_bypass_tool_boundary() -> None:
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     memory_snapshot = await memory_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 1)
     assert (memory_snapshot.allowed, memory_snapshot.denied) == (0, 0)
 
@@ -1298,7 +1694,8 @@ async def test_agent_tool_memory_approval_cannot_replace_requester_subject() -> 
 
     assert result.status is AgentRunStatus.FAILED
     assert result.error_code == "tool_failed"
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
     assert len(tool_authorizer.contexts) == 2
     assert all(item is context for item in tool_authorizer.contexts)
     assert len(approval_resolver.challenges) == 1
@@ -1319,7 +1716,7 @@ async def test_agent_tool_memory_approval_cannot_replace_requester_subject() -> 
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     memory_snapshot = await memory_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
     assert (memory_snapshot.allowed, memory_snapshot.denied) == (0, 1)
 
@@ -1350,7 +1747,8 @@ async def test_agent_tool_memory_requires_full_intersection_and_preserves_subjec
 
     assert result.status is AgentRunStatus.COMPLETED
     assert result.final_output == "complete"
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
 
     assert len(tool_authorizer.requests) == 2
     assert tool_authorizer.requests[0] is tool_authorizer.requests[1]
@@ -1388,7 +1786,7 @@ async def test_agent_tool_memory_requires_full_intersection_and_preserves_subjec
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     memory_snapshot = await memory_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
     assert (memory_snapshot.allowed, memory_snapshot.denied) == (1, 0)
 
@@ -1474,7 +1872,8 @@ async def test_agent_tool_workspace_path_cannot_bypass_tool_boundary() -> None:
 
     assert result.status is AgentRunStatus.FAILED
     assert result.error_code == "authorization_rejected"
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
     assert tool_authorizer.contexts == [context]
     assert tool_authorizer.contexts[0] is context
     assert workspace_authorizer.write_contexts == []
@@ -1499,7 +1898,7 @@ async def test_agent_tool_workspace_path_cannot_bypass_tool_boundary() -> None:
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     workspace_snapshot = await workspace_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 1)
     assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (0, 0)
 
@@ -1530,7 +1929,8 @@ async def test_agent_tool_workspace_approval_cannot_replace_requester_subject() 
 
     assert result.status is AgentRunStatus.FAILED
     assert result.error_code == "tool_failed"
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
     assert len(tool_authorizer.contexts) == 2
     assert all(item is context for item in tool_authorizer.contexts)
     assert len(approval_resolver.challenges) == 1
@@ -1561,7 +1961,7 @@ async def test_agent_tool_workspace_approval_cannot_replace_requester_subject() 
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     workspace_snapshot = await workspace_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
     assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (0, 1)
 
@@ -1592,7 +1992,8 @@ async def test_agent_tool_workspace_requires_full_intersection_and_preserves_sub
 
     assert result.status is AgentRunStatus.COMPLETED
     assert result.final_output == "complete"
-    assert run_authorizer.contexts == [context]
+    assert run_authorizer.contexts == [context, context]
+    assert all(item is context for item in run_authorizer.contexts)
 
     assert len(tool_authorizer.requests) == 2
     assert tool_authorizer.requests[0] is tool_authorizer.requests[1]
@@ -1650,6 +2051,181 @@ async def test_agent_tool_workspace_requires_full_intersection_and_preserves_sub
     run_snapshot = await run_policy.snapshot()
     tool_snapshot = await tool_policy.snapshot()
     workspace_snapshot = await workspace_policy.snapshot()
-    assert (run_snapshot.allowed, run_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
     assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_parent_child_tool_path_cannot_bypass_delegation_boundary() -> None:
+    context = _context()
+    delegation_policy = _delegation_policy(_INTERNAL_CHILD)
+    child_run_policy = _child_run_policy(_REQUESTER)
+    child_tool_policy = _child_tool_policy(_REQUESTER)
+    (
+        runtime,
+        delegation_authorizer,
+        child_service,
+        child_run_authorizer,
+        child_tool_authorizer,
+        child_adapter,
+    ) = await _parent_child_tool_composition_path(
+        delegation_policy=delegation_policy,
+        child_run_policy=child_run_policy,
+        child_tool_policy=child_tool_policy,
+    )
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await runtime.delegate_and_run(_delegation_request(), context)
+
+    assert delegation_authorizer.contexts == [context]
+    assert delegation_authorizer.contexts[0] is context
+    assert child_service.run_contexts == []
+    assert child_run_authorizer.contexts == []
+    assert child_tool_authorizer.contexts == []
+    assert child_adapter.contexts == []
+    assert child_adapter.calls == 0
+
+    delegation_snapshot = await delegation_policy.snapshot()
+    run_snapshot = await child_run_policy.snapshot()
+    tool_snapshot = await child_tool_policy.snapshot()
+    assert (delegation_snapshot.allowed, delegation_snapshot.denied) == (0, 1)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (0, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_parent_child_tool_path_cannot_bypass_child_run_boundary() -> None:
+    context = _context()
+    delegation_policy = _delegation_policy(_REQUESTER)
+    child_run_policy = _child_run_policy(_INTERNAL_CHILD)
+    child_tool_policy = _child_tool_policy(_REQUESTER)
+    (
+        runtime,
+        delegation_authorizer,
+        child_service,
+        child_run_authorizer,
+        child_tool_authorizer,
+        child_adapter,
+    ) = await _parent_child_tool_composition_path(
+        delegation_policy=delegation_policy,
+        child_run_policy=child_run_policy,
+        child_tool_policy=child_tool_policy,
+    )
+
+    result = await runtime.delegate_and_run(_delegation_request(), context)
+
+    assert result.status is ChildResultStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert delegation_authorizer.contexts == [context]
+    assert child_service.run_contexts == [context]
+    assert child_service.run_contexts[0] is context
+    assert child_run_authorizer.contexts == [context]
+    assert child_run_authorizer.contexts[0] is context
+    assert child_tool_authorizer.contexts == []
+    assert child_adapter.contexts == []
+    assert child_adapter.calls == 0
+
+    delegation_snapshot = await delegation_policy.snapshot()
+    run_snapshot = await child_run_policy.snapshot()
+    tool_snapshot = await child_tool_policy.snapshot()
+    assert (delegation_snapshot.allowed, delegation_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (0, 1)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_parent_child_tool_path_cannot_bypass_child_tool_boundary() -> None:
+    context = _context()
+    delegation_policy = _delegation_policy(_REQUESTER)
+    child_run_policy = _child_run_policy(_REQUESTER)
+    child_tool_policy = _child_tool_policy(_INTERNAL_CHILD)
+    (
+        runtime,
+        delegation_authorizer,
+        child_service,
+        child_run_authorizer,
+        child_tool_authorizer,
+        child_adapter,
+    ) = await _parent_child_tool_composition_path(
+        delegation_policy=delegation_policy,
+        child_run_policy=child_run_policy,
+        child_tool_policy=child_tool_policy,
+    )
+
+    result = await runtime.delegate_and_run(_delegation_request(), context)
+
+    assert result.status is ChildResultStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert delegation_authorizer.contexts == [context]
+    assert child_service.run_contexts == [context]
+    assert child_run_authorizer.contexts == [context, context]
+    assert all(item is context for item in child_run_authorizer.contexts)
+    assert child_tool_authorizer.contexts == [context]
+    assert child_tool_authorizer.contexts[0] is context
+    assert child_adapter.contexts == []
+    assert child_adapter.calls == 0
+
+    delegation_snapshot = await delegation_policy.snapshot()
+    run_snapshot = await child_run_policy.snapshot()
+    tool_snapshot = await child_tool_policy.snapshot()
+    assert (delegation_snapshot.allowed, delegation_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_parent_child_tool_requires_full_intersection_and_preserves_subject() -> None:
+    context = _context()
+    delegation_policy = _delegation_policy(_REQUESTER)
+    child_run_policy = _child_run_policy(_REQUESTER)
+    child_tool_policy = _child_tool_policy(_REQUESTER)
+    (
+        runtime,
+        delegation_authorizer,
+        child_service,
+        child_run_authorizer,
+        child_tool_authorizer,
+        child_adapter,
+    ) = await _parent_child_tool_composition_path(
+        delegation_policy=delegation_policy,
+        child_run_policy=child_run_policy,
+        child_tool_policy=child_tool_policy,
+    )
+
+    result = await runtime.delegate_and_run(_delegation_request(), context)
+
+    assert result.status is ChildResultStatus.SUCCEEDED
+    assert result.error_code is None
+    assert result.output == {"final_output": "child complete"}
+
+    assert delegation_authorizer.contexts == [context]
+    assert delegation_authorizer.contexts[0] is context
+    assert child_service.run_contexts == [context]
+    assert child_service.run_contexts[0] is context
+    assert child_run_authorizer.contexts == [context, context]
+    assert all(item is context for item in child_run_authorizer.contexts)
+    assert child_tool_authorizer.contexts == [context, context]
+    assert all(item is context for item in child_tool_authorizer.contexts)
+    assert child_adapter.contexts == [context]
+    assert child_adapter.contexts[0] is context
+    assert child_adapter.calls == 1
+
+    assert len(child_service.run_requests) == 1
+    child_request = child_service.run_requests[0]
+    assert child_request.agent_id == _CHILD_AGENT_ID
+    assert child_request.run_id == result.child_run_id
+
+    assert len(child_adapter.requests) == 1
+    tool_request = child_adapter.requests[0]
+    assert tool_request.agent_id == _CHILD_AGENT_ID
+    assert tool_request.run_id == result.child_run_id
+    assert tool_request.resolved_resource == _CHILD_TOOL_RESOURCE
+    assert tool_request.arguments == {"value": _CHILD_TOOL_VALUE}
+
+    delegation_snapshot = await delegation_policy.snapshot()
+    run_snapshot = await child_run_policy.snapshot()
+    tool_snapshot = await child_tool_policy.snapshot()
+    assert (delegation_snapshot.allowed, delegation_snapshot.denied) == (1, 0)
+    assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)

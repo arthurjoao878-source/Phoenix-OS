@@ -260,7 +260,7 @@ async def _wait_for_tool_queue(admission: AgentAdmissionController) -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_backed_tool_admission_fails_closed_without_freshness_validator() -> None:
+async def test_session_backed_agent_path_fails_closed_without_freshness_validator() -> None:
     descriptor = _descriptor()
     adapter = DeterministicReadOnlyTool("lookup", {"value": "not reached"})
     authorizer = _AllowToolAuthorizer()
@@ -275,7 +275,7 @@ async def test_session_backed_tool_admission_fails_closed_without_freshness_vali
     assert result.status is AgentRunStatus.FAILED
     assert result.error_code == "authorization_rejected"
     assert result.tool_calls == 0
-    assert authorizer.calls == 1
+    assert authorizer.calls == 0
     assert len(adapter.requests) == 0
 
 
@@ -355,7 +355,7 @@ async def test_session_revocation_during_approval_is_denied_before_side_effect_a
     assert result.error_code == "authorization_rejected"
     assert result.tool_calls == 0
     assert authorizer.calls == 1
-    assert source.calls == [_SESSION_ID]
+    assert source.calls == [_SESSION_ID, _SESSION_ID, _SESSION_ID]
     assert adapter.effect_count == 0
     approval_snapshot = await approvals.snapshot()
     assert approval_snapshot.consumed == 1
@@ -453,7 +453,7 @@ async def test_session_revocation_while_waiting_for_tool_lease_is_denied_after_q
     assert result.error_code == "authorization_rejected"
     assert result.tool_calls == 0
     assert authorizer.calls == 1
-    assert source.calls == [_SESSION_ID]
+    assert source.calls == [_SESSION_ID, _SESSION_ID, _SESSION_ID]
     assert len(adapter.requests) == 0
     admission_snapshot = await admission.snapshot()
     assert admission_snapshot.active_tool_calls == 0
@@ -503,5 +503,10 @@ async def test_composed_runtime_uses_supplied_session_freshness_source() -> None
 
     assert result.status is AgentRunStatus.COMPLETED
     assert result.final_output == "complete"
-    assert source.calls == [_SESSION_ID]
+    assert source.calls == [
+        _SESSION_ID,
+        _SESSION_ID,
+        _SESSION_ID,
+        _SESSION_ID,
+    ]
     assert len(adapter.requests) == 1

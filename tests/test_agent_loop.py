@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 
@@ -37,8 +39,26 @@ from phoenix_os.agent import (
     ToolSchema,
     ToolSchemaType,
 )
+from phoenix_os.agent.admission import AgentAdmissionController
+from phoenix_os.agent.authorization import (
+    AGENT_RUN_ACTION,
+    DelegatingAgentModelTurnAuthorizer,
+    PolicyEngineAgentRunAuthorizer,
+    agent_run_resource,
+)
 from phoenix_os.inference import InferenceRequest, ModelId, ModelProviderId
-from phoenix_os.policy import PrincipalType, SecurityContext
+from phoenix_os.inference.authorization import (
+    INFERENCE_MODEL_ACTION,
+    PolicyEngineInferenceAuthorizer,
+    inference_model_resource,
+)
+from phoenix_os.policy import (
+    PolicyEffect,
+    PolicyEngine,
+    PolicyRule,
+    PrincipalType,
+    SecurityContext,
+)
 
 _NOW = datetime(2026, 7, 27, 12, tzinfo=UTC)
 
@@ -215,7 +235,7 @@ def _loop(
 
 
 @pytest.mark.asyncio
-async def test_final_only_run_authorizes_once_and_completes() -> None:
+async def test_final_only_run_reauthorizes_fresh_admission_and_completes() -> None:
     loop, run_auth, model_auth, tool_auth = _loop((DeterministicFinalTurn("done"),))
 
     result = await loop.run(_request(), _context())
@@ -224,8 +244,10 @@ async def test_final_only_run_authorizes_once_and_completes() -> None:
     assert result.final_output == "done"
     assert result.model_turns == 1
     assert result.tool_calls == 0
-    assert len(run_auth.requests) == 1
-    assert len(model_auth.requests) == 1
+    assert len(run_auth.requests) == 2
+    assert run_auth.requests[0] is run_auth.requests[1]
+    assert len(model_auth.requests) == 2
+    assert model_auth.requests[0] is model_auth.requests[1]
     assert tool_auth.requests == []
 
 
@@ -252,10 +274,12 @@ async def test_read_only_tool_cycle_is_serial_and_authorized_per_turn() -> None:
     assert result.status is AgentRunStatus.COMPLETED
     assert result.model_turns == 2
     assert result.tool_calls == 1
-    assert len(model_auth.requests) == 2
+    assert len(model_auth.requests) == 4
+    assert model_auth.requests[0] is model_auth.requests[1]
+    assert model_auth.requests[2] is model_auth.requests[3]
     assert (
         model_auth.requests[0].metadata["agent_step_id"]
-        != model_auth.requests[1].metadata["agent_step_id"]
+        != model_auth.requests[2].metadata["agent_step_id"]
     )
     assert len(tool_auth.requests) == 2
     assert tool_auth.requests[0] is tool_auth.requests[1]
@@ -296,7 +320,8 @@ async def test_accumulated_prompt_limit_stops_before_another_model_turn() -> Non
     assert result.error_code == "limit_exceeded"
     assert result.model_turns == 1
     assert result.tool_calls == 1
-    assert len(model_auth.requests) == 1
+    assert len(model_auth.requests) == 2
+    assert model_auth.requests[0] is model_auth.requests[1]
 
 
 @pytest.mark.asyncio
@@ -423,3 +448,166 @@ async def test_agent_loop_forwards_exact_security_context_to_contextual_tool() -
     assert adapter.contexts == [context]
     assert adapter.contexts[0] is context
     assert adapter.plain_calls == 0
+
+
+async def _wait_for_single_queued_admission(
+    admission: AgentAdmissionController,
+) -> None:
+    for _ in range(64):
+        if (await admission.snapshot()).queued == 1:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("admission request did not enter the bounded queue")
+
+
+@pytest.mark.asyncio
+async def test_session_backed_run_without_freshness_validator_fails_closed() -> None:
+    loop, run_auth, model_auth, tool_auth = _loop((DeterministicFinalTurn("not reached"),))
+    context = SecurityContext(
+        principal="service:assistant",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+        session_id=UUID("73000000-0000-4000-8000-000000000033"),
+    )
+
+    result = await loop.run(_request(), context)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert len(run_auth.requests) == 1
+    assert model_auth.requests == []
+    assert tool_auth.requests == []
+
+
+@pytest.mark.asyncio
+async def test_queued_run_policy_revocation_blocks_fresh_admission() -> None:
+    limits = AgentLimits(
+        max_concurrent_runs=1,
+        max_concurrent_model_calls=1,
+        max_concurrent_tool_calls=1,
+        max_queue_depth=2,
+    )
+    admission = AgentAdmissionController(limits)
+    blocker = await admission.acquire_run(
+        limits,
+        timeout_seconds=1,
+        cancellation=AgentCancellationToken(),
+    )
+
+    policy = PolicyEngine()
+    registration = await policy.register(
+        PolicyRule(
+            rule_id="allow-queued-agent-run",
+            effect=PolicyEffect.ALLOW,
+            actions=frozenset({AGENT_RUN_ACTION}),
+            resources=frozenset({agent_run_resource(AgentId("assistant"))}),
+            principals=frozenset({"service:assistant"}),
+            authenticated=True,
+        )
+    )
+    model_authorizer = _ModelAuthorizer()
+    model_adapter = DeterministicModelTurnAdapter((DeterministicFinalTurn("not reached"),))
+    loop = AgentLoop(
+        run_authorizer=PolicyEngineAgentRunAuthorizer(policy),
+        model_authorizer=model_authorizer,
+        tool_authorizer=_ToolAuthorizer(),
+        model_adapter=model_adapter,
+        registry=ToolRegistry(),
+        executor=BoundedAgentExecutor(clock=lambda: _NOW),
+        admission=admission,
+        clock=lambda: _NOW,
+    )
+
+    pending = asyncio.create_task(loop.run(_request(), _context()))
+    try:
+        await _wait_for_single_queued_admission(admission)
+        assert await policy.unregister(registration)
+    finally:
+        await blocker.release()
+
+    result = await asyncio.wait_for(pending, timeout=1)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert model_authorizer.requests == []
+    assert model_adapter.requests == ()
+
+    snapshot = await admission.snapshot()
+    assert snapshot.active_runs == 0
+    assert snapshot.active_model_calls == 0
+    assert snapshot.queued == 0
+
+    policy_snapshot = await policy.snapshot()
+    assert (policy_snapshot.allowed, policy_snapshot.denied) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_queued_model_policy_revocation_blocks_fresh_admission() -> None:
+    limits = AgentLimits(
+        max_concurrent_runs=1,
+        max_concurrent_model_calls=1,
+        max_concurrent_tool_calls=1,
+        max_queue_depth=2,
+    )
+    admission = AgentAdmissionController(limits)
+    blocker = await admission.acquire_model(
+        limits,
+        timeout_seconds=1,
+        cancellation=AgentCancellationToken(),
+    )
+
+    model_policy = PolicyEngine()
+    registration = await model_policy.register(
+        PolicyRule(
+            rule_id="allow-queued-model-infer",
+            effect=PolicyEffect.ALLOW,
+            actions=frozenset({INFERENCE_MODEL_ACTION}),
+            resources=frozenset(
+                {
+                    inference_model_resource(
+                        ModelProviderId("local"),
+                        ModelId("chat"),
+                    )
+                }
+            ),
+            principals=frozenset({"service:assistant"}),
+            authenticated=True,
+        )
+    )
+    run_authorizer = _RunAuthorizer()
+    model_adapter = DeterministicModelTurnAdapter((DeterministicFinalTurn("not reached"),))
+    loop = AgentLoop(
+        run_authorizer=run_authorizer,
+        model_authorizer=DelegatingAgentModelTurnAuthorizer(
+            PolicyEngineInferenceAuthorizer(model_policy)
+        ),
+        tool_authorizer=_ToolAuthorizer(),
+        model_adapter=model_adapter,
+        registry=ToolRegistry(),
+        executor=BoundedAgentExecutor(clock=lambda: _NOW),
+        admission=admission,
+        clock=lambda: _NOW,
+    )
+
+    pending = asyncio.create_task(loop.run(_request(), _context()))
+    try:
+        await _wait_for_single_queued_admission(admission)
+        assert await model_policy.unregister(registration)
+    finally:
+        await blocker.release()
+
+    result = await asyncio.wait_for(pending, timeout=1)
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert len(run_authorizer.requests) == 2
+    assert run_authorizer.requests[0] is run_authorizer.requests[1]
+    assert model_adapter.requests == ()
+
+    snapshot = await admission.snapshot()
+    assert snapshot.active_runs == 0
+    assert snapshot.active_model_calls == 0
+    assert snapshot.queued == 0
+
+    policy_snapshot = await model_policy.snapshot()
+    assert (policy_snapshot.allowed, policy_snapshot.denied) == (1, 1)
