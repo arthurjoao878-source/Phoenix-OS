@@ -101,10 +101,11 @@ from phoenix_os.agent.durable_contracts import (
     ResumeRequest,
 )
 from phoenix_os.agent.durable_lease import InMemoryDurableLeaseManager
-from phoenix_os.agent.errors import AgentAuthorizationRejectedError
+from phoenix_os.agent.errors import AgentAuthorizationRejectedError, AgentServiceUnavailableError
 from phoenix_os.agent.service import AgentService
 from phoenix_os.agent.state import AgentBudgetSnapshot, AgentCancellationToken
 from phoenix_os.agent.workspace_authorization import (
+    WORKSPACE_EXPORT_ACTION,
     WORKSPACE_WRITE_ACTION,
     PolicyEngineWorkspaceAuthorizer,
     agent_workspace_scope,
@@ -112,15 +113,22 @@ from phoenix_os.agent.workspace_authorization import (
 )
 from phoenix_os.agent.workspace_backing import InMemoryWorkspaceBackingAdapter
 from phoenix_os.agent.workspace_contracts import (
+    ArtifactExportRequest,
     ArtifactId,
     ArtifactLogicalPath,
     ArtifactOriginKind,
     ArtifactProvenance,
     ArtifactReadRequest,
     ArtifactRecord,
+    ArtifactTransferReceipt,
     ArtifactWriteRequest,
+    WorkspaceExportPayload,
+    WorkspaceExportResult,
+    WorkspaceImportResult,
     WorkspaceLimits,
     WorkspaceNamespace,
+    WorkspaceTransferAdapterId,
+    WorkspaceTransferReference,
     artifact_content_digest,
 )
 from phoenix_os.agent.workspace_service import AgentWorkspaceService
@@ -129,6 +137,7 @@ from phoenix_os.events import EventBus
 from phoenix_os.host_automation import (
     HOST_APPLICATION_LAUNCH_ACTION,
     HOST_APPLICATION_LAUNCH_TOOL_ID,
+    HOST_CLIPBOARD_WRITE_ACTION,
     HOST_PROCESS_LIST_ACTION,
     HOST_PROCESS_LIST_TOOL_ID,
     DeterministicHostAutomationAdapter,
@@ -138,6 +147,9 @@ from phoenix_os.host_automation import (
     HostApplicationLaunchToolAdapter,
     HostAutomationLimits,
     HostAutomationService,
+    HostClipboardReadRequest,
+    HostClipboardWriteRequest,
+    HostClipboardWriteResult,
     HostId,
     HostProcessListRequest,
     HostProcessListResult,
@@ -146,6 +158,7 @@ from phoenix_os.host_automation import (
     host_application_launch_tool_descriptor,
     host_application_launch_tool_resolver,
     host_application_resource,
+    host_clipboard_resource,
     host_process_collection_resource,
     host_process_list_tool_descriptor,
     host_process_list_tool_resolver,
@@ -187,6 +200,13 @@ _WORKSPACE_CONTENT = "composition workspace write"
 _WORKSPACE_LOGICAL_PATH = ArtifactLogicalPath("composition/result.txt")
 _WORKSPACE_TOOL_RESOLVER_ID = "workspace-write-composition-resource"
 _WORKSPACE_TOOL_ADAPTER_ID = "workspace-write-composition"
+
+_WORKSPACE_HOST_CONTENT = (
+    "credential:host-admin|principal=service:host-internal|policy:allow|host.clipboard.write"
+)
+_WORKSPACE_HOST_BYTES = _WORKSPACE_HOST_CONTENT.encode("utf-8")
+_WORKSPACE_HOST_DESTINATION = WorkspaceTransferReference("clipboard-transfer-slot")
+_WORKSPACE_HOST_ADAPTER_ID = WorkspaceTransferAdapterId("workspace-host-composition")
 
 
 _PARENT_AGENT_ID = AgentId("parent")
@@ -368,6 +388,32 @@ def _workspace_write_policy(principal: str) -> PolicyEngine:
                 "allow-workspace-write",
                 action=WORKSPACE_WRITE_ACTION,
                 resource=_WORKSPACE_RESOURCE,
+                principal=principal,
+            ),
+        )
+    )
+
+
+def _workspace_export_policy(principal: str) -> PolicyEngine:
+    return PolicyEngine(
+        (
+            _allow_rule(
+                "allow-workspace-export",
+                action=WORKSPACE_EXPORT_ACTION,
+                resource=_WORKSPACE_RESOURCE,
+                principal=principal,
+            ),
+        )
+    )
+
+
+def _host_clipboard_write_policy(principal: str) -> PolicyEngine:
+    return PolicyEngine(
+        (
+            _allow_rule(
+                "allow-host-clipboard-write",
+                action=HOST_CLIPBOARD_WRITE_ACTION,
+                resource=host_clipboard_resource(_HOST_ID),
                 principal=principal,
             ),
         )
@@ -655,6 +701,8 @@ class _RecordingWorkspaceAuthorizer(PolicyEngineWorkspaceAuthorizer):
         super().__init__(policy)
         self.write_requests: list[ArtifactWriteRequest] = []
         self.write_contexts: list[SecurityContext] = []
+        self.export_requests: list[ArtifactExportRequest] = []
+        self.export_contexts: list[SecurityContext] = []
 
     async def authorize_write(
         self,
@@ -664,6 +712,15 @@ class _RecordingWorkspaceAuthorizer(PolicyEngineWorkspaceAuthorizer):
         self.write_requests.append(request)
         self.write_contexts.append(context)
         await super().authorize_write(request, context)
+
+    async def authorize_export(
+        self,
+        request: ArtifactExportRequest,
+        context: SecurityContext,
+    ) -> None:
+        self.export_requests.append(request)
+        self.export_contexts.append(context)
+        await super().authorize_export(request, context)
 
 
 class _RecordingDelegationAuthorizer(PolicyEngineDelegationAuthorizer):
@@ -942,6 +999,8 @@ class _RecordingHostAuthorizer(PolicyEngineHostAutomationAuthorizer):
         super().__init__(policy)
         self.process_list_contexts: list[SecurityContext] = []
         self.application_launch_contexts: list[SecurityContext] = []
+        self.clipboard_write_requests: list[HostClipboardWriteRequest] = []
+        self.clipboard_write_contexts: list[SecurityContext] = []
 
     async def authorize_process_list(
         self,
@@ -959,6 +1018,15 @@ class _RecordingHostAuthorizer(PolicyEngineHostAutomationAuthorizer):
         self.application_launch_contexts.append(context)
         await super().authorize_application_launch(request, context)
 
+    async def authorize_clipboard_write(
+        self,
+        request: HostClipboardWriteRequest,
+        context: SecurityContext,
+    ) -> None:
+        self.clipboard_write_requests.append(request)
+        self.clipboard_write_contexts.append(context)
+        await super().authorize_clipboard_write(request, context)
+
 
 class _CountingHostAdapter(DeterministicHostAutomationAdapter):
     def __init__(self, limits: HostAutomationLimits) -> None:
@@ -969,6 +1037,7 @@ class _CountingHostAdapter(DeterministicHostAutomationAdapter):
         )
         self.process_list_calls = 0
         self.application_launch_calls = 0
+        self.clipboard_write_calls = 0
 
     async def list_processes(
         self,
@@ -983,6 +1052,172 @@ class _CountingHostAdapter(DeterministicHostAutomationAdapter):
     ) -> HostApplicationLaunchResult:
         self.application_launch_calls += 1
         return await super().launch_application(request)
+
+    async def write_clipboard(
+        self,
+        request: HostClipboardWriteRequest,
+    ) -> HostClipboardWriteResult:
+        self.clipboard_write_calls += 1
+        return await super().write_clipboard(request)
+
+
+class _WorkspaceToHostTransferAdapter:
+    adapter_id = _WORKSPACE_HOST_ADAPTER_ID
+
+    def __init__(
+        self,
+        service: HostAutomationService,
+        requester_context: SecurityContext,
+    ) -> None:
+        if not isinstance(service, HostAutomationService):
+            raise TypeError("service must be HostAutomationService")
+        if not isinstance(requester_context, SecurityContext):
+            raise TypeError("requester_context must be SecurityContext")
+        self._service = service
+        self._requester_context = requester_context
+        self._closed = False
+        self.export_calls = 0
+        self.export_payloads: list[WorkspaceExportPayload] = []
+        self.host_requests: list[HostClipboardWriteRequest] = []
+        self.host_results: list[HostClipboardWriteResult] = []
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    async def import_artifact(
+        self,
+        source_reference: WorkspaceTransferReference,
+        *,
+        max_bytes: int,
+    ) -> WorkspaceImportResult:
+        del source_reference, max_bytes
+        raise AssertionError("import is outside workspace-to-host composition")
+
+    async def export_artifact(
+        self,
+        payload: WorkspaceExportPayload,
+    ) -> WorkspaceExportResult:
+        if not isinstance(payload, WorkspaceExportPayload):
+            raise TypeError("payload must be WorkspaceExportPayload")
+        if (
+            payload.scope != _WORKSPACE_SCOPE
+            or payload.artifact_id != _WORKSPACE_ARTIFACT_ID
+            or payload.logical_path != _WORKSPACE_LOGICAL_PATH
+            or payload.content != _WORKSPACE_HOST_BYTES
+            or payload.content_digest != artifact_content_digest(_WORKSPACE_HOST_BYTES)
+            or payload.destination_reference != _WORKSPACE_HOST_DESTINATION
+        ):
+            raise AssertionError("unexpected workspace export payload")
+
+        self.export_calls += 1
+        self.export_payloads.append(payload)
+
+        text = payload.content.decode("utf-8", errors="strict")
+        host_request = HostClipboardWriteRequest(
+            host_id=_HOST_ID,
+            text=text,
+            created_at=_NOW,
+        )
+        self.host_requests.append(host_request)
+        result = await self._service.write_clipboard(
+            host_request,
+            self._requester_context,
+        )
+        self.host_results.append(result)
+        return WorkspaceExportResult(
+            transfer_reference=payload.destination_reference,
+        )
+
+
+class _WorkspaceHostIndirectPath:
+    def __init__(
+        self,
+        *,
+        service: AgentWorkspaceService,
+        workspace_authorizer: _RecordingWorkspaceAuthorizer,
+        transfer_adapter: _WorkspaceToHostTransferAdapter,
+        host_authorizer: _RecordingHostAuthorizer,
+        host_adapter: _CountingHostAdapter,
+        export_request: ArtifactExportRequest,
+        requester_context: SecurityContext,
+    ) -> None:
+        self.service = service
+        self.workspace_authorizer = workspace_authorizer
+        self.transfer_adapter = transfer_adapter
+        self.host_authorizer = host_authorizer
+        self.host_adapter = host_adapter
+        self.export_request = export_request
+        self.requester_context = requester_context
+
+    async def run(
+        self,
+        context: SecurityContext,
+    ) -> ArtifactTransferReceipt:
+        if context is not self.requester_context:
+            raise AssertionError("workspace-to-host path must preserve requester context identity")
+        return await self.service.export_artifact(self.export_request, context)
+
+
+async def _workspace_host_indirect_path(
+    *,
+    workspace_policy: PolicyEngine,
+    host_policy: PolicyEngine,
+    context: SecurityContext,
+) -> _WorkspaceHostIndirectPath:
+    store = _CountingWorkspaceStore()
+    digest = artifact_content_digest(_WORKSPACE_HOST_BYTES)
+    record = await store.write(
+        ArtifactWriteRequest(
+            scope=_WORKSPACE_SCOPE,
+            artifact_id=_WORKSPACE_ARTIFACT_ID,
+            logical_path=_WORKSPACE_LOGICAL_PATH,
+            content=_WORKSPACE_HOST_BYTES,
+            provenance=ArtifactProvenance(
+                origin=ArtifactOriginKind.AGENT_REQUEST,
+                content_digest=digest,
+                created_at=_NOW,
+                source_agent_id=_AGENT_ID,
+            ),
+            created_at=_NOW,
+        )
+    )
+
+    host_authorizer = _RecordingHostAuthorizer(host_policy)
+    host_adapter = _CountingHostAdapter(_limits())
+    host_service = HostAutomationService(
+        adapter=host_adapter,
+        authorizer=host_authorizer,
+    )
+
+    transfer_adapter = _WorkspaceToHostTransferAdapter(
+        host_service,
+        context,
+    )
+    workspace_authorizer = _RecordingWorkspaceAuthorizer(workspace_policy)
+    workspace_service = AgentWorkspaceService(
+        store=store,
+        authorizer=workspace_authorizer,
+        transfer_adapter=transfer_adapter,
+        clock=lambda: _NOW,
+    )
+    export_request = ArtifactExportRequest(
+        scope=_WORKSPACE_SCOPE,
+        artifact_id=_WORKSPACE_ARTIFACT_ID,
+        expected_version=record.version,
+        destination_reference=_WORKSPACE_HOST_DESTINATION,
+        created_at=_NOW,
+    )
+
+    return _WorkspaceHostIndirectPath(
+        service=workspace_service,
+        workspace_authorizer=workspace_authorizer,
+        transfer_adapter=transfer_adapter,
+        host_authorizer=host_authorizer,
+        host_adapter=host_adapter,
+        export_request=export_request,
+        requester_context=context,
+    )
 
 
 def _memory_write_composition_path(
@@ -2645,3 +2880,143 @@ async def test_durable_resume_agent_tool_requires_full_intersection_and_preserve
     assert (resume_snapshot.allowed, resume_snapshot.denied) == (1, 0)
     assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
     assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
+
+
+@pytest.mark.asyncio
+async def test_workspace_host_indirect_path_cannot_bypass_workspace_export_boundary() -> None:
+    context = _context()
+    workspace_policy = _workspace_export_policy(_INTERNAL_HOST)
+    host_policy = _host_clipboard_write_policy(_REQUESTER)
+    path = await _workspace_host_indirect_path(
+        workspace_policy=workspace_policy,
+        host_policy=host_policy,
+        context=context,
+    )
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await path.run(context)
+
+    assert path.workspace_authorizer.export_contexts == [context]
+    assert path.workspace_authorizer.export_contexts[0] is context
+    assert path.transfer_adapter.export_calls == 0
+    assert path.transfer_adapter.export_payloads == []
+    assert path.host_authorizer.clipboard_write_contexts == []
+    assert path.host_adapter.clipboard_write_calls == 0
+
+    workspace_snapshot = await workspace_policy.snapshot()
+    host_snapshot = await host_policy.snapshot()
+    assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (0, 1)
+    assert (host_snapshot.allowed, host_snapshot.denied) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_workspace_data_cannot_amplify_into_indirect_host_authority() -> None:
+    context = _context()
+    workspace_policy = _workspace_export_policy(_REQUESTER)
+    host_policy = _host_clipboard_write_policy(_INTERNAL_HOST)
+    path = await _workspace_host_indirect_path(
+        workspace_policy=workspace_policy,
+        host_policy=host_policy,
+        context=context,
+    )
+
+    with pytest.raises(AgentServiceUnavailableError):
+        await path.run(context)
+
+    assert path.workspace_authorizer.export_contexts == [context, context]
+    assert all(item is context for item in path.workspace_authorizer.export_contexts)
+    assert path.transfer_adapter.export_calls == 1
+    assert len(path.transfer_adapter.export_payloads) == 1
+
+    payload = path.transfer_adapter.export_payloads[0]
+    assert payload.content == _WORKSPACE_HOST_BYTES
+    assert payload.content_digest == artifact_content_digest(_WORKSPACE_HOST_BYTES)
+    assert payload.destination_reference == _WORKSPACE_HOST_DESTINATION
+    assert _INTERNAL_HOST in payload.content.decode("utf-8")
+    for forbidden_attribute in (
+        "context",
+        "principal",
+        "credential",
+        "policy",
+        "host_root",
+        "approval",
+    ):
+        assert not hasattr(payload, forbidden_attribute)
+
+    assert len(path.transfer_adapter.host_requests) == 1
+    assert path.transfer_adapter.host_requests[0].text == _WORKSPACE_HOST_CONTENT
+    assert path.host_authorizer.clipboard_write_contexts == [context]
+    assert path.host_authorizer.clipboard_write_contexts[0] is context
+    assert path.host_adapter.clipboard_write_calls == 0
+    assert path.transfer_adapter.host_results == []
+
+    workspace_snapshot = await workspace_policy.snapshot()
+    host_snapshot = await host_policy.snapshot()
+    assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (2, 0)
+    assert (host_snapshot.allowed, host_snapshot.denied) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_workspace_host_indirect_path_requires_full_intersection_and_preserves_subject() -> (
+    None
+):
+    context = _context()
+    workspace_policy = _workspace_export_policy(_REQUESTER)
+    host_policy = _host_clipboard_write_policy(_REQUESTER)
+    path = await _workspace_host_indirect_path(
+        workspace_policy=workspace_policy,
+        host_policy=host_policy,
+        context=context,
+    )
+
+    receipt = await path.run(context)
+
+    assert path.workspace_authorizer.export_contexts == [context, context]
+    assert all(item is context for item in path.workspace_authorizer.export_contexts)
+    assert len(path.workspace_authorizer.export_requests) == 2
+    assert path.workspace_authorizer.export_requests[0] == path.export_request
+    assert path.workspace_authorizer.export_requests[1] == path.export_request
+
+    assert path.transfer_adapter.export_calls == 1
+    assert len(path.transfer_adapter.export_payloads) == 1
+    payload = path.transfer_adapter.export_payloads[0]
+    assert payload.content == _WORKSPACE_HOST_BYTES
+    assert payload.content_digest == artifact_content_digest(_WORKSPACE_HOST_BYTES)
+    assert payload.destination_reference == _WORKSPACE_HOST_DESTINATION
+
+    assert len(path.transfer_adapter.host_requests) == 1
+    host_request = path.transfer_adapter.host_requests[0]
+    assert host_request.host_id == _HOST_ID
+    assert host_request.text == _WORKSPACE_HOST_CONTENT
+
+    assert path.host_authorizer.clipboard_write_contexts == [context]
+    assert path.host_authorizer.clipboard_write_contexts[0] is context
+    assert path.host_authorizer.clipboard_write_requests == [host_request]
+    assert path.host_adapter.clipboard_write_calls == 1
+
+    assert len(path.transfer_adapter.host_results) == 1
+    host_result = path.transfer_adapter.host_results[0]
+    assert host_result.host_id == _HOST_ID
+    assert host_result.request_id == host_request.request_id
+    assert host_result.written_characters == len(_WORKSPACE_HOST_CONTENT)
+    assert host_result.written_bytes == len(_WORKSPACE_HOST_BYTES)
+
+    clipboard = await path.host_adapter.read_clipboard(
+        HostClipboardReadRequest(
+            host_id=_HOST_ID,
+            created_at=_NOW,
+        )
+    )
+    assert clipboard.text == _WORKSPACE_HOST_CONTENT
+
+    assert receipt.scope == _WORKSPACE_SCOPE
+    assert receipt.artifact_id == _WORKSPACE_ARTIFACT_ID
+    assert receipt.content_digest == artifact_content_digest(_WORKSPACE_HOST_BYTES)
+    assert receipt.byte_length == len(_WORKSPACE_HOST_BYTES)
+    assert receipt.adapter_id == _WORKSPACE_HOST_ADAPTER_ID
+    assert receipt.transfer_reference == _WORKSPACE_HOST_DESTINATION
+
+    workspace_snapshot = await workspace_policy.snapshot()
+    host_snapshot = await host_policy.snapshot()
+    assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (2, 0)
+    assert (host_snapshot.allowed, host_snapshot.denied) == (1, 0)
