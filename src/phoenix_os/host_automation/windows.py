@@ -6,7 +6,7 @@ import asyncio
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from phoenix_os.host_automation.contracts import (
     HostApplicationCloseRequest,
@@ -63,6 +63,15 @@ from phoenix_os.host_automation.windows_effects import (
     _WindowsEffectUnsafeDesktopError,
     _WindowsFocusTarget,
 )
+from phoenix_os.host_automation.windows_window_lifetime import (
+    _CtypesWindowsWindowLifetimeGuard,
+    _WindowsWindowLifetimeGuard,
+)
+
+
+class _WindowsLifetimeAwareEffectsBackend(Protocol):
+    _window_lifetime_guard: _WindowsWindowLifetimeGuard | None
+
 
 _DEFAULT_WINDOWS_HOST_AUTOMATION_LIMITS = HostAutomationLimits()
 _WINDOWS_PROCESS_SCAN_MULTIPLIER = 8
@@ -616,6 +625,7 @@ class WindowsHostAutomationAdapter:
         )
         self._effects_backend: _WindowsEffectsBackend | None = None
         self._clipboard_backend: _WindowsClipboardBackend | None = None
+        self._window_lifetime_guard: _WindowsWindowLifetimeGuard | None = None
         self._host_epoch: HostEpoch = HostEpoch()
         self._backend: _WindowsDiscoveryBackend = _CtypesWindowsDiscoveryBackend()
         self._process_ids: dict[tuple[int, int], HostProcessId] = {}
@@ -623,8 +633,9 @@ class WindowsHostAutomationAdapter:
         self._application_ids_by_native_process: dict[tuple[int, int], HostApplicationId] = {}
         self._last_process_records: dict[tuple[int, int], _NativeProcessRecord] = {}
         self._last_window_process_records: dict[tuple[int, int], _NativeProcessRecord] = {}
-        self._window_ids: dict[tuple[int, int, int], HostWindowId] = {}
+        self._window_ids: dict[tuple[int, int, int, int], HostWindowId] = {}
         self._native_windows: dict[HostWindowId, _NativeWindowRecord] = {}
+        self._window_lifetime_revisions: dict[HostWindowId, int] = {}
         self._closed: bool = False
         self._lock: asyncio.Lock = asyncio.Lock()
 
@@ -712,12 +723,25 @@ class WindowsHostAutomationAdapter:
             self._ensure_open()
             scan_limit = self._limits.max_window_results + 1
             try:
+                guard = self._window_lifetime_guard_for_operation()
+                await asyncio.wait_for(
+                    asyncio.to_thread(guard.start),
+                    timeout=self._limits.operation_timeout.total_seconds(),
+                )
+                before_lifetime = await asyncio.wait_for(
+                    asyncio.to_thread(guard.barrier),
+                    timeout=self._limits.operation_timeout.total_seconds(),
+                )
                 snapshot = await asyncio.wait_for(
                     asyncio.to_thread(
                         self._backend.enumerate_windows,
                         maximum_records=scan_limit,
                         maximum_title_characters=self._limits.max_window_title_chars,
                     ),
+                    timeout=self._limits.operation_timeout.total_seconds(),
+                )
+                await asyncio.wait_for(
+                    asyncio.to_thread(guard.barrier),
                     timeout=self._limits.operation_timeout.total_seconds(),
                 )
             except TimeoutError as exception:
@@ -729,9 +753,21 @@ class WindowsHostAutomationAdapter:
             except Exception as exception:
                 raise HostAutomationAdapterError() from exception
 
+            stable_records: list[_NativeWindowRecord] = []
+            lifetime_revisions: dict[int, int] = {}
+            try:
+                for record in snapshot.records:
+                    revision = guard.revision_for(record.hwnd)
+                    if revision > before_lifetime:
+                        continue
+                    stable_records.append(record)
+                    lifetime_revisions[record.hwnd] = revision
+            except Exception as exception:
+                raise HostAutomationAdapterError() from exception
+
             ordered_records = tuple(
                 sorted(
-                    snapshot.records,
+                    stable_records,
                     key=lambda record: (
                         _content_minimized_window_title(
                             record.title,
@@ -744,7 +780,7 @@ class WindowsHostAutomationAdapter:
                 )
             )
             visible_records = ordered_records[: self._limits.max_window_results]
-            self._refresh_window_identities(visible_records)
+            self._refresh_window_identities(visible_records, lifetime_revisions)
             selected = visible_records[: request.limit]
             descriptors = tuple(self._window_descriptor_for(record) for record in selected)
             truncated = (
@@ -835,11 +871,24 @@ class WindowsHostAutomationAdapter:
             if request.application_id is not None and application_id != request.application_id:
                 raise HostAutomationStaleIdentityError()
 
+            lifetime_revision = self._window_lifetime_revisions.get(request.window_id)
+            if lifetime_revision is None:
+                raise HostAutomationStaleIdentityError()
+
+            guard = self._window_lifetime_guard_for_operation()
             backend = self._effects_backend_for_operation()
+            # The concrete backend requires the private lifetime guard. The cast
+            # describes this private binding without relying on the monkeypatchable
+            # concrete constructor symbol as an isinstance() operand.
+            cast(
+                _WindowsLifetimeAwareEffectsBackend,
+                backend,
+            )._window_lifetime_guard = guard
             target = _WindowsFocusTarget(
                 hwnd=native_window.hwnd,
                 pid=native_window.pid,
                 creation_time=native_window.creation_time,
+                lifetime_revision=lifetime_revision,
             )
             try:
                 await _run_windows_effect(
@@ -1038,16 +1087,37 @@ class WindowsHostAutomationAdapter:
 
     async def close(self) -> None:
         async with self._lock:
-            if self._closed:
+            if not self._closed:
+                self._process_ids.clear()
+                self._native_processes.clear()
+                self._application_ids_by_native_process.clear()
+                self._last_process_records.clear()
+                self._last_window_process_records.clear()
+                self._window_ids.clear()
+                self._native_windows.clear()
+                self._window_lifetime_revisions.clear()
+                self._closed = True
+
+            guard = self._window_lifetime_guard
+            if guard is None:
                 return
-            self._process_ids.clear()
-            self._native_processes.clear()
-            self._application_ids_by_native_process.clear()
-            self._last_process_records.clear()
-            self._last_window_process_records.clear()
-            self._window_ids.clear()
-            self._native_windows.clear()
-            self._closed = True
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(guard.close),
+                    timeout=self._limits.operation_timeout.total_seconds(),
+                )
+            except TimeoutError as exception:
+                raise HostAutomationTimeoutError() from exception
+            except asyncio.CancelledError:
+                raise
+            except Exception as exception:
+                raise HostAutomationAdapterError() from exception
+
+            # Release the guard only after native hook/thread cleanup succeeds.
+            # If cleanup fails or times out, the adapter stays closed but retains
+            # the guard so a later close() can retry cleanup without reopening ops.
+            self._window_lifetime_guard = None
 
     def _refresh_process_identities(
         self,
@@ -1061,6 +1131,7 @@ class WindowsHostAutomationAdapter:
     def _refresh_window_identities(
         self,
         records: tuple[_NativeWindowRecord, ...],
+        lifetime_revisions: dict[int, int],
     ) -> None:
         self._last_window_process_records = {
             (record.pid, record.creation_time): _NativeProcessRecord(
@@ -1072,20 +1143,27 @@ class WindowsHostAutomationAdapter:
         }
         self._rebuild_process_identity_state()
 
-        active_keys = {(record.hwnd, record.pid, record.creation_time) for record in records}
+        active_keys = {
+            (record.hwnd, record.pid, record.creation_time, lifetime_revisions[record.hwnd])
+            for record in records
+        }
         self._window_ids = {
             key: window_id for key, window_id in self._window_ids.items() if key in active_keys
         }
 
         native_windows: dict[HostWindowId, _NativeWindowRecord] = {}
+        window_lifetime_revisions: dict[HostWindowId, int] = {}
         for record in records:
-            key = (record.hwnd, record.pid, record.creation_time)
+            revision = lifetime_revisions[record.hwnd]
+            key = (record.hwnd, record.pid, record.creation_time, revision)
             window_id = self._window_ids.get(key)
             if window_id is None:
                 window_id = HostWindowId()
                 self._window_ids[key] = window_id
             native_windows[window_id] = record
+            window_lifetime_revisions[window_id] = revision
         self._native_windows = native_windows
+        self._window_lifetime_revisions = window_lifetime_revisions
 
     def _rebuild_process_identity_state(self) -> None:
         active_records = dict(self._last_window_process_records)
@@ -1126,7 +1204,14 @@ class WindowsHostAutomationAdapter:
 
     def _window_descriptor_for(self, record: _NativeWindowRecord) -> HostWindowDescriptor:
         process_id = self._process_ids[(record.pid, record.creation_time)]
-        window_id = self._window_ids[(record.hwnd, record.pid, record.creation_time)]
+        matching_window_ids = [
+            window_id
+            for (hwnd, pid, creation_time, _revision), window_id in self._window_ids.items()
+            if (hwnd == record.hwnd and pid == record.pid and creation_time == record.creation_time)
+        ]
+        if len(matching_window_ids) != 1:
+            raise RuntimeError("window lifetime identity binding is inconsistent")
+        window_id = matching_window_ids[0]
         return HostWindowDescriptor(
             host_id=self._host_id,
             host_epoch=self._host_epoch,
@@ -1140,6 +1225,13 @@ class WindowsHostAutomationAdapter:
                 maximum_characters=self._limits.max_window_title_chars,
             ),
         )
+
+    def _window_lifetime_guard_for_operation(self) -> _WindowsWindowLifetimeGuard:
+        guard = self._window_lifetime_guard
+        if guard is None:
+            guard = _CtypesWindowsWindowLifetimeGuard()
+            self._window_lifetime_guard = guard
+        return guard
 
     def _effects_backend_for_operation(self) -> _WindowsEffectsBackend:
         backend = self._effects_backend

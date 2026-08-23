@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -28,6 +29,7 @@ from phoenix_os.agent.durable_contracts import (
     DurableRunStatus,
     DurableRunStore,
     DurableRunVersion,
+    RetentionPolicy,
 )
 from phoenix_os.agent.durable_lease import (
     DurableLeaseManager,
@@ -43,6 +45,11 @@ from phoenix_os.agent.state import AgentBudgetSnapshot
 
 NOW = datetime(2026, 7, 29, 16, tzinfo=UTC)
 WRITE_TIME = NOW + timedelta(seconds=10)
+REBIRTH_RETENTION_POLICY = RetentionPolicy(
+    payload_retention=timedelta(seconds=1),
+    metadata_retention=timedelta(seconds=2),
+    tombstone_retention=timedelta(seconds=3),
+)
 DURABLE_RUN_ID = DurableAgentRunId(UUID("10000000-0000-0000-0000-000000000001"))
 AGENT_RUN_ID = AgentRunId(UUID("20000000-0000-0000-0000-000000000002"))
 STEP_ID = AgentStepId(UUID("30000000-0000-0000-0000-000000000003"))
@@ -60,6 +67,50 @@ async def _lease(
         owner_id=owner_id,
         now=now,
     )
+
+
+class _FailingBirthFenceLeaseManager(InMemoryDurableLeaseManager):
+    @asynccontextmanager
+    async def guard_new_incarnation(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> AsyncIterator[Callable[[], None]]:
+        async with super().guard_new_incarnation(run_id):
+
+            def fail_birth_fence() -> None:
+                raise RuntimeError("injected birth fence failure")
+
+            yield fail_birth_fence
+
+
+class _BlockingPurgeLeaseManager(InMemoryDurableLeaseManager):
+    def __init__(self) -> None:
+        super().__init__()
+        self.purge_guard_entered = asyncio.Event()
+        self.allow_purge = asyncio.Event()
+        self.birth_started = asyncio.Event()
+
+    @asynccontextmanager
+    async def guard_current(
+        self,
+        lease: DurableLease,
+        *,
+        now: datetime,
+    ) -> AsyncIterator[DurableLease]:
+        async with super().guard_current(lease, now=now) as current:
+            if lease.owner_id == "purge-race":
+                self.purge_guard_entered.set()
+                await self.allow_purge.wait()
+            yield current
+
+    @asynccontextmanager
+    async def guard_new_incarnation(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> AsyncIterator[Callable[[], None]]:
+        self.birth_started.set()
+        async with super().guard_new_incarnation(run_id) as fence:
+            yield fence
 
 
 def _digest(character: str) -> CheckpointDigest:
@@ -188,9 +239,12 @@ async def test_create_rejects_duplicate_or_noninitial_checkpoint_without_mutatio
     store = InMemoryDurableRunStore()
     first = _checkpoint(1)
     await store.create(first)
+    lease = await _lease(store)
 
     with pytest.raises(AgentStateConflictError):
         await store.create(first)
+
+    assert await store.lease_manager.require_current(lease, now=NOW) == lease
 
     second = _next(first)
     other_store = InMemoryDurableRunStore()
@@ -205,11 +259,191 @@ async def test_create_rejects_unsealed_checkpoint_without_mutation() -> None:
     store = InMemoryDurableRunStore()
     sealed = _checkpoint(1)
     unsealed = replace(sealed, digest=_digest("9"))
+    prebirth = await _lease(store, owner_id="prebirth-worker")
 
     with pytest.raises(AgentCodecError, match="digest"):
         await store.create(unsealed)
 
     assert store.run_count == 0
+    assert await store.lease_manager.require_current(prebirth, now=NOW) == prebirth
+
+
+async def test_successful_create_fences_preexisting_lease_authority() -> None:
+    store = InMemoryDurableRunStore()
+    prebirth = await _lease(store, owner_id="prebirth-worker")
+    first = _checkpoint(1)
+
+    await store.create(first)
+
+    with pytest.raises(AgentStateConflictError):
+        await store.lease_manager.require_current(prebirth, now=NOW)
+
+    fresh = await _lease(store, owner_id="newborn-worker", now=NOW)
+    assert fresh.generation.value == prebirth.generation.value + 1
+    assert await store.get_current(DURABLE_RUN_ID) == first
+
+
+async def test_failed_birth_fence_does_not_publish_new_incarnation() -> None:
+    lease_manager = _FailingBirthFenceLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    prebirth = await _lease(
+        store,
+        owner_id="prebirth-worker",
+        now=NOW,
+    )
+    first = _checkpoint(1)
+
+    with pytest.raises(RuntimeError, match="injected birth fence failure"):
+        await store.create(first)
+
+    assert await store.get_current(DURABLE_RUN_ID) is None
+    assert await lease_manager.require_current(prebirth, now=NOW) == prebirth
+
+
+async def test_purge_recreate_fences_old_incarnation_without_empty_observation() -> None:
+    store = InMemoryDurableRunStore()
+    terminal = _checkpoint(
+        1,
+        status=DurableRunStatus.COMPLETED,
+        next_operation=CheckpointNextOperation.NONE,
+    )
+    await store.create(terminal)
+
+    tombstone_due = terminal.created_at + REBIRTH_RETENTION_POLICY.metadata_retention
+    cleanup_lease = await _lease(
+        store,
+        owner_id="cleanup-worker",
+        now=tombstone_due,
+    )
+    tombstone = await store.tombstone_terminal_run(
+        DURABLE_RUN_ID,
+        policy=REBIRTH_RETENTION_POLICY,
+        lease=cleanup_lease,
+        now=tombstone_due,
+    )
+    await store.lease_manager.release(cleanup_lease, now=tombstone_due)
+
+    purge_lease = await _lease(
+        store,
+        owner_id="purge-worker",
+        now=tombstone.retain_until,
+    )
+    newborn = _checkpoint(
+        1,
+        checkpoint_id=_checkpoint_id(1, variant=9),
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await store.create(newborn)
+    assert (
+        await store.lease_manager.require_current(
+            purge_lease,
+            now=tombstone.retain_until,
+        )
+        == purge_lease
+    )
+
+    assert (
+        await store.purge_expired_tombstone(
+            DURABLE_RUN_ID,
+            lease=purge_lease,
+            now=tombstone.retain_until,
+        )
+        is True
+    )
+
+    await store.create(newborn)
+
+    candidate = _next(
+        newborn,
+        checkpoint_id=_checkpoint_id(2, variant=9),
+    )
+    with pytest.raises(AgentStateConflictError):
+        await store.append(
+            candidate,
+            expected_version=newborn.run_version,
+            lease=purge_lease,
+            now=tombstone.retain_until,
+        )
+
+    fresh = await _lease(
+        store,
+        owner_id="newborn-worker",
+        now=tombstone.retain_until,
+    )
+    assert fresh.generation.value == purge_lease.generation.value + 1
+    assert (
+        await store.append(
+            candidate,
+            expected_version=newborn.run_version,
+            lease=fresh,
+            now=tombstone.retain_until,
+        )
+        == candidate
+    )
+
+
+async def test_concurrent_purge_then_rebirth_fences_old_lease() -> None:
+    lease_manager = _BlockingPurgeLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    terminal = _checkpoint(
+        1,
+        status=DurableRunStatus.COMPLETED,
+        next_operation=CheckpointNextOperation.NONE,
+    )
+    await store.create(terminal)
+
+    tombstone_due = terminal.created_at + REBIRTH_RETENTION_POLICY.metadata_retention
+    cleanup_lease = await _lease(
+        store,
+        owner_id="cleanup-worker",
+        now=tombstone_due,
+    )
+    tombstone = await store.tombstone_terminal_run(
+        DURABLE_RUN_ID,
+        policy=REBIRTH_RETENTION_POLICY,
+        lease=cleanup_lease,
+        now=tombstone_due,
+    )
+    await lease_manager.release(cleanup_lease, now=tombstone_due)
+
+    purge_lease = await _lease(
+        store,
+        owner_id="purge-race",
+        now=tombstone.retain_until,
+    )
+    newborn = _checkpoint(
+        1,
+        checkpoint_id=_checkpoint_id(1, variant=17),
+    )
+
+    purge_task = asyncio.create_task(
+        store.purge_expired_tombstone(
+            DURABLE_RUN_ID,
+            lease=purge_lease,
+            now=tombstone.retain_until,
+        )
+    )
+    await asyncio.wait_for(lease_manager.purge_guard_entered.wait(), timeout=5)
+
+    birth_task = asyncio.create_task(store.create(newborn))
+    await asyncio.wait_for(lease_manager.birth_started.wait(), timeout=5)
+    assert not birth_task.done()
+
+    lease_manager.allow_purge.set()
+    purged, created = await asyncio.wait_for(
+        asyncio.gather(purge_task, birth_task),
+        timeout=5,
+    )
+
+    assert purged is True
+    assert created is None
+    assert await store.get_current(DURABLE_RUN_ID) == newborn
+    with pytest.raises(AgentStateConflictError):
+        await lease_manager.require_current(
+            purge_lease,
+            now=tombstone.retain_until,
+        )
 
 
 @pytest.mark.parametrize(

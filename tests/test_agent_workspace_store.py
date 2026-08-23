@@ -95,10 +95,12 @@ def _read(
     artifact_id: ArtifactId | None = None,
     *,
     scope: WorkspaceScope | None = None,
+    expected_version: ArtifactVersion | None = None,
 ) -> ArtifactReadRequest:
     return ArtifactReadRequest(
         scope=_scope() if scope is None else scope,
         artifact_id=_artifact_id() if artifact_id is None else artifact_id,
+        expected_version=expected_version,
         created_at=_NOW,
     )
 
@@ -295,9 +297,45 @@ async def test_create_read_list_update_and_delete() -> None:
         )
     )
     assert await store.read(_read(created.artifact_id)) is None
+    with pytest.raises(AgentStateConflictError):
+        await store.read(
+            _read(
+                created.artifact_id,
+                expected_version=updated.version,
+            )
+        )
     assert (
         await store.list(ArtifactListRequest(scope=created.scope, created_at=clock()))
     ).artifacts == ()
+
+
+@pytest.mark.asyncio
+async def test_exact_version_read_rejects_stale_or_missing_artifact() -> None:
+    store = InMemoryWorkspaceStore(clock=FakeClock())
+    created = await store.write(_write(b"version-bound"))
+
+    loaded = await store.read(
+        _read(
+            created.artifact_id,
+            expected_version=created.version,
+        )
+    )
+    assert loaded is not None and loaded.record == created
+
+    with pytest.raises(AgentStateConflictError):
+        await store.read(
+            _read(
+                created.artifact_id,
+                expected_version=created.version.next(),
+            )
+        )
+    with pytest.raises(AgentStateConflictError):
+        await store.read(
+            _read(
+                _artifact_id(2),
+                expected_version=ArtifactVersion(),
+            )
+        )
 
 
 @pytest.mark.asyncio

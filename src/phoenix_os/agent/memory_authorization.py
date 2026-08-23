@@ -186,6 +186,16 @@ class PolicyEngineMemoryAuthorizer:
             attributes={
                 **_scope_attributes(request.scope),
                 "memory_id": str(request.memory_id),
+                "expected_version": (
+                    str(request.expected_version.value)
+                    if request.expected_version is not None
+                    else "absent"
+                ),
+                "expected_incarnation": (
+                    str(request.expected_incarnation)
+                    if request.expected_incarnation is not None
+                    else "absent"
+                ),
             },
             created_at=request.created_at,
         )
@@ -214,6 +224,11 @@ class PolicyEngineMemoryAuthorizer:
                     if request.expected_version is not None
                     else "absent"
                 ),
+                "expected_incarnation": (
+                    str(request.expected_incarnation)
+                    if request.expected_incarnation is not None
+                    else "absent"
+                ),
                 "origin": request.provenance.origin.value,
             },
             created_at=request.created_at,
@@ -236,6 +251,7 @@ class PolicyEngineMemoryAuthorizer:
                 **_scope_attributes(request.scope),
                 "memory_id": str(request.memory_id),
                 "expected_version": str(request.expected_version.value),
+                "expected_incarnation": str(request.expected_incarnation),
             },
             created_at=request.created_at,
         )

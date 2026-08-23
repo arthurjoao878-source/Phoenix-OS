@@ -309,16 +309,18 @@ def test_durable_lease_is_time_bounded_and_generation_fenced() -> None:
     assert not lease.active_at(lease.expires_at)
 
 
-def test_resume_request_carries_expected_version_but_no_authority() -> None:
+def test_resume_request_carries_freshness_identity_but_no_authority() -> None:
     request = ResumeRequest(
         run_id=DURABLE_RUN_ID,
         actor_id="operator-1",
         reason=ResumeReason.OPERATOR_REQUEST,
         expected_version=DurableRunVersion(4),
+        generation=FencingGeneration(7),
         requested_at=NOW,
     )
 
     assert request.expected_version == DurableRunVersion(4)
+    assert request.generation == FencingGeneration(7)
     assert request.reason is ResumeReason.OPERATOR_REQUEST
 
 

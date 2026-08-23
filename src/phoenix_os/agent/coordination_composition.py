@@ -23,6 +23,7 @@ from phoenix_os.agent.coordination_runtime import (
     DelegatedAgentService,
 )
 from phoenix_os.audit import AuditLedger
+from phoenix_os.authority import CurrentSessionFreshnessValidator, SessionFreshnessSource
 from phoenix_os.events import EventBus
 from phoenix_os.observability import ObservabilityHub
 from phoenix_os.policy import PolicyEngine
@@ -49,6 +50,7 @@ def create_agent_coordination_runtime_stack(
     descriptors: Iterable[DelegableAgentDescriptor],
     child_services: Mapping[AgentId, DelegatedAgentService],
     policy: PolicyEngine,
+    session_freshness_source: SessionFreshnessSource | None = None,
     events: EventBus | None = None,
     audit: AuditLedger | None = None,
     observability: ObservabilityHub | None = None,
@@ -59,6 +61,11 @@ def create_agent_coordination_runtime_stack(
         raise TypeError("configuration must be AgentCoordinationConfiguration")
     if not isinstance(policy, PolicyEngine):
         raise TypeError("policy must be PolicyEngine")
+    if session_freshness_source is not None and not isinstance(
+        session_freshness_source,
+        SessionFreshnessSource,
+    ):
+        raise TypeError("session_freshness_source must implement SessionFreshnessSource")
     resolved_events = EventBus() if events is None else events
     if not isinstance(resolved_events, EventBus):
         raise TypeError("events must be EventBus")
@@ -100,6 +107,11 @@ def create_agent_coordination_runtime_stack(
             PolicyEngineDelegationAuthorizer(policy),
             limits=configuration.limits,
             root_budget_limit=configuration.root_budget_limit,
+            authority_freshness=(
+                None
+                if session_freshness_source is None
+                else CurrentSessionFreshnessValidator(session_freshness_source)
+            ),
         )
         observer = ContentFreeAgentCoordinationObserver(
             events=resolved_events,

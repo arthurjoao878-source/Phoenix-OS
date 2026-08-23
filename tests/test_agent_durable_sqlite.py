@@ -252,12 +252,67 @@ async def test_create_is_atomic_and_duplicate_run_fails_closed(tmp_path: Path) -
     store = SQLiteDurableRunStore(_path(tmp_path))
     first = _checkpoint(1)
     await store.create(first)
+    lease = await _lease(store)
 
     with pytest.raises(AgentStateConflictError):
         await store.create(first)
 
+    assert await store.lease_manager.require_current(lease, now=NOW) == lease
     assert await store.get_current(DURABLE_RUN_ID) == first
     assert await store.list_history(DURABLE_RUN_ID, limit=2) == (first,)
+
+
+async def test_sqlite_successful_create_fences_preexisting_lease_authority(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteDurableRunStore(_path(tmp_path))
+    prebirth = await _lease(
+        store,
+        owner_id="prebirth-worker",
+        now=NOW,
+    )
+    first = _checkpoint(1)
+
+    await store.create(first)
+
+    with pytest.raises(AgentStateConflictError):
+        await store.lease_manager.require_current(prebirth, now=NOW)
+
+    fresh = await _lease(
+        store,
+        owner_id="newborn-worker",
+        now=NOW,
+    )
+    assert fresh.generation.value == prebirth.generation.value + 1
+    assert await store.get_current(DURABLE_RUN_ID) == first
+
+
+async def test_sqlite_failed_birth_fence_rolls_back_run_and_preserves_lease(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    store = SQLiteDurableRunStore(path)
+    prebirth = await _lease(
+        store,
+        owner_id="prebirth-worker",
+        now=NOW,
+    )
+    first = _checkpoint(1)
+
+    connection = _connect(path)
+    connection.execute(
+        "CREATE TRIGGER fail_birth_fence "
+        "BEFORE UPDATE OF active ON durable_leases "
+        f"WHEN NEW.run_id = '{DURABLE_RUN_ID}' AND NEW.active = 0 "
+        "BEGIN SELECT RAISE(ABORT, 'injected birth fence failure'); END"
+    )
+    connection.close()
+
+    with pytest.raises(AgentStateConflictError):
+        await store.create(first)
+
+    assert await store.get_current(DURABLE_RUN_ID) is None
+    assert await store.lease_manager.require_current(prebirth, now=NOW) == prebirth
 
 
 async def test_unknown_run_reads_are_empty(tmp_path: Path) -> None:
@@ -1092,6 +1147,16 @@ async def test_sqlite_tombstone_purge_boundary_is_idempotent_and_releases_id(
     )
 
     with pytest.raises(AgentStateConflictError):
+        await store.create(first)
+    assert (
+        await store.lease_manager.require_current(
+            purge_lease,
+            now=(tombstone.retain_until - timedelta(seconds=1)),
+        )
+        == purge_lease
+    )
+
+    with pytest.raises(AgentStateConflictError):
         await store.purge_expired_tombstone(
             DURABLE_RUN_ID,
             lease=purge_lease,
@@ -1121,6 +1186,36 @@ async def test_sqlite_tombstone_purge_boundary_is_idempotent_and_releases_id(
     await store.create(first)
 
     assert await store.get_current(DURABLE_RUN_ID) == first
+    with pytest.raises(AgentStateConflictError):
+        await store.lease_manager.require_current(
+            purge_lease,
+            now=tombstone.retain_until,
+        )
+
+    second = _next(first)
+    with pytest.raises(AgentStateConflictError):
+        await store.append(
+            second,
+            expected_version=first.run_version,
+            lease=purge_lease,
+            now=tombstone.retain_until,
+        )
+
+    reborn_lease = await _lease(
+        store,
+        owner_id="reborn-worker",
+        now=tombstone.retain_until,
+    )
+    assert reborn_lease.generation.value == purge_lease.generation.value + 1
+    assert (
+        await store.append(
+            second,
+            expected_version=first.run_version,
+            lease=reborn_lease,
+            now=tombstone.retain_until,
+        )
+        == second
+    )
 
 
 async def test_sqlite_stale_cleanup_lease_cannot_tombstone_terminal_run(

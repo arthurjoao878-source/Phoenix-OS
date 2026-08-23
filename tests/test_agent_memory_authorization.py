@@ -18,6 +18,7 @@ from phoenix_os.agent import (
     MemoryOriginKind,
     MemoryProvenance,
     MemoryReadRequest,
+    MemoryRecordIncarnation,
     MemoryRecordVersion,
     MemoryScope,
     MemorySearchRequest,
@@ -42,6 +43,7 @@ from phoenix_os.policy import (
 _NOW = datetime(2026, 8, 11, 23, 30, tzinfo=UTC)
 _NAMESPACE = MemoryNamespace("default")
 _MEMORY_ID = MemoryId(UUID("30000000-0000-0000-0000-000000000030"))
+_INCARNATION = MemoryRecordIncarnation(UUID("60000000-0000-4000-8000-000000000030"))
 
 
 def _context(
@@ -242,11 +244,18 @@ async def test_write_authorization_binds_record_digest_without_exposing_content(
 @pytest.mark.asyncio
 async def test_direct_read_and_delete_require_exact_record_authority() -> None:
     scope = _agent_scope()
-    read = MemoryReadRequest(scope=scope, memory_id=_MEMORY_ID, created_at=_NOW)
+    read = MemoryReadRequest(
+        scope=scope,
+        memory_id=_MEMORY_ID,
+        expected_version=MemoryRecordVersion(3),
+        expected_incarnation=_INCARNATION,
+        created_at=_NOW,
+    )
     delete = MemoryDeleteRequest(
         scope=scope,
         memory_id=_MEMORY_ID,
         expected_version=MemoryRecordVersion(3),
+        expected_incarnation=_INCARNATION,
         created_at=_NOW,
     )
     resource = memory_record_resource(scope, _MEMORY_ID)
@@ -259,6 +268,10 @@ async def test_direct_read_and_delete_require_exact_record_authority() -> None:
                 resources=frozenset({resource}),
                 principals=frozenset({"service:memory-owner"}),
                 authenticated=True,
+                attribute_equals={
+                    "expected_version": "3",
+                    "expected_incarnation": str(_INCARNATION),
+                },
             ),
         )
     )
@@ -271,7 +284,10 @@ async def test_direct_read_and_delete_require_exact_record_authority() -> None:
                 resources=frozenset({resource}),
                 principals=frozenset({"service:memory-owner"}),
                 authenticated=True,
-                attribute_equals={"expected_version": "3"},
+                attribute_equals={
+                    "expected_version": "3",
+                    "expected_incarnation": str(_INCARNATION),
+                },
             ),
         )
     )
@@ -286,6 +302,19 @@ async def test_direct_read_and_delete_require_exact_record_authority() -> None:
     )
     with pytest.raises(AgentAuthorizationRejectedError):
         await PolicyEngineMemoryAuthorizer(read_policy).authorize_read(other, _context())
+
+    wrong_incarnation = MemoryReadRequest(
+        scope=scope,
+        memory_id=_MEMORY_ID,
+        expected_version=MemoryRecordVersion(3),
+        expected_incarnation=MemoryRecordIncarnation(UUID("70000000-0000-4000-8000-000000000030")),
+        created_at=_NOW,
+    )
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await PolicyEngineMemoryAuthorizer(read_policy).authorize_read(
+            wrong_incarnation,
+            _context(),
+        )
 
 
 @pytest.mark.asyncio

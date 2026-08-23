@@ -38,3 +38,6 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 python scripts/check_host_automation_release.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+python scripts/check_authority_release.py
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -200,6 +200,20 @@ class MemoryId:
 
 
 @dataclass(frozen=True, slots=True, order=True)
+class MemoryRecordIncarnation:
+    """Opaque Phoenix-owned identity for one memory-record incarnation."""
+
+    value: UUID = field(default_factory=uuid4)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, UUID):
+            raise TypeError("memory record incarnation must be UUID")
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+
+@dataclass(frozen=True, slots=True, order=True)
 class MemoryRecordVersion:
     """Positive optimistic-concurrency version for one logical memory record."""
 
@@ -213,6 +227,28 @@ class MemoryRecordVersion:
 
     def next(self) -> MemoryRecordVersion:
         return MemoryRecordVersion(self.value + 1)
+
+
+def _validate_expected_record_binding(
+    expected_version: MemoryRecordVersion | None,
+    expected_incarnation: MemoryRecordIncarnation | None,
+    *,
+    required: bool = False,
+) -> None:
+    if required:
+        if not isinstance(expected_version, MemoryRecordVersion):
+            raise TypeError("expected_version must be MemoryRecordVersion")
+        if not isinstance(expected_incarnation, MemoryRecordIncarnation):
+            raise TypeError("expected_incarnation must be MemoryRecordIncarnation")
+        return
+    if expected_version is not None and not isinstance(expected_version, MemoryRecordVersion):
+        raise TypeError("expected_version must be MemoryRecordVersion")
+    if expected_incarnation is not None and not isinstance(
+        expected_incarnation, MemoryRecordIncarnation
+    ):
+        raise TypeError("expected_incarnation must be MemoryRecordIncarnation")
+    if (expected_version is None) != (expected_incarnation is None):
+        raise ValueError("expected_version and expected_incarnation must be provided together")
 
 
 class MemoryScopeKind(StrEnum):
@@ -376,6 +412,7 @@ class MemoryRecord:
 
     scope: MemoryScope
     memory_id: MemoryId
+    incarnation: MemoryRecordIncarnation
     version: MemoryRecordVersion
     status: MemoryRecordStatus
     content_digest: str
@@ -392,6 +429,8 @@ class MemoryRecord:
             raise TypeError("scope must be MemoryScope")
         if not isinstance(self.memory_id, MemoryId):
             raise TypeError("memory_id must be MemoryId")
+        if not isinstance(self.incarnation, MemoryRecordIncarnation):
+            raise TypeError("incarnation must be MemoryRecordIncarnation")
         if not isinstance(self.version, MemoryRecordVersion):
             raise TypeError("version must be MemoryRecordVersion")
         if not isinstance(self.status, MemoryRecordStatus):
@@ -472,6 +511,7 @@ class MemoryWriteRequest:
     memory_id: MemoryId = field(default_factory=MemoryId)
     metadata: Mapping[str, str] = field(default_factory=dict)
     expected_version: MemoryRecordVersion | None = None
+    expected_incarnation: MemoryRecordIncarnation | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -489,10 +529,10 @@ class MemoryWriteRequest:
             raise TypeError("provenance must be MemoryProvenance")
         if self.provenance.content_digest != memory_content_digest(content):
             raise ValueError("provenance content digest does not match memory content")
-        if self.expected_version is not None and not isinstance(
-            self.expected_version, MemoryRecordVersion
-        ):
-            raise TypeError("expected_version must be MemoryRecordVersion")
+        _validate_expected_record_binding(
+            self.expected_version,
+            self.expected_incarnation,
+        )
         _aware(self.created_at, label="created_at")
         object.__setattr__(
             self,
@@ -507,10 +547,12 @@ class MemoryWriteRequest:
 
 @dataclass(frozen=True, slots=True)
 class MemoryReadRequest:
-    """One exact direct memory-record read request."""
+    """One direct memory-record read, optionally bound to an exact logical version."""
 
     scope: MemoryScope
     memory_id: MemoryId
+    expected_version: MemoryRecordVersion | None = None
+    expected_incarnation: MemoryRecordIncarnation | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -518,6 +560,10 @@ class MemoryReadRequest:
             raise TypeError("scope must be MemoryScope")
         if not isinstance(self.memory_id, MemoryId):
             raise TypeError("memory_id must be MemoryId")
+        _validate_expected_record_binding(
+            self.expected_version,
+            self.expected_incarnation,
+        )
         _aware(self.created_at, label="created_at")
 
 
@@ -559,6 +605,7 @@ class MemoryRetrievalCandidate:
 
     scope: MemoryScope
     memory_id: MemoryId
+    incarnation: MemoryRecordIncarnation
     version: MemoryRecordVersion
     content_digest: str
     score: float
@@ -568,6 +615,8 @@ class MemoryRetrievalCandidate:
             raise TypeError("scope must be MemoryScope")
         if not isinstance(self.memory_id, MemoryId):
             raise TypeError("memory_id must be MemoryId")
+        if not isinstance(self.incarnation, MemoryRecordIncarnation):
+            raise TypeError("incarnation must be MemoryRecordIncarnation")
         if not isinstance(self.version, MemoryRecordVersion):
             raise TypeError("version must be MemoryRecordVersion")
         if not isinstance(self.content_digest, str):
@@ -598,6 +647,10 @@ class MemorySearchHit:
     @property
     def memory_id(self) -> MemoryId:
         return self.record.memory_id
+
+    @property
+    def incarnation(self) -> MemoryRecordIncarnation:
+        return self.record.incarnation
 
     @property
     def version(self) -> MemoryRecordVersion:
@@ -705,6 +758,7 @@ class MemoryDeleteRequest:
     scope: MemoryScope
     memory_id: MemoryId
     expected_version: MemoryRecordVersion
+    expected_incarnation: MemoryRecordIncarnation
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
@@ -712,6 +766,9 @@ class MemoryDeleteRequest:
             raise TypeError("scope must be MemoryScope")
         if not isinstance(self.memory_id, MemoryId):
             raise TypeError("memory_id must be MemoryId")
-        if not isinstance(self.expected_version, MemoryRecordVersion):
-            raise TypeError("expected_version must be MemoryRecordVersion")
+        _validate_expected_record_binding(
+            self.expected_version,
+            self.expected_incarnation,
+            required=True,
+        )
         _aware(self.created_at, label="created_at")

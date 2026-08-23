@@ -1,9 +1,12 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 
 from phoenix_os.agent import (
+    AGENT_DELEGATE_ACTION,
+    AgentAuthorizationRejectedError,
     AgentDelegationCoordinator,
     AgentDelegationRegistry,
     AgentId,
@@ -24,9 +27,17 @@ from phoenix_os.agent import (
     DelegationNotFoundError,
     DelegationRequest,
     DelegationStatus,
+    PolicyEngineDelegationAuthorizer,
+    agent_delegation_resource,
 )
 from phoenix_os.inference import ModelId, ModelProviderId
-from phoenix_os.policy import PrincipalType, SecurityContext
+from phoenix_os.policy import (
+    PolicyEffect,
+    PolicyEngine,
+    PolicyRule,
+    PrincipalType,
+    SecurityContext,
+)
 
 _NOW = datetime(2026, 8, 10, 18, tzinfo=UTC)
 
@@ -44,6 +55,14 @@ class _RecordingAuthorizer:
         assert descriptor.agent_id == request.child_agent_id
         assert context.authenticated
         self.calls.append(request.delegation_id)
+
+
+class _RecordingFreshnessValidator:
+    def __init__(self) -> None:
+        self.contexts: list[SecurityContext] = []
+
+    async def validate(self, context: SecurityContext) -> None:
+        self.contexts.append(context)
 
 
 def _context() -> SecurityContext:
@@ -175,16 +194,18 @@ def _request(
 
 def _coordinator(
     registry: AgentDelegationRegistry,
-    authorizer: _RecordingAuthorizer,
+    authorizer: object,
     *,
     limits: DelegationLimits,
     root_children: int = 4,
+    authority_freshness: _RecordingFreshnessValidator | None = None,
 ) -> AgentDelegationCoordinator:
     return AgentDelegationCoordinator(
         registry,
-        authorizer,
+        authorizer,  # type: ignore[arg-type]
         limits=limits,
         root_budget_limit=_root_budget(children=root_children),
+        authority_freshness=authority_freshness,
         clock=lambda: _NOW,
     )
 
@@ -388,3 +409,128 @@ async def test_unknown_delegation_lookup_is_safe() -> None:
 
     with pytest.raises(DelegationNotFoundError):
         await coordinator.get(DelegationId())
+
+
+@pytest.mark.asyncio
+async def test_session_backed_delegation_without_freshness_validator_fails_closed() -> None:
+    limits = _limits()
+    authorizer = _RecordingAuthorizer()
+    coordinator = _coordinator(_registry("researcher"), authorizer, limits=limits)
+    context = SecurityContext(
+        principal="service:parent",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+        session_id=UUID("72000000-0000-4000-8000-000000000033"),
+    )
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await coordinator.delegate(_request("researcher", limits=limits), context)
+
+    assert authorizer.calls == []
+    snapshot = await coordinator.snapshot()
+    assert snapshot.delegations == 0
+    assert snapshot.active == 0
+    assert snapshot.queued == 0
+
+
+@pytest.mark.asyncio
+async def test_queued_delegation_revalidates_subject_and_policy_after_wait() -> None:
+    limits = _limits(concurrent=1, queue=1)
+    authorizer = _RecordingAuthorizer()
+    freshness = _RecordingFreshnessValidator()
+    coordinator = _coordinator(
+        _registry("first", "second"),
+        authorizer,
+        limits=limits,
+        authority_freshness=freshness,
+    )
+    root = AgentRunId()
+    first = _request("first", limits=limits, root_run=root, parent_run=root)
+    second = _request("second", limits=limits, root_run=root, parent_run=root)
+    first_context = _context()
+    second_context = _context()
+
+    await coordinator.delegate(first, first_context)
+    pending = asyncio.create_task(coordinator.delegate(second, second_context))
+
+    for _ in range(32):
+        if (await coordinator.snapshot()).queued == 1:
+            break
+        await asyncio.sleep(0)
+    assert (await coordinator.snapshot()).queued == 1
+
+    await coordinator.start(first.delegation_id, now=_NOW)
+    await coordinator.complete(first.delegation_id, now=_NOW)
+    admitted = await asyncio.wait_for(pending, timeout=1)
+
+    assert admitted.status is DelegationStatus.ADMITTED
+    assert authorizer.calls == [
+        first.delegation_id,
+        second.delegation_id,
+        second.delegation_id,
+    ]
+    assert freshness.contexts == [first_context, second_context, second_context]
+    assert freshness.contexts[0] is first_context
+    assert freshness.contexts[1] is second_context
+    assert freshness.contexts[2] is second_context
+
+
+@pytest.mark.asyncio
+async def test_queued_delegation_policy_revocation_blocks_fresh_admission() -> None:
+    limits = _limits(concurrent=1, queue=1)
+    policy = PolicyEngine()
+    rule = PolicyRule(
+        rule_id="allow-queued-delegation",
+        effect=PolicyEffect.ALLOW,
+        actions=frozenset({AGENT_DELEGATE_ACTION}),
+        resources=frozenset(
+            {
+                agent_delegation_resource(
+                    namespace=CoordinationNamespace("default"),
+                    parent_agent_id=AgentId("parent"),
+                    child_agent_id=AgentId("first"),
+                ),
+                agent_delegation_resource(
+                    namespace=CoordinationNamespace("default"),
+                    parent_agent_id=AgentId("parent"),
+                    child_agent_id=AgentId("second"),
+                ),
+            }
+        ),
+        principals=frozenset({"service:parent"}),
+        authenticated=True,
+    )
+    registration = await policy.register(rule)
+    coordinator = _coordinator(
+        _registry("first", "second"),
+        PolicyEngineDelegationAuthorizer(policy),
+        limits=limits,
+    )
+    root = AgentRunId()
+    first = _request("first", limits=limits, root_run=root, parent_run=root)
+    second = _request("second", limits=limits, root_run=root, parent_run=root)
+    context = _context()
+
+    await coordinator.delegate(first, context)
+    pending = asyncio.create_task(coordinator.delegate(second, context))
+
+    for _ in range(32):
+        if (await coordinator.snapshot()).queued == 1:
+            break
+        await asyncio.sleep(0)
+    assert (await coordinator.snapshot()).queued == 1
+
+    assert await policy.unregister(registration)
+    await coordinator.start(first.delegation_id, now=_NOW)
+    await coordinator.complete(first.delegation_id, now=_NOW)
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await asyncio.wait_for(pending, timeout=1)
+
+    snapshot = await coordinator.snapshot()
+    assert snapshot.active == 0
+    assert snapshot.queued == 0
+    assert snapshot.failed == 1
+
+    policy_snapshot = await policy.snapshot()
+    assert (policy_snapshot.allowed, policy_snapshot.denied) == (2, 1)

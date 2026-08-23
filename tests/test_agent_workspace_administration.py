@@ -106,23 +106,17 @@ class _Authorizer:
 
     async def authorize_import(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: object,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None:
-        del scope, artifact_id, context, created_at
+        del request, context
 
     async def authorize_export(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: object,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None:
-        del scope, artifact_id, context, created_at
+        del request, context
 
     async def authorize_admin(
         self,

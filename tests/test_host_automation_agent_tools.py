@@ -8,6 +8,7 @@ import pytest
 
 from phoenix_os.agent import (
     AgentAuthorizationRejectedError,
+    AgentId,
     AgentJsonInput,
     AgentRunId,
     AgentSchemaError,
@@ -169,6 +170,7 @@ def _invocation(
     resource: str,
 ) -> ToolInvocationRequest:
     return ToolInvocationRequest(
+        agent_id=AgentId("assistant"),
         run_id=AgentRunId(),
         step_id=AgentStepId(),
         call_id=ToolCallId(),

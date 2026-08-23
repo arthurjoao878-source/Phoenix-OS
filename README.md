@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.32.0` implements thirty-two accepted specifications:
+Version `0.33.0` implements thirty-three accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -93,6 +93,10 @@ Version `0.32.0` implements thirty-two accepted specifications:
   OS-neutral host contracts with a reviewed Windows adapter, fresh exact `host.*`
   authority, server-owned application profiles, opaque process/window identities,
   stale-safe focus/close, text-only clipboard boundaries, and Runtime-owned lifecycle.
+- **RFC-0033 - Effective Authority and Capability Non-Amplification:** closed-world
+  canonical protected-operation inventory, structural principal/session/agent/run
+  binding, current-authority freshness, exact intent/resource binding, composition
+  non-amplification, and separately authorized redacted point-in-time diagnostics.
 
 The core intentionally contains no AI model, remote database driver, external vector database,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -301,6 +305,27 @@ Gate 7 now sets the package metadata to `0.32.0` and adds
 in the package boundary, and keeps real Windows effects manual. Final RFC acceptance,
 tag, artifacts, and checksums remain the publication gate.
 
+## Effective-authority release gate
+
+RFC-0033 adds a named gate for structural subject binding, current authority
+freshness, exact intent/resource binding, capability non-amplification,
+confused-deputy resistance, closed-world operation inventory, redacted
+inspect/explain diagnostics, control-plane integration, and packaging:
+
+```bash
+python scripts/check_authority_release.py
+```
+
+The gate reruns every `test_authority*.py` regression plus the RFC-0033 and
+v0.33.0 release specifications; validates the exact reviewed authority package
+and control-plane integration; inspects wheel and sdist metadata and paths;
+rebuilds a wheel from the validated sdist; and installs both wheel forms with
+`--no-deps --no-index` in isolated environments.
+
+The packaged smoke uses only deterministic authority contracts and the
+closed-world catalog. It performs no network request, policy mutation, durable
+mutation, host effect, or reuse of diagnostic output as authority.
+
 ## Windows host-automation dogfood
 
 Gate 5 is manual and Windows-only because it exercises the interactive desktop through
@@ -332,6 +357,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 
 ## Release notes
 
+- [Phoenix OS 0.33.0](docs/releases/v0.33.0.md)
 - [Phoenix OS 0.32.0](docs/releases/v0.32.0.md)
 - [Phoenix OS 0.31.0](docs/releases/v0.31.0.md)
 - [Phoenix OS 0.30.0](docs/releases/v0.30.0.md)
@@ -342,7 +368,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
+The release notes summarize effective-authority, host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
 security boundaries, compatibility, migration, architecture decisions,
 validation, and package artifacts.
 
@@ -434,6 +460,19 @@ Existing v0.31.0 behavior remains unchanged when host automation is omitted. The
 [RFC-0032 host-automation threat-model and security-invariant review](docs/security/RFC-0032-host-automation-threat-model-review.md)
 records all fifty-six invariants, release-candidate evidence, and residual risks.
 
+Phoenix OS 0.33.0 adds effective-authority non-amplification across the existing
+protected-operation boundaries. The migration preserves existing subsystem
+authorizers while requiring structural subject identity, fresh current authority
+after untrusted waits, exact approval/intent/resource binding, and closed-world
+catalog review:
+
+- [Migrate v0.32.0 deployments to v0.33.0 effective authority](docs/migrations/v0.32.0-to-v0.33.0-effective-authority.md)
+
+Authority inspection remains optional, separately authorized, redacted, and
+non-authoritative. The
+[RFC-0033 effective-authority threat-model and security-invariant review](docs/security/RFC-0033-effective-authority-threat-model-review.md)
+records release-candidate evidence and residual risks.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -479,6 +518,14 @@ authority, server-owned configured application profiles, opaque Phoenix process/
 identities, and immediate UI TOCTOU revalidation. The
 [RFC-0032 host-automation threat-model and security-invariant review](docs/security/RFC-0032-host-automation-threat-model-review.md)
 records all fifty-six host-automation invariants and release-candidate evidence.
+
+RFC-0033 adds no new general-purpose policy engine or transferable grant. It
+records the closed-world canonical authority catalog, structural
+principal/session/agent/run binding, current-authority freshness, and
+non-authoritative inspect/explain surface. The
+[RFC-0033 effective-authority threat-model and security-invariant review](docs/security/RFC-0033-effective-authority-threat-model-review.md)
+records the composition, confused-deputy, replay, freshness, and diagnostic
+release evidence.
 
 ## Local dashboard example
 

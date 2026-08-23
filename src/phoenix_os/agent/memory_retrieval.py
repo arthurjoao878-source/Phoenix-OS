@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
@@ -13,7 +14,11 @@ from phoenix_os.agent.contracts import (
     AgentMessageRole,
     AgentRunRequest,
 )
-from phoenix_os.agent.errors import AgentCodecError, AgentLimitExceededError
+from phoenix_os.agent.errors import (
+    AgentCodecError,
+    AgentLimitExceededError,
+    AgentStateConflictError,
+)
 from phoenix_os.agent.memory_authorization import (
     MemoryAuthorizer,
     agent_memory_scope,
@@ -118,6 +123,7 @@ class DeterministicLexicalMemoryRetrievalAdapter:
                 MemoryRetrievalCandidate(
                     scope=record.scope,
                     memory_id=record.memory_id,
+                    incarnation=record.incarnation,
                     version=record.version,
                     content_digest=record.content_digest,
                     score=score,
@@ -203,7 +209,8 @@ class AgentMemoryService:
             if record is None:
                 continue
             if (
-                record.version != candidate.version
+                record.incarnation != candidate.incarnation
+                or record.version != candidate.version
                 or record.content_digest != candidate.content_digest
             ):
                 continue
@@ -260,7 +267,21 @@ class AgentMemoryService:
         context: SecurityContext,
     ) -> MemoryRecord | None:
         await self._authorizer.authorize_read(request, context)
-        return await self._store.read(request)
+        initial = await self._store.read(request)
+        if initial is None:
+            return None
+
+        bound_request = replace(
+            request,
+            expected_version=initial.version,
+            expected_incarnation=initial.incarnation,
+            created_at=self._now(),
+        )
+        await self._authorizer.authorize_read(bound_request, context)
+        admitted = await self._store.read(bound_request)
+        if admitted is None or admitted != initial:
+            raise AgentStateConflictError()
+        return admitted
 
     async def write(
         self,

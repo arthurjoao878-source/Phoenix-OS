@@ -560,8 +560,11 @@ class ToolInvocationRequest:
     resolved_resource: str
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     deadline: datetime = field(default_factory=lambda: datetime.now(UTC) + timedelta(minutes=2))
+    agent_id: AgentId | None = None
 
     def __post_init__(self) -> None:
+        if self.agent_id is not None and not isinstance(self.agent_id, AgentId):
+            raise TypeError("agent_id must be AgentId or None")
         if not isinstance(self.run_id, AgentRunId):
             raise TypeError("run_id must be AgentRunId")
         if not isinstance(self.step_id, AgentStepId):

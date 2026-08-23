@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
@@ -232,12 +232,13 @@ class Session:
         causation_id: UUID | None = None,
         confirmed: bool = False,
     ) -> SecurityContext:
-        return self.identity.security_context(
+        context = self.identity.security_context(
             correlation_id=correlation_id,
             causation_id=causation_id,
             confirmed=confirmed,
             session_id=self.id,
         )
+        return replace(context, session_id=self.id)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
@@ -174,6 +175,40 @@ class _SlowAfterAdmissionFocusBackend:
             raise RuntimeError("focus test backend release timed out")
 
 
+class _FakeWindowLifetimeGuard:
+    def __init__(self) -> None:
+        self.index = 0
+        self.revisions: dict[int, int] = {}
+        self.started = False
+        self.closed = False
+        self.on_barrier: Callable[[], None] | None = None
+
+    def start(self) -> None:
+        self.started = True
+
+    def barrier(self) -> int:
+        if not self.started or self.closed:
+            raise RuntimeError("fake window lifetime guard unavailable")
+        self.index += 1
+        callback = self.on_barrier
+        if callback is not None:
+            self.on_barrier = None
+            callback()
+        return self.index
+
+    def revision_for(self, hwnd: int) -> int:
+        if not self.started or self.closed:
+            raise RuntimeError("fake window lifetime guard unavailable")
+        return self.revisions.get(hwnd, 0)
+
+    def rebirth(self, hwnd: int) -> None:
+        self.index += 1
+        self.revisions[hwnd] = self.index
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def _adapter(
     monkeypatch: pytest.MonkeyPatch,
     effects_backend: object,
@@ -191,6 +226,12 @@ def _adapter(
         windows_module,
         "_CtypesWindowsEffectsBackend",
         lambda: effects_backend,
+    )
+    guard = _FakeWindowLifetimeGuard()
+    monkeypatch.setattr(
+        windows_module,
+        "_CtypesWindowsWindowLifetimeGuard",
+        lambda: guard,
     )
     return WindowsHostAutomationAdapter(
         host_id=_HOST,
@@ -227,7 +268,12 @@ async def test_windows_focus_uses_exact_opaque_window_process_binding(
 
     assert effects.calls == 1
     assert effects.targets == [
-        effects_module._WindowsFocusTarget(hwnd=100, pid=42, creation_time=1000)
+        effects_module._WindowsFocusTarget(
+            hwnd=100,
+            pid=42,
+            creation_time=1000,
+            lifetime_revision=0,
+        )
     ]
     assert result.host_id == _HOST
     assert result.host_epoch == adapter.host_epoch
@@ -440,13 +486,21 @@ def test_native_focus_rechecks_desktop_and_target_before_single_effect_admission
 ) -> None:
     events: list[object] = []
     backend = object.__new__(effects_module._CtypesWindowsEffectsBackend)
+    guard = _FakeWindowLifetimeGuard()
+    guard.start()
+    backend._window_lifetime_guard = guard
 
     def set_foreground_window(hwnd: int) -> bool:
         events.append(("set", hwnd))
         return True
 
     backend._user32 = SimpleNamespace(SetForegroundWindow=set_foreground_window)
-    target = effects_module._WindowsFocusTarget(hwnd=100, pid=42, creation_time=1000)
+    target = effects_module._WindowsFocusTarget(
+        hwnd=100,
+        pid=42,
+        creation_time=1000,
+        lifetime_revision=0,
+    )
     contexts = iter(((7, "Default"), (7, "Default")))
 
     def current_desktop_context() -> tuple[int, str]:
@@ -480,18 +534,62 @@ def test_native_focus_rechecks_desktop_and_target_before_single_effect_admission
     ]
 
 
-def test_native_focus_rejects_desktop_change_before_effect_admission(
+def test_native_focus_rejects_window_rebirth_before_effect_admission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     set_calls: list[int] = []
     backend = object.__new__(effects_module._CtypesWindowsEffectsBackend)
+    guard = _FakeWindowLifetimeGuard()
+    guard.start()
+    backend._window_lifetime_guard = guard
 
     def set_foreground_window(hwnd: int) -> bool:
         set_calls.append(hwnd)
         return True
 
     backend._user32 = SimpleNamespace(SetForegroundWindow=set_foreground_window)
-    target = effects_module._WindowsFocusTarget(hwnd=100, pid=42, creation_time=1000)
+    target = effects_module._WindowsFocusTarget(
+        hwnd=100,
+        pid=42,
+        creation_time=1000,
+        lifetime_revision=0,
+    )
+    monkeypatch.setattr(backend, "_current_desktop_context", lambda: (7, "Default"))
+    monkeypatch.setattr(
+        backend,
+        "_revalidate_focus_target",
+        lambda target, expected_session_id: None,
+    )
+    guard.on_barrier = lambda: guard.rebirth(100)
+    attempt = effects_module._WindowsEffectAttempt()
+
+    with pytest.raises(effects_module._WindowsEffectStaleIdentityError):
+        backend.focus_window(target, attempt=attempt)
+
+    assert set_calls == []
+    assert attempt.cancel_before_start() is True
+
+
+def test_native_focus_rejects_desktop_change_before_effect_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_calls: list[int] = []
+    backend = object.__new__(effects_module._CtypesWindowsEffectsBackend)
+    guard = _FakeWindowLifetimeGuard()
+    guard.start()
+    backend._window_lifetime_guard = guard
+
+    def set_foreground_window(hwnd: int) -> bool:
+        set_calls.append(hwnd)
+        return True
+
+    backend._user32 = SimpleNamespace(SetForegroundWindow=set_foreground_window)
+    target = effects_module._WindowsFocusTarget(
+        hwnd=100,
+        pid=42,
+        creation_time=1000,
+        lifetime_revision=0,
+    )
     contexts = iter(((7, "Default"), (7, "Winlogon")))
 
     monkeypatch.setattr(backend, "_current_desktop_context", lambda: next(contexts))
@@ -520,3 +618,103 @@ def test_windows_focus_surface_contains_no_keyboard_or_mouse_injection() -> None
         "AttachThreadInput",
     ):
         assert forbidden not in source
+
+
+@pytest.mark.asyncio
+async def test_windows_focus_old_reborn_id_is_rejected_and_new_id_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    effects = _SuccessfulFocusBackend()
+    adapter = _adapter(monkeypatch, effects)
+
+    old_request = await _listed_focus_request(adapter)
+    guard = adapter._window_lifetime_guard
+    assert isinstance(guard, _FakeWindowLifetimeGuard)
+    guard.rebirth(100)
+
+    new_request = await _listed_focus_request(adapter)
+    assert new_request.window_id != old_request.window_id
+    assert new_request.process_id == old_request.process_id
+
+    with pytest.raises(HostAutomationTargetNotFoundError):
+        await adapter.focus_window(old_request)
+    assert effects.calls == 0
+
+    await adapter.focus_window(new_request)
+    assert effects.calls == 1
+
+
+def test_native_focus_guard_failure_prevents_effect_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingBarrierGuard(_FakeWindowLifetimeGuard):
+        def barrier(self) -> int:
+            raise RuntimeError("lifetime barrier failed")
+
+    backend = object.__new__(effects_module._CtypesWindowsEffectsBackend)
+    guard = _FailingBarrierGuard()
+    guard.start()
+    backend._window_lifetime_guard = guard
+    set_calls: list[int] = []
+
+    def set_foreground_window(hwnd: int) -> bool:
+        set_calls.append(hwnd)
+        return True
+
+    backend._user32 = SimpleNamespace(SetForegroundWindow=set_foreground_window)
+    target = effects_module._WindowsFocusTarget(
+        hwnd=100,
+        pid=42,
+        creation_time=1000,
+        lifetime_revision=0,
+    )
+    monkeypatch.setattr(backend, "_current_desktop_context", lambda: (7, "Default"))
+    monkeypatch.setattr(
+        backend,
+        "_revalidate_focus_target",
+        lambda target, expected_session_id: None,
+    )
+    attempt = effects_module._WindowsEffectAttempt()
+
+    with pytest.raises(RuntimeError, match="lifetime barrier failed"):
+        backend.focus_window(target, attempt=attempt)
+
+    assert set_calls == []
+    assert attempt.cancel_before_start() is True
+
+
+def test_native_focus_lifetime_change_after_admission_has_no_fictitious_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = object.__new__(effects_module._CtypesWindowsEffectsBackend)
+    guard = _FakeWindowLifetimeGuard()
+    guard.start()
+    backend._window_lifetime_guard = guard
+    target = effects_module._WindowsFocusTarget(
+        hwnd=100,
+        pid=42,
+        creation_time=1000,
+        lifetime_revision=0,
+    )
+    monkeypatch.setattr(backend, "_current_desktop_context", lambda: (7, "Default"))
+    monkeypatch.setattr(
+        backend,
+        "_revalidate_focus_target",
+        lambda target, expected_session_id: None,
+    )
+
+    set_calls: list[int] = []
+
+    def set_foreground_window(hwnd: int) -> bool:
+        set_calls.append(hwnd)
+        guard.rebirth(hwnd)
+        return True
+
+    backend._user32 = SimpleNamespace(SetForegroundWindow=set_foreground_window)
+    attempt = effects_module._WindowsEffectAttempt()
+
+    backend.focus_window(target, attempt=attempt)
+
+    assert set_calls == [100]
+    assert attempt.cancel_before_start() is False
+    assert guard.revision_for(100) != target.lifetime_revision

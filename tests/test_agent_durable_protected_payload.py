@@ -283,6 +283,58 @@ def test_protector_fails_closed_when_schema_context_is_substituted() -> None:
         )
 
 
+async def test_memory_protected_birth_fences_preexisting_lease_authority() -> None:
+    store = InMemoryDurableRunStore()
+    prebirth = await _lease(store)
+    checkpoint, ciphertext = _protected_checkpoint(1, b"memory rebirth")
+
+    await store.create_protected(
+        checkpoint,
+        protected_payload=ciphertext,
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await store.lease_manager.require_current(prebirth, now=NOW)
+
+    fresh = await _lease(store, now=NOW)
+    assert fresh.generation.value == prebirth.generation.value + 1
+    assert (
+        await store.get_protected_payload(
+            checkpoint,
+            lease=fresh,
+            now=WRITE_TIME,
+        )
+        == ciphertext
+    )
+
+
+async def test_sqlite_protected_birth_fences_preexisting_lease_authority(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteDurableRunStore(tmp_path / "protected-rebirth.sqlite3")
+    prebirth = await _lease(store)
+    checkpoint, ciphertext = _protected_checkpoint(1, b"sqlite rebirth")
+
+    await store.create_protected(
+        checkpoint,
+        protected_payload=ciphertext,
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await store.lease_manager.require_current(prebirth, now=NOW)
+
+    fresh = await _lease(store, now=NOW)
+    assert fresh.generation.value == prebirth.generation.value + 1
+    assert (
+        await store.get_protected_payload(
+            checkpoint,
+            lease=fresh,
+            now=WRITE_TIME,
+        )
+        == ciphertext
+    )
+
+
 async def test_memory_store_round_trips_current_protected_ciphertext() -> None:
     store = InMemoryDurableRunStore()
     assert isinstance(store, DurableProtectedPayloadStore)

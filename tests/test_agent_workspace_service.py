@@ -149,6 +149,9 @@ class _Authorizer:
     ) -> None:
         self.allowed = set() if allowed is None else allowed
         self.calls: list[str] = []
+        self.read_requests: list[ArtifactReadRequest] = []
+        self.import_requests: list[ArtifactImportRequest] = []
+        self.export_requests: list[ArtifactExportRequest] = []
         self.revoke_import_after_first = revoke_import_after_first
         self.revoke_export_after_first = revoke_export_after_first
 
@@ -173,6 +176,7 @@ class _Authorizer:
         request: ArtifactReadRequest,
         context: SecurityContext,
     ) -> None:
+        self.read_requests.append(request)
         await self._authorize("read")
 
     async def authorize_write(
@@ -191,22 +195,18 @@ class _Authorizer:
 
     async def authorize_import(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: ArtifactImportRequest,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None:
+        self.import_requests.append(request)
         await self._authorize("import")
 
     async def authorize_export(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: ArtifactExportRequest,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None:
+        self.export_requests.append(request)
         await self._authorize("export")
 
     async def authorize_admin(
@@ -219,6 +219,24 @@ class _Authorizer:
         await self._authorize("admin")
 
 
+class _BlockingReadReauthorization(_Authorizer):
+    def __init__(self) -> None:
+        super().__init__(allowed={"read"})
+        self.reauthorization_started = asyncio.Event()
+        self.release_reauthorization = asyncio.Event()
+
+    async def authorize_read(
+        self,
+        request: ArtifactReadRequest,
+        context: SecurityContext,
+    ) -> None:
+        self.read_requests.append(request)
+        if self.calls.count("read") == 1:
+            self.reauthorization_started.set()
+            await self.release_reauthorization.wait()
+        await self._authorize("read")
+
+
 class _BlockingExportReauthorization(_Authorizer):
     def __init__(self) -> None:
         super().__init__(allowed={"export"})
@@ -227,12 +245,10 @@ class _BlockingExportReauthorization(_Authorizer):
 
     async def authorize_export(
         self,
-        scope: WorkspaceScope,
-        artifact_id: ArtifactId,
+        request: ArtifactExportRequest,
         context: SecurityContext,
-        *,
-        created_at: datetime | None = None,
     ) -> None:
+        self.export_requests.append(request)
         if self.calls.count("export") == 1:
             self.reauthorization_started.set()
             await self.release_reauthorization.wait()
@@ -411,8 +427,9 @@ def _service(
 @pytest.mark.asyncio
 async def test_authorized_import_creates_exact_artifact_with_phoenix_digest() -> None:
     service, store, adapter, authorizer = _service(allowed={"import"})
+    request = _import_request()
 
-    receipt = await service.import_artifact(_import_request(), _context())
+    receipt = await service.import_artifact(request, _context())
 
     loaded = await store.read(
         ArtifactReadRequest(scope=_scope(), artifact_id=_ARTIFACT_ID, created_at=_NOW)
@@ -425,6 +442,15 @@ async def test_authorized_import_creates_exact_artifact_with_phoenix_digest() ->
     assert loaded.record.scope == _scope()
     assert loaded.record.artifact_id == _ARTIFACT_ID
     assert authorizer.calls == ["import", "import"]
+    assert len(authorizer.import_requests) == 2
+    assert all(item.scope == request.scope for item in authorizer.import_requests)
+    assert all(item.artifact_id == request.artifact_id for item in authorizer.import_requests)
+    assert all(
+        item.expected_version == request.expected_version for item in authorizer.import_requests
+    )
+    assert all(
+        item.source_reference == request.source_reference for item in authorizer.import_requests
+    )
     assert len(adapter.import_calls) == 1
     assert adapter.import_max_bytes == [store.limits.max_artifact_bytes]
     assert receipt.direction is ArtifactTransferDirection.IMPORT
@@ -624,12 +650,23 @@ async def test_authorized_export_sends_exact_expected_version_and_server_destina
     created = await store.write(_direct_write())
     store.read_calls = 0
 
+    request = _export_request(created.version)
     receipt = await service.export_artifact(
-        _export_request(created.version),
+        request,
         _context(),
     )
 
     assert authorizer.calls == ["export", "export"]
+    assert len(authorizer.export_requests) == 2
+    assert all(item.scope == request.scope for item in authorizer.export_requests)
+    assert all(item.artifact_id == request.artifact_id for item in authorizer.export_requests)
+    assert all(
+        item.expected_version == request.expected_version for item in authorizer.export_requests
+    )
+    assert all(
+        item.destination_reference == request.destination_reference
+        for item in authorizer.export_requests
+    )
     assert len(adapter.export_calls) == 1
     payload = adapter.export_calls[0]
     assert payload.scope == created.scope
@@ -860,6 +897,50 @@ async def test_export_malformed_result_and_precommit_cancellation_fail_closed() 
 
 
 @pytest.mark.asyncio
+async def test_direct_read_update_during_version_reauthorization_is_not_disclosed() -> None:
+    clock = FakeClock()
+    authorizer = _BlockingReadReauthorization()
+    service, store, _, _ = _service(
+        allowed={"read"},
+        clock=clock,
+        authorizer=authorizer,
+    )
+    created = await store.write(_direct_write())
+    store.read_calls = 0
+
+    task = asyncio.create_task(
+        service.read(
+            ArtifactReadRequest(
+                scope=created.scope,
+                artifact_id=created.artifact_id,
+                created_at=_NOW,
+            ),
+            _context(),
+        )
+    )
+    await authorizer.reauthorization_started.wait()
+
+    clock.advance(timedelta(seconds=1))
+    updated = await store.write(
+        _direct_write(
+            b"updated during direct read",
+            expected_version=created.version,
+            created_at=clock(),
+        )
+    )
+    authorizer.release_reauthorization.set()
+
+    with pytest.raises(AgentStateConflictError):
+        await task
+
+    assert updated.version == created.version.next()
+    assert authorizer.calls == ["read", "read"]
+    assert authorizer.read_requests[0].expected_version is None
+    assert authorizer.read_requests[1].expected_version == created.version
+    assert store.read_calls == 2
+
+
+@pytest.mark.asyncio
 async def test_authorized_list_read_write_delete_delegate_only_after_policy() -> None:
     service, store, _, authorizer = _service(allowed={"list", "read", "write", "delete"})
     write = _direct_write()
@@ -887,9 +968,11 @@ async def test_authorized_list_read_write_delete_delegate_only_after_policy() ->
 
     assert loaded is not None
     assert listing.artifacts == (created,)
-    assert authorizer.calls == ["write", "read", "list", "delete"]
+    assert authorizer.calls == ["write", "read", "read", "list", "delete"]
+    assert authorizer.read_requests[0].expected_version is None
+    assert authorizer.read_requests[1].expected_version == created.version
     assert store.write_calls == 1
-    assert store.read_calls == 1
+    assert store.read_calls == 2
     assert store.list_calls == 1
     assert store.delete_calls == 1
 

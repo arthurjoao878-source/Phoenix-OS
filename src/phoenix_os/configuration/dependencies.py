@@ -1736,6 +1736,7 @@ class RuntimeAssembler:
                 tool_resolvers=self._agent_tool_resolvers,
                 tool_adapters=self._agent_tool_adapters,
                 policy=self._policy,
+                session_freshness_source=self._identity,
                 events=self._events,
                 approval_service=self._agent_approval_service,
                 approval_resolver=self._agent_approval_resolver,

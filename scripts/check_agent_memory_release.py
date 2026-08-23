@@ -255,6 +255,7 @@ from phoenix_os.agent import (
     MemoryOriginKind,
     MemoryProvenance,
     MemoryReadRequest,
+    MemoryRecordIncarnation,
     MemoryRecordStatus,
     MemoryRecordVersion,
     MemoryScope,
@@ -316,6 +317,8 @@ async def main() -> None:
     )
     store = InMemoryAgentMemoryStore()
     record = await store.write(write)
+    assert isinstance(record.incarnation, MemoryRecordIncarnation)
+    assert record.incarnation.value.version == 4
     assert record.version == MemoryRecordVersion(1)
     assert record.status is MemoryRecordStatus.ACTIVE
     assert record.content_digest == digest
@@ -336,6 +339,7 @@ async def main() -> None:
     )
     assert len(candidates) == 1
     assert candidates[0].memory_id == memory_id
+    assert candidates[0].incarnation == record.incarnation
     assert candidates[0].version == record.version
     assert candidates[0].content_digest == digest
 
@@ -344,6 +348,7 @@ async def main() -> None:
             scope=scope,
             memory_id=memory_id,
             expected_version=record.version,
+            expected_incarnation=record.incarnation,
             created_at=now,
         )
     )

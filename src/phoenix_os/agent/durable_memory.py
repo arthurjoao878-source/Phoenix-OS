@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
+from typing import Protocol, runtime_checkable
 
 from phoenix_os.agent.durable_codec import CanonicalCheckpointCodec
 from phoenix_os.agent.durable_contracts import (
@@ -41,6 +44,16 @@ class _StoredRun:
     protected_payloads: tuple[bytes | None, ...]
 
 
+@runtime_checkable
+class _DurableLeaseIncarnationManager(Protocol):
+    "Private store capability for serializing and fencing accepted run births."
+
+    def guard_new_incarnation(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> AbstractAsyncContextManager[Callable[[], None]]: ...
+
+
 class InMemoryDurableRunStore(DurableRetentionStore):
     """Atomic per-run checkpoint history backed by canonical encoded bytes."""
 
@@ -62,9 +75,12 @@ class InMemoryDurableRunStore(DurableRetentionStore):
         )
         if not isinstance(selected_lease_manager, DurableLeaseManager):
             raise TypeError("lease_manager must be DurableLeaseManager")
+        if not isinstance(selected_lease_manager, _DurableLeaseIncarnationManager):
+            raise TypeError("lease_manager must support durable incarnation fencing")
         self._codec = selected_codec
         self._limits = selected_limits
-        self._lease_manager = selected_lease_manager
+        self._lease_manager: DurableLeaseManager = selected_lease_manager
+        self._incarnation_manager: _DurableLeaseIncarnationManager = selected_lease_manager
         self._owns_lease_manager = lease_manager is None
         self._runs: dict[DurableAgentRunId, _StoredRun] = {}
         self._tombstones: dict[DurableAgentRunId, DurableRunTombstone] = {}
@@ -122,16 +138,26 @@ class InMemoryDurableRunStore(DurableRetentionStore):
             raise AgentStateConflictError()
         self._require_history_bounds(checkpoint_count=1, total_bytes=len(encoded))
 
-        async with self._lock:
-            self._ensure_open()
-            if decoded.durable_run_id in self._runs or decoded.durable_run_id in self._tombstones:
-                raise AgentStateConflictError()
-            self._runs[decoded.durable_run_id] = _StoredRun(
-                payloads=(encoded,),
-                checkpoint_ids=frozenset({decoded.checkpoint_id}),
-                total_bytes=len(encoded),
-                protected_payloads=(protected,),
-            )
+        stored = _StoredRun(
+            payloads=(encoded,),
+            checkpoint_ids=frozenset({decoded.checkpoint_id}),
+            total_bytes=len(encoded),
+            protected_payloads=(protected,),
+        )
+
+        async with self._incarnation_manager.guard_new_incarnation(
+            decoded.durable_run_id
+        ) as fence_preexisting_authority:
+            async with self._lock:
+                self._ensure_open()
+                if (
+                    decoded.durable_run_id in self._runs
+                    or decoded.durable_run_id in self._tombstones
+                ):
+                    raise AgentStateConflictError()
+
+                fence_preexisting_authority()
+                self._runs[decoded.durable_run_id] = stored
 
     async def get_current(
         self,

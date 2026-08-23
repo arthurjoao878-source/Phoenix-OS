@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -15,7 +16,9 @@ from phoenix_os.agent import (
     AgentId,
     AgentRunId,
     ArtifactDeleteRequest,
+    ArtifactExportRequest,
     ArtifactId,
+    ArtifactImportRequest,
     ArtifactListRequest,
     ArtifactLogicalPath,
     ArtifactOriginKind,
@@ -26,6 +29,7 @@ from phoenix_os.agent import (
     PolicyEngineWorkspaceAuthorizer,
     WorkspaceNamespace,
     WorkspaceScope,
+    WorkspaceTransferReference,
     agent_workspace_scope,
     artifact_content_digest,
     canonical_artifact_path_digest,
@@ -254,7 +258,12 @@ async def test_write_authorization_binds_digest_path_and_size_without_exposing_b
 @pytest.mark.asyncio
 async def test_direct_read_and_delete_require_exact_artifact_authority() -> None:
     scope = _agent_scope()
-    read = ArtifactReadRequest(scope=scope, artifact_id=_ARTIFACT_ID, created_at=_NOW)
+    read = ArtifactReadRequest(
+        scope=scope,
+        artifact_id=_ARTIFACT_ID,
+        expected_version=ArtifactVersion(3),
+        created_at=_NOW,
+    )
     delete = ArtifactDeleteRequest(
         scope=scope,
         artifact_id=_ARTIFACT_ID,
@@ -271,6 +280,7 @@ async def test_direct_read_and_delete_require_exact_artifact_authority() -> None
                 resources=frozenset({resource}),
                 principals=frozenset({"service:workspace-owner"}),
                 authenticated=True,
+                attribute_equals={"expected_version": "3"},
             ),
         )
     )
@@ -304,6 +314,19 @@ async def test_direct_read_and_delete_require_exact_artifact_authority() -> None
 async def test_import_and_export_are_independent_exact_artifact_authorities() -> None:
     scope = _agent_scope()
     resource = workspace_artifact_resource(scope, _ARTIFACT_ID)
+    imported = ArtifactImportRequest(
+        scope=scope,
+        artifact_id=_ARTIFACT_ID,
+        source_reference=WorkspaceTransferReference("source-object"),
+        created_at=_NOW,
+    )
+    exported = ArtifactExportRequest(
+        scope=scope,
+        artifact_id=_ARTIFACT_ID,
+        expected_version=ArtifactVersion(3),
+        destination_reference=WorkspaceTransferReference("destination-object"),
+        created_at=_NOW,
+    )
     policy = PolicyEngine(
         (
             PolicyRule(
@@ -318,23 +341,122 @@ async def test_import_and_export_are_independent_exact_artifact_authorities() ->
     )
     authorizer = PolicyEngineWorkspaceAuthorizer(policy)
 
-    await authorizer.authorize_import(
-        scope,
-        _ARTIFACT_ID,
-        _context(),
-        created_at=_NOW,
-    )
+    await authorizer.authorize_import(imported, _context())
     with pytest.raises(AgentAuthorizationRejectedError):
-        await authorizer.authorize_export(
-            scope,
-            _ARTIFACT_ID,
-            _context(),
-            created_at=_NOW,
-        )
+        await authorizer.authorize_export(exported, _context())
 
     snapshot = await policy.snapshot()
     assert snapshot.allowed == 1
     assert snapshot.denied == 1
+
+
+@pytest.mark.asyncio
+async def test_transfer_authorization_binds_version_and_reference_digest() -> None:
+    scope = _agent_scope()
+    resource = workspace_artifact_resource(scope, _ARTIFACT_ID)
+    imported = ArtifactImportRequest(
+        scope=scope,
+        artifact_id=_ARTIFACT_ID,
+        source_reference=WorkspaceTransferReference("source-alpha"),
+        expected_version=ArtifactVersion(4),
+        created_at=_NOW,
+    )
+    import_digest = (
+        "sha256:" + hashlib.sha256(imported.source_reference.value.encode("utf-8")).hexdigest()
+    )
+    import_policy = PolicyEngine(
+        (
+            PolicyRule(
+                rule_id="import.exact.intent",
+                effect=PolicyEffect.ALLOW,
+                actions=frozenset({WORKSPACE_IMPORT_ACTION}),
+                resources=frozenset({resource}),
+                principals=frozenset({"service:workspace-owner"}),
+                authenticated=True,
+                attribute_equals={
+                    "expected_version": "4",
+                    "source_reference_digest": import_digest,
+                },
+            ),
+        )
+    )
+    import_authorizer = PolicyEngineWorkspaceAuthorizer(import_policy)
+
+    await import_authorizer.authorize_import(imported, _context())
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await import_authorizer.authorize_import(
+            ArtifactImportRequest(
+                scope=scope,
+                artifact_id=_ARTIFACT_ID,
+                source_reference=WorkspaceTransferReference("source-bravo"),
+                expected_version=ArtifactVersion(4),
+                created_at=_NOW,
+            ),
+            _context(),
+        )
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await import_authorizer.authorize_import(
+            ArtifactImportRequest(
+                scope=scope,
+                artifact_id=_ARTIFACT_ID,
+                source_reference=imported.source_reference,
+                expected_version=ArtifactVersion(5),
+                created_at=_NOW,
+            ),
+            _context(),
+        )
+
+    exported = ArtifactExportRequest(
+        scope=scope,
+        artifact_id=_ARTIFACT_ID,
+        expected_version=ArtifactVersion(7),
+        destination_reference=WorkspaceTransferReference("destination-alpha"),
+        created_at=_NOW,
+    )
+    export_digest = (
+        "sha256:" + hashlib.sha256(exported.destination_reference.value.encode("utf-8")).hexdigest()
+    )
+    export_policy = PolicyEngine(
+        (
+            PolicyRule(
+                rule_id="export.exact.intent",
+                effect=PolicyEffect.ALLOW,
+                actions=frozenset({WORKSPACE_EXPORT_ACTION}),
+                resources=frozenset({resource}),
+                principals=frozenset({"service:workspace-owner"}),
+                authenticated=True,
+                attribute_equals={
+                    "expected_version": "7",
+                    "destination_reference_digest": export_digest,
+                },
+            ),
+        )
+    )
+    export_authorizer = PolicyEngineWorkspaceAuthorizer(export_policy)
+
+    await export_authorizer.authorize_export(exported, _context())
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await export_authorizer.authorize_export(
+            ArtifactExportRequest(
+                scope=scope,
+                artifact_id=_ARTIFACT_ID,
+                expected_version=ArtifactVersion(7),
+                destination_reference=WorkspaceTransferReference("destination-bravo"),
+                created_at=_NOW,
+            ),
+            _context(),
+        )
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await export_authorizer.authorize_export(
+            ArtifactExportRequest(
+                scope=scope,
+                artifact_id=_ARTIFACT_ID,
+                expected_version=ArtifactVersion(8),
+                destination_reference=exported.destination_reference,
+                created_at=_NOW,
+            ),
+            _context(),
+        )
 
 
 @pytest.mark.asyncio

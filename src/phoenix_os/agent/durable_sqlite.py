@@ -927,6 +927,11 @@ class SQLiteDurableRunStore(DurableRunStore):
                 self._insert_checkpoint(connection, decoded, encoded)
                 if protected is not None:
                     self._insert_protected_payload(connection, decoded, protected)
+
+                connection.execute(
+                    "UPDATE durable_leases SET active = 0 WHERE run_id = ? AND active = 1",
+                    (str(decoded.durable_run_id),),
+                )
                 connection.execute("COMMIT")
             except sqlite3.IntegrityError as exception:
                 _rollback(connection)

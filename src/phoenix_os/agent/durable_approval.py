@@ -17,6 +17,7 @@ from phoenix_os.agent.approval import (
     ToolApprovalStatus,
 )
 from phoenix_os.agent.contracts import (
+    AgentId,
     AgentRunId,
     AgentStepId,
     ToolApprovalId,
@@ -32,6 +33,7 @@ from phoenix_os.agent.durable_contracts import (
     DurableRunStatus,
 )
 from phoenix_os.agent.errors import AgentServiceUnavailableError
+from phoenix_os.policy import PrincipalType
 
 _APPROVAL_SCHEMA_KEY = "approval.schema"
 _APPROVAL_ID_KEY = "approval.id"
@@ -45,9 +47,17 @@ _APPROVAL_ARGUMENT_DIGEST_KEY = "approval.argument-digest"
 _APPROVAL_REQUESTER_KEY = "approval.requester"
 _APPROVAL_REQUESTED_AT_KEY = "approval.requested-at"
 _APPROVAL_EXPIRES_AT_KEY = "approval.expires-at"
-_APPROVAL_SCHEMA_VERSION = "1"
+_APPROVAL_PRINCIPAL_TYPE_KEY = "approval.principal-type"
+_APPROVAL_PRINCIPAL_KEY = "approval.principal"
+_APPROVAL_SESSION_ID_KEY = "approval.session-id"
+_APPROVAL_AGENT_KEY = "approval.agent"
+_APPROVAL_RESOLVER_KEY = "approval.resolver"
+_APPROVAL_ADAPTER_KEY = "approval.adapter"
+_APPROVAL_LEGACY_SCHEMA_VERSION = "1"
+_APPROVAL_SCHEMA_VERSION = "2"
+_NO_SESSION = "none"
 
-_APPROVAL_WAIT_KEYS = frozenset(
+_APPROVAL_WAIT_V1_KEYS = frozenset(
     {
         _APPROVAL_SCHEMA_KEY,
         _APPROVAL_ID_KEY,
@@ -63,6 +73,18 @@ _APPROVAL_WAIT_KEYS = frozenset(
         _APPROVAL_EXPIRES_AT_KEY,
     }
 )
+_APPROVAL_WAIT_V2_KEYS = frozenset(
+    _APPROVAL_WAIT_V1_KEYS
+    | {
+        _APPROVAL_PRINCIPAL_TYPE_KEY,
+        _APPROVAL_PRINCIPAL_KEY,
+        _APPROVAL_SESSION_ID_KEY,
+        _APPROVAL_AGENT_KEY,
+        _APPROVAL_RESOLVER_KEY,
+        _APPROVAL_ADAPTER_KEY,
+    }
+)
+_APPROVAL_WAIT_KEYS = frozenset(_APPROVAL_WAIT_V1_KEYS | _APPROVAL_WAIT_V2_KEYS)
 
 
 def _require_timezone_aware(value: datetime, *, label: str) -> None:
@@ -96,6 +118,13 @@ class ApprovalWaitReference:
     requester: str
     requested_at: datetime
     expires_at: datetime
+    principal_type: PrincipalType | None = None
+    principal: str | None = None
+    session_id: UUID | None = None
+    agent_id: AgentId | None = None
+    resolver_id: str | None = None
+    adapter_id: str | None = None
+    schema_version: int = 1
 
     def __post_init__(self) -> None:
         ToolApprovalChallenge(
@@ -109,6 +138,13 @@ class ApprovalWaitReference:
             argument_digest=self.argument_digest,
             requested_at=self.requested_at,
             expires_at=self.expires_at,
+            principal_type=self.principal_type,
+            principal=self.principal,
+            session_id=self.session_id,
+            agent_id=self.agent_id,
+            resolver_id=self.resolver_id,
+            adapter_id=self.adapter_id,
+            schema_version=self.schema_version,
         )
         object.__setattr__(self, "requester", _normalize_requester(self.requester))
 
@@ -133,6 +169,13 @@ class ApprovalWaitReference:
             requester=requester,
             requested_at=challenge.requested_at,
             expires_at=challenge.expires_at,
+            principal_type=challenge.principal_type,
+            principal=challenge.principal,
+            session_id=challenge.session_id,
+            agent_id=challenge.agent_id,
+            resolver_id=challenge.resolver_id,
+            adapter_id=challenge.adapter_id,
+            schema_version=challenge.schema_version,
         )
 
     @classmethod
@@ -147,8 +190,33 @@ class ApprovalWaitReference:
             raise ValueError("approval checkpoint requires a step id")
 
         metadata = checkpoint.metadata.metadata
-        if any(key.startswith("approval.") and key not in _APPROVAL_WAIT_KEYS for key in metadata):
-            raise ValueError("approval checkpoint contains an unknown approval field")
+        schema = metadata.get(_APPROVAL_SCHEMA_KEY)
+        if schema == _APPROVAL_LEGACY_SCHEMA_VERSION:
+            schema_version = 1
+            expected_keys = _APPROVAL_WAIT_V1_KEYS
+        elif schema == _APPROVAL_SCHEMA_VERSION:
+            schema_version = 2
+            expected_keys = _APPROVAL_WAIT_V2_KEYS
+        else:
+            raise ValueError("unsupported approval-wait metadata schema")
+        approval_keys = frozenset(key for key in metadata if key.startswith("approval."))
+        if approval_keys != expected_keys:
+            raise ValueError("approval checkpoint correlation fields are not exact")
+
+        principal_type: PrincipalType | None = None
+        principal: str | None = None
+        session_id: UUID | None = None
+        agent_id: AgentId | None = None
+        resolver_id: str | None = None
+        adapter_id: str | None = None
+        if schema_version == 2:
+            principal_type = _metadata_principal_type(metadata, _APPROVAL_PRINCIPAL_TYPE_KEY)
+            principal = _metadata_value(metadata, _APPROVAL_PRINCIPAL_KEY)
+            session_id = _metadata_session_id(metadata, _APPROVAL_SESSION_ID_KEY)
+            agent_id = _metadata_agent_id(metadata, _APPROVAL_AGENT_KEY)
+            resolver_id = _metadata_value(metadata, _APPROVAL_RESOLVER_KEY)
+            adapter_id = _metadata_value(metadata, _APPROVAL_ADAPTER_KEY)
+
         reference = cls(
             approval_id=ToolApprovalId(_metadata_uuid(metadata, _APPROVAL_ID_KEY)),
             agent_run_id=AgentRunId(_metadata_uuid(metadata, _APPROVAL_RUN_KEY)),
@@ -161,15 +229,22 @@ class ApprovalWaitReference:
             requester=_metadata_value(metadata, _APPROVAL_REQUESTER_KEY),
             requested_at=_metadata_datetime(metadata, _APPROVAL_REQUESTED_AT_KEY),
             expires_at=_metadata_datetime(metadata, _APPROVAL_EXPIRES_AT_KEY),
+            principal_type=principal_type,
+            principal=principal,
+            session_id=session_id,
+            agent_id=agent_id,
+            resolver_id=resolver_id,
+            adapter_id=adapter_id,
+            schema_version=schema_version,
         )
-        if _metadata_value(metadata, _APPROVAL_SCHEMA_KEY) != _APPROVAL_SCHEMA_VERSION:
-            raise ValueError("unsupported approval-wait metadata schema")
         if reference.agent_run_id != checkpoint.agent_run_id:
             raise ValueError("approval reference changed agent run identity")
         if reference.step_id != checkpoint.step_id:
             raise ValueError("approval reference changed step identity")
         if reference.requester != checkpoint.metadata.actor_id:
             raise ValueError("approval reference changed requester identity")
+        if reference.schema_version == 2 and reference.agent_id != checkpoint.metadata.agent_id:
+            raise ValueError("approval reference changed agent identity")
         if reference.requested_at > checkpoint.created_at:
             raise ValueError("approval request cannot follow its checkpoint")
         if checkpoint.created_at >= reference.expires_at:
@@ -179,22 +254,49 @@ class ApprovalWaitReference:
         return reference
 
     def to_metadata(self) -> Mapping[str, str]:
-        return MappingProxyType(
+        values = {
+            _APPROVAL_SCHEMA_KEY: str(self.schema_version),
+            _APPROVAL_ID_KEY: str(self.approval_id),
+            _APPROVAL_RUN_KEY: str(self.agent_run_id),
+            _APPROVAL_STEP_KEY: str(self.step_id),
+            _APPROVAL_CALL_KEY: str(self.call_id),
+            _APPROVAL_TOOL_KEY: str(self.tool_id),
+            _APPROVAL_EFFECT_KEY: self.effect.value,
+            _APPROVAL_RESOURCE_KEY: self.resolved_resource,
+            _APPROVAL_ARGUMENT_DIGEST_KEY: self.argument_digest,
+            _APPROVAL_REQUESTER_KEY: self.requester,
+            _APPROVAL_REQUESTED_AT_KEY: self.requested_at.isoformat(),
+            _APPROVAL_EXPIRES_AT_KEY: self.expires_at.isoformat(),
+        }
+        if self.schema_version == 1:
+            return MappingProxyType(values)
+
+        principal_type = self.principal_type
+        principal = self.principal
+        agent_id = self.agent_id
+        resolver_id = self.resolver_id
+        adapter_id = self.adapter_id
+        if (
+            principal_type is None
+            or principal is None
+            or agent_id is None
+            or resolver_id is None
+            or adapter_id is None
+        ):
+            raise ValueError("v2 approval reference is missing authority binding")
+        values.update(
             {
-                _APPROVAL_SCHEMA_KEY: _APPROVAL_SCHEMA_VERSION,
-                _APPROVAL_ID_KEY: str(self.approval_id),
-                _APPROVAL_RUN_KEY: str(self.agent_run_id),
-                _APPROVAL_STEP_KEY: str(self.step_id),
-                _APPROVAL_CALL_KEY: str(self.call_id),
-                _APPROVAL_TOOL_KEY: str(self.tool_id),
-                _APPROVAL_EFFECT_KEY: self.effect.value,
-                _APPROVAL_RESOURCE_KEY: self.resolved_resource,
-                _APPROVAL_ARGUMENT_DIGEST_KEY: self.argument_digest,
-                _APPROVAL_REQUESTER_KEY: self.requester,
-                _APPROVAL_REQUESTED_AT_KEY: self.requested_at.isoformat(),
-                _APPROVAL_EXPIRES_AT_KEY: self.expires_at.isoformat(),
+                _APPROVAL_PRINCIPAL_TYPE_KEY: principal_type.value,
+                _APPROVAL_PRINCIPAL_KEY: principal,
+                _APPROVAL_SESSION_ID_KEY: (
+                    _NO_SESSION if self.session_id is None else str(self.session_id)
+                ),
+                _APPROVAL_AGENT_KEY: str(agent_id),
+                _APPROVAL_RESOLVER_KEY: resolver_id,
+                _APPROVAL_ADAPTER_KEY: adapter_id,
             }
         )
+        return MappingProxyType(values)
 
     def matches_record(self, record: ToolApprovalRecord) -> bool:
         if not isinstance(record, ToolApprovalRecord):
@@ -202,12 +304,19 @@ class ApprovalWaitReference:
         challenge = record.challenge
         return (
             record.requester == self.requester
+            and challenge.schema_version == self.schema_version
             and challenge.approval_id == self.approval_id
+            and challenge.principal_type is self.principal_type
+            and challenge.principal == self.principal
+            and challenge.session_id == self.session_id
+            and challenge.agent_id == self.agent_id
             and challenge.run_id == self.agent_run_id
             and challenge.step_id == self.step_id
             and challenge.call_id == self.call_id
             and challenge.tool_id == self.tool_id
             and challenge.effect is self.effect
+            and challenge.resolver_id == self.resolver_id
+            and challenge.adapter_id == self.adapter_id
             and challenge.resolved_resource == self.resolved_resource
             and challenge.argument_digest == self.argument_digest
             and challenge.requested_at == self.requested_at
@@ -220,6 +329,7 @@ class DurableApprovalState(StrEnum):
 
     PENDING = "pending"
     APPROVED = "approved"
+    REAPPROVAL_REQUIRED = "reapproval_required"
     CONSUMED = "consumed"
     EXPIRED = "expired"
     MISSING = "missing"
@@ -304,6 +414,13 @@ class ToolApprovalDurableRevalidator:
             return _revalidation(
                 checkpoint,
                 state=DurableApprovalState.INVALID_CHECKPOINT,
+                now=now,
+                approval_id=reference.approval_id,
+            )
+        if reference.schema_version == 1:
+            return _revalidation(
+                checkpoint,
+                state=DurableApprovalState.REAPPROVAL_REQUIRED,
                 now=now,
                 approval_id=reference.approval_id,
             )
@@ -400,6 +517,38 @@ def _metadata_datetime(metadata: Mapping[str, str], key: str) -> datetime:
     _require_timezone_aware(value, label="approval-wait timestamp")
     if value.isoformat() != raw:
         raise ValueError("approval-wait timestamp is not canonical")
+    return value
+
+
+def _metadata_principal_type(
+    metadata: Mapping[str, str],
+    key: str,
+) -> PrincipalType:
+    raw = _metadata_value(metadata, key)
+    value = PrincipalType(raw)
+    if value.value != raw:
+        raise ValueError("approval-wait principal type is not canonical")
+    return value
+
+
+def _metadata_session_id(
+    metadata: Mapping[str, str],
+    key: str,
+) -> UUID | None:
+    raw = _metadata_value(metadata, key)
+    if raw == _NO_SESSION:
+        return None
+    value = UUID(raw)
+    if str(value) != raw:
+        raise ValueError("approval-wait session id is not canonical")
+    return value
+
+
+def _metadata_agent_id(metadata: Mapping[str, str], key: str) -> AgentId:
+    raw = _metadata_value(metadata, key)
+    value = AgentId(raw)
+    if str(value) != raw:
+        raise ValueError("approval-wait agent id is not canonical")
     return value
 
 

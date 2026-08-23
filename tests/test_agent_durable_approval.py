@@ -70,6 +70,7 @@ AGENT_RUN_ID = AgentRunId(UUID("20000000-0000-0000-0000-000000000002"))
 STEP_ID = AgentStepId(UUID("30000000-0000-0000-0000-000000000003"))
 CALL_ID = ToolCallId(UUID("40000000-0000-0000-0000-000000000004"))
 CHECKPOINT_ID = CheckpointId(UUID("50000000-0000-0000-0000-000000000005"))
+SESSION_ID = UUID("60000000-0000-4000-8000-000000000006")
 REQUESTER = "worker-1"
 
 
@@ -127,6 +128,7 @@ def _descriptor() -> ToolDescriptor:
 
 def _request() -> ToolInvocationRequest:
     return ToolInvocationRequest(
+        agent_id=AgentId("assistant"),
         run_id=AGENT_RUN_ID,
         step_id=STEP_ID,
         call_id=CALL_ID,
@@ -143,6 +145,7 @@ def _requester_context() -> SecurityContext:
         principal=REQUESTER,
         principal_type=PrincipalType.SERVICE,
         authenticated=True,
+        session_id=SESSION_ID,
     )
 
 
@@ -237,6 +240,22 @@ async def _challenge(
     )
 
 
+def _legacy_challenge() -> ToolApprovalChallenge:
+    return ToolApprovalChallenge(
+        approval_id=ToolApprovalId(UUID("80000000-0000-0000-0000-000000000008")),
+        run_id=AGENT_RUN_ID,
+        step_id=STEP_ID,
+        call_id=CALL_ID,
+        tool_id=ToolId("files.write"),
+        effect=ToolEffect.REVERSIBLE_WRITE,
+        resolved_resource="workspace:docs/report.txt",
+        argument_digest="sha256:" + "b" * 64,
+        requested_at=NOW,
+        expires_at=NOW + timedelta(minutes=2),
+        schema_version=1,
+    )
+
+
 def _mutated_metadata(
     challenge: ToolApprovalChallenge,
     *,
@@ -296,16 +315,23 @@ async def test_lookup_reports_approved_and_consumed_without_mutating_state() -> 
 
 def test_approval_wait_metadata_round_trips_as_immutable_exact_correlation() -> None:
     challenge = ToolApprovalChallenge(
-        approval_id=ToolApprovalId(UUID("60000000-0000-0000-0000-000000000006")),
+        approval_id=ToolApprovalId(UUID("70000000-0000-0000-0000-000000000007")),
+        principal_type=PrincipalType.SERVICE,
+        principal=REQUESTER,
+        session_id=SESSION_ID,
+        agent_id=AgentId("assistant"),
         run_id=AGENT_RUN_ID,
         step_id=STEP_ID,
         call_id=CALL_ID,
         tool_id=ToolId("files.write"),
         effect=ToolEffect.REVERSIBLE_WRITE,
+        resolver_id="workspace-file",
+        adapter_id="deterministic-file-writer",
         resolved_resource="workspace:docs/report.txt",
         argument_digest="sha256:" + "a" * 64,
         requested_at=NOW,
         expires_at=NOW + timedelta(minutes=2),
+        schema_version=2,
     )
     metadata = approval_wait_checkpoint_metadata(
         challenge,
@@ -326,6 +352,71 @@ def test_approval_wait_metadata_round_trips_as_immutable_exact_correlation() -> 
     assert "approval-token" not in serialized
 
 
+def test_legacy_approval_wait_reference_default_remains_v1() -> None:
+    legacy = _legacy_challenge()
+    reference = ApprovalWaitReference(
+        legacy.approval_id,
+        legacy.run_id,
+        legacy.step_id,
+        legacy.call_id,
+        legacy.tool_id,
+        legacy.effect,
+        legacy.resolved_resource,
+        legacy.argument_digest,
+        REQUESTER,
+        legacy.requested_at,
+        legacy.expires_at,
+    )
+    assert reference.schema_version == 1
+    assert reference.to_metadata()["approval.schema"] == "1"
+
+
+async def test_legacy_v1_checkpoint_requires_new_approval_without_becoming_authority() -> None:
+    legacy = _legacy_challenge()
+    metadata = approval_wait_checkpoint_metadata(legacy, requester=REQUESTER)
+    assert metadata["approval.schema"] == "1"
+    assert "approval.agent" not in metadata
+    assert "approval.session-id" not in metadata
+
+    assessment = await ToolApprovalDurableRevalidator(
+        InMemoryToolApprovalService(clock=_Clock(NOW))
+    ).revalidate(
+        _checkpoint(legacy, approval_metadata=metadata),
+        now=RECHECK_TIME,
+    )
+
+    assert assessment.state is DurableApprovalState.REAPPROVAL_REQUIRED
+    assert assessment.ready is False
+    assert assessment.approval_id == legacy.approval_id
+
+
+async def test_legacy_v1_recovery_pauses_for_operator_without_authority() -> None:
+    legacy = _legacy_challenge()
+    store = InMemoryDurableRunStore()
+    await store.create(_checkpoint(legacy))
+    coordinator = StartupDurableRecoveryCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility_validator(),
+        approval_revalidator=ToolApprovalDurableRevalidator(
+            InMemoryToolApprovalService(clock=_Clock(NOW))
+        ),
+    )
+
+    assessment = await coordinator.assess_candidate(
+        DURABLE_RUN_ID,
+        owner_id="startup-worker",
+        now=RECHECK_TIME,
+    )
+
+    approval = assessment.approval_revalidation
+    assert isinstance(approval, DurableApprovalRevalidation)
+    assert approval.state is DurableApprovalState.REAPPROVAL_REQUIRED
+    assert approval.ready is False
+    assert assessment.point is RecoveryPoint.AWAITING_APPROVAL
+    assert assessment.disposition is RecoveryDisposition.PAUSE_OPERATOR
+
+
 @pytest.mark.parametrize(
     "missing_key",
     (
@@ -338,6 +429,12 @@ def test_approval_wait_metadata_round_trips_as_immutable_exact_correlation() -> 
         "approval.effect",
         "approval.resource",
         "approval.argument-digest",
+        "approval.principal-type",
+        "approval.principal",
+        "approval.session-id",
+        "approval.agent",
+        "approval.resolver",
+        "approval.adapter",
         "approval.requester",
         "approval.requested-at",
         "approval.expires-at",
@@ -365,13 +462,18 @@ async def test_missing_approval_correlation_fails_closed(missing_key: str) -> No
 @pytest.mark.parametrize(
     ("key", "value"),
     (
-        ("approval.schema", "2"),
+        ("approval.schema", "3"),
         ("approval.id", "not-a-uuid"),
         ("approval.run", "not-a-uuid"),
         ("approval.step", "not-a-uuid"),
         ("approval.call", "not-a-uuid"),
         ("approval.tool", "Files.Write"),
         ("approval.effect", "unknown"),
+        ("approval.principal-type", "unknown"),
+        ("approval.session-id", "not-a-uuid"),
+        ("approval.agent", "Assistant"),
+        ("approval.resolver", "INVALID RESOLVER"),
+        ("approval.adapter", "INVALID ADAPTER"),
         ("approval.argument-digest", "sha256:abc"),
         ("approval.requested-at", "2026-08-01T00:00:00"),
         ("approval.expires-at", "not-a-time"),
@@ -688,6 +790,7 @@ def test_revalidation_state_values_are_stable() -> None:
     assert tuple(DurableApprovalState) == (
         DurableApprovalState.PENDING,
         DurableApprovalState.APPROVED,
+        DurableApprovalState.REAPPROVAL_REQUIRED,
         DurableApprovalState.CONSUMED,
         DurableApprovalState.EXPIRED,
         DurableApprovalState.MISSING,

@@ -423,9 +423,9 @@ async def main() -> None:
     assert result.final_output == "packaged agent complete"
     assert result.model_turns == 2
     assert result.tool_calls == 1
-    assert run_authorizer.calls == 1
-    assert model_authorizer.calls == 2
-    assert tool_authorizer.calls == 1
+    assert run_authorizer.calls == 2
+    assert model_authorizer.calls == 4
+    assert tool_authorizer.calls == 2
     assert len(adapter.requests) == 1
     assert AGENT_RUN_ACTION == "agent.run"
     assert TOOL_INVOKE_ACTION == "tool.invoke"

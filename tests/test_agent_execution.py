@@ -8,6 +8,7 @@ import pytest
 from phoenix_os.agent import (
     AgentCancellationToken,
     AgentCancelledError,
+    AgentId,
     AgentMalformedProposalError,
     AgentMessage,
     AgentMessageRole,
@@ -77,8 +78,9 @@ def _turn_request(*tools: ToolDescriptor) -> AgentModelTurnRequest:
     )
 
 
-def _invocation() -> ToolInvocationRequest:
+def _invocation(*, agent_id: str | None = "assistant") -> ToolInvocationRequest:
     return ToolInvocationRequest(
+        agent_id=None if agent_id is None else AgentId(agent_id),
         run_id=AgentRunId(),
         step_id=AgentStepId(),
         call_id=ToolCallId(),
@@ -327,6 +329,23 @@ async def test_model_rejects_cancelled_or_failed_work_safely() -> None:
             cancellation_grace=0.1,
             cancellation=AgentCancellationToken(),
         )
+
+
+@pytest.mark.asyncio
+async def test_tool_execution_rejects_missing_agent_binding_before_adapter_call() -> None:
+    adapter = DeterministicReadOnlyTool("lookup", {"value": "fixed"})
+
+    with pytest.raises(ToolExecutionError):
+        await BoundedAgentExecutor(clock=lambda: _NOW).invoke_tool(
+            adapter,
+            _invocation(agent_id=None),
+            _descriptor(),
+            timeout_seconds=1,
+            cancellation_grace=0.1,
+            cancellation=AgentCancellationToken(),
+        )
+
+    assert adapter.requests == ()
 
 
 @pytest.mark.asyncio

@@ -135,6 +135,35 @@ class _SlowWindowDiscoveryBackend(_WindowDiscoveryBackend):
         return windows_module._NativeWindowSnapshot(())
 
 
+class _FakeWindowLifetimeGuard:
+    def __init__(self) -> None:
+        self.index = 0
+        self.revisions: dict[int, int] = {}
+        self.started = False
+        self.closed = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def barrier(self) -> int:
+        if not self.started or self.closed:
+            raise RuntimeError("fake window lifetime guard unavailable")
+        self.index += 1
+        return self.index
+
+    def revision_for(self, hwnd: int) -> int:
+        if not self.started or self.closed:
+            raise RuntimeError("fake window lifetime guard unavailable")
+        return self.revisions.get(hwnd, 0)
+
+    def rebirth(self, hwnd: int) -> None:
+        self.index += 1
+        self.revisions[hwnd] = self.index
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def _adapter(
     monkeypatch: pytest.MonkeyPatch,
     backend: object,
@@ -146,6 +175,12 @@ def _adapter(
         windows_module,
         "_CtypesWindowsDiscoveryBackend",
         lambda: backend,
+    )
+    guard = _FakeWindowLifetimeGuard()
+    monkeypatch.setattr(
+        windows_module,
+        "_CtypesWindowsWindowLifetimeGuard",
+        lambda: guard,
     )
     return WindowsHostAutomationAdapter(
         host_id=_HOST,
@@ -214,6 +249,32 @@ async def test_same_window_keeps_opaque_id_but_native_handle_reuse_gets_new_iden
     assert second.windows[0].title == "Renamed"
     assert reused.windows[0].window_id != first.windows[0].window_id
     assert reused.windows[0].process_id != first.windows[0].process_id
+
+
+@pytest.mark.asyncio
+async def test_same_hwnd_same_process_rebirth_gets_new_window_identity_without_empty_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _WindowDiscoveryBackend(
+        (
+            windows_module._NativeWindowSnapshot((_window(100, 42, 1000, "First"),)),
+            windows_module._NativeWindowSnapshot((_window(100, 42, 1000, "Second"),)),
+        )
+    )
+    adapter = _adapter(monkeypatch, backend)
+    request = HostWindowListRequest(host_id=_HOST, created_at=_NOW)
+
+    first = await adapter.list_windows(request)
+    first_id = first.windows[0].window_id
+
+    guard = adapter._window_lifetime_guard
+    assert isinstance(guard, _FakeWindowLifetimeGuard)
+    guard.rebirth(100)
+
+    second = await adapter.list_windows(request)
+
+    assert second.windows[0].window_id != first_id
+    assert second.windows[0].process_id == first.windows[0].process_id
 
 
 @pytest.mark.asyncio
@@ -415,3 +476,133 @@ async def test_real_windows_window_discovery_is_bounded_and_exposes_no_native_ha
     for item in result.windows:
         UUID(str(item.window_id))
         UUID(str(item.process_id))
+
+
+@pytest.mark.asyncio
+async def test_window_discovery_omits_record_changed_during_lifetime_bracket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _FakeWindowLifetimeGuard()
+
+    class _ChangingBackend(_WindowDiscoveryBackend):
+        def enumerate_windows(
+            self,
+            *,
+            maximum_records: int,
+            maximum_title_characters: int,
+        ) -> windows_module._NativeWindowSnapshot:
+            snapshot = super().enumerate_windows(
+                maximum_records=maximum_records,
+                maximum_title_characters=maximum_title_characters,
+            )
+            guard.rebirth(100)
+            return snapshot
+
+    backend = _ChangingBackend(
+        (windows_module._NativeWindowSnapshot((_window(100, 42, 1000, "Editor"),)),)
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(windows_module, "_CtypesWindowsDiscoveryBackend", lambda: backend)
+    monkeypatch.setattr(
+        windows_module,
+        "_CtypesWindowsWindowLifetimeGuard",
+        lambda: guard,
+    )
+    adapter = WindowsHostAutomationAdapter(host_id=_HOST)
+
+    result = await adapter.list_windows(HostWindowListRequest(host_id=_HOST, created_at=_NOW))
+
+    assert result.windows == ()
+    assert adapter._window_ids == {}
+    assert adapter._native_windows == {}
+
+
+@pytest.mark.asyncio
+async def test_window_discovery_startup_guard_failure_mints_no_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingStartGuard(_FakeWindowLifetimeGuard):
+        def start(self) -> None:
+            raise RuntimeError("guard startup failed")
+
+    backend = _WindowDiscoveryBackend(
+        (windows_module._NativeWindowSnapshot((_window(100, 42, 1000, "Editor"),)),)
+    )
+    guard = _FailingStartGuard()
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(windows_module, "_CtypesWindowsDiscoveryBackend", lambda: backend)
+    monkeypatch.setattr(
+        windows_module,
+        "_CtypesWindowsWindowLifetimeGuard",
+        lambda: guard,
+    )
+    adapter = WindowsHostAutomationAdapter(host_id=_HOST)
+
+    with pytest.raises(HostAutomationAdapterError):
+        await adapter.list_windows(HostWindowListRequest(host_id=_HOST, created_at=_NOW))
+
+    assert adapter._window_ids == {}
+    assert adapter._native_windows == {}
+
+
+@pytest.mark.asyncio
+async def test_window_lifetime_guard_is_closed_with_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _WindowDiscoveryBackend(
+        (windows_module._NativeWindowSnapshot((_window(100, 42, 1000, "Editor"),)),)
+    )
+    adapter = _adapter(monkeypatch, backend)
+    await adapter.list_windows(HostWindowListRequest(host_id=_HOST, created_at=_NOW))
+    guard = adapter._window_lifetime_guard
+    assert isinstance(guard, _FakeWindowLifetimeGuard)
+
+    await adapter.close()
+
+    assert guard.closed is True
+    assert adapter.closed is True
+
+
+@pytest.mark.asyncio
+async def test_window_lifetime_guard_close_failure_is_retryable_after_adapter_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingCloseOnceGuard(_FakeWindowLifetimeGuard):
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise RuntimeError("guard close failed")
+            super().close()
+
+    backend = _WindowDiscoveryBackend(
+        (windows_module._NativeWindowSnapshot((_window(100, 42, 1000, "Editor"),)),)
+    )
+    guard = _FailingCloseOnceGuard()
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(windows_module, "_CtypesWindowsDiscoveryBackend", lambda: backend)
+    monkeypatch.setattr(
+        windows_module,
+        "_CtypesWindowsWindowLifetimeGuard",
+        lambda: guard,
+    )
+    adapter = WindowsHostAutomationAdapter(host_id=_HOST)
+    await adapter.list_windows(HostWindowListRequest(host_id=_HOST, created_at=_NOW))
+
+    with pytest.raises(HostAutomationAdapterError):
+        await adapter.close()
+
+    assert adapter.closed is True
+    assert adapter._window_lifetime_guard is guard
+    assert guard.closed is False
+    assert guard.close_calls == 1
+
+    await adapter.close()
+
+    assert adapter.closed is True
+    assert guard.closed is True
+    assert guard.close_calls == 2
+    assert adapter._window_lifetime_guard is None

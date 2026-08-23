@@ -107,6 +107,7 @@ def test_schema_codecs_are_canonical_and_round_trip() -> None:
 def test_proposal_invocation_and_result_codecs_round_trip() -> None:
     proposal = _proposal()
     invocation = ToolInvocationRequest(
+        agent_id=AgentId("assistant"),
         run_id=proposal.run_id,
         step_id=proposal.step_id,
         call_id=proposal.call_id,
@@ -130,6 +131,41 @@ def test_proposal_invocation_and_result_codecs_round_trip() -> None:
     assert decode_tool_call_proposal(encode_tool_call_proposal(proposal)) == proposal
     assert decode_tool_invocation_request(encode_tool_invocation_request(invocation)) == invocation
     assert decode_tool_invocation_result(encode_tool_invocation_result(result)) == result
+
+
+def test_tool_invocation_v1_is_readable_but_not_reauthorizable() -> None:
+    proposal = _proposal()
+    invocation = ToolInvocationRequest(
+        agent_id=AgentId("assistant"),
+        run_id=proposal.run_id,
+        step_id=proposal.step_id,
+        call_id=proposal.call_id,
+        tool_id=proposal.tool_id,
+        arguments=proposal.arguments,
+        resolved_resource="workspace:docs/readme.md",
+        created_at=NOW,
+        deadline=NOW + timedelta(minutes=1),
+    )
+    encoded_v2 = encode_tool_invocation_request(invocation)
+    document = json.loads(encoded_v2)
+    assert document["schema_version"] == 2
+    assert document["record"]["agent_id"] == "assistant"
+
+    document["schema_version"] = 1
+    del document["record"]["agent_id"]
+    encoded_v1 = json.dumps(
+        document,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+    legacy = decode_tool_invocation_request(encoded_v1)
+
+    assert legacy.agent_id is None
+    with pytest.raises(AgentCodecError, match="agent binding"):
+        encode_tool_invocation_request(legacy)
 
 
 def test_run_request_result_and_snapshot_codecs_round_trip() -> None:

@@ -24,6 +24,7 @@ from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.service import AgentService
 from phoenix_os.agent.tools import ToolAdapter, ToolResourceResolver
 from phoenix_os.audit import AuditLedger
+from phoenix_os.authority import CurrentSessionFreshnessValidator, SessionFreshnessSource
 from phoenix_os.events import EventBus
 from phoenix_os.inference.authorization import PolicyEngineInferenceAuthorizer
 from phoenix_os.observability import ObservabilityHub
@@ -56,6 +57,7 @@ def create_agent_runtime_stack(
     tool_resolvers: Iterable[ToolResourceResolver],
     tool_adapters: Iterable[ToolAdapter],
     policy: PolicyEngine,
+    session_freshness_source: SessionFreshnessSource | None = None,
     events: EventBus | None = None,
     approval_service: ToolApprovalService | None = None,
     approval_resolver: ToolApprovalResolver | None = None,
@@ -71,6 +73,10 @@ def create_agent_runtime_stack(
         raise TypeError("model_adapter must implement AgentModelTurnAdapter")
     if not isinstance(policy, PolicyEngine):
         raise TypeError("policy must be PolicyEngine")
+    if session_freshness_source is not None and not isinstance(
+        session_freshness_source, SessionFreshnessSource
+    ):
+        raise TypeError("session_freshness_source must implement SessionFreshnessSource")
     resolved_events = EventBus() if events is None else events
     if not isinstance(resolved_events, EventBus):
         raise TypeError("events must be EventBus")
@@ -152,6 +158,11 @@ def create_agent_runtime_stack(
                 PolicyEngineInferenceAuthorizer(policy)
             ),
             tool_authorizer=PolicyEngineToolAuthorizer(policy),
+            authority_freshness=(
+                None
+                if session_freshness_source is None
+                else CurrentSessionFreshnessValidator(session_freshness_source)
+            ),
             model_adapter=model_adapter,
             registry=registry,
             executor=executor,

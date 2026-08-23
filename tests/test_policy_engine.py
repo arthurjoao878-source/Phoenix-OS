@@ -171,7 +171,10 @@ async def test_unmet_requirements_do_not_match(
 
 
 @pytest.mark.asyncio
-async def test_request_attributes_override_context_attributes() -> None:
+@pytest.mark.parametrize("request_value", ["phoenix", "other"])
+async def test_request_attributes_cannot_override_context_attributes(
+    request_value: str,
+) -> None:
     engine = PolicyEngine(
         (
             PolicyRule(
@@ -181,11 +184,19 @@ async def test_request_attributes_override_context_attributes() -> None:
             ),
         )
     )
-    context = user_context(attributes={"tenant": "other"})
+    context = user_context(attributes={"tenant": "phoenix"})
     decision = await engine.evaluate(
-        PolicyRequest("read", "resource", context, {"tenant": "phoenix"})
+        PolicyRequest("read", "resource", context, {"tenant": request_value})
     )
-    assert decision.effect is PolicyEffect.ALLOW
+
+    assert decision.effect is PolicyEffect.DENY
+    assert decision.rule_id is None
+    assert decision.matched_rules == ()
+    assert decision.reason == "policy request attribute collision with security context; deny"
+    snapshot = await engine.snapshot()
+    assert snapshot.evaluations == 1
+    assert snapshot.allowed == 0
+    assert snapshot.denied == 1
 
 
 @pytest.mark.asyncio

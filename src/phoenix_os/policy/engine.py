@@ -115,9 +115,16 @@ class PolicyEngine:
     async def evaluate(self, request: PolicyRequest) -> PolicyDecision:
         self._ensure_open()
         async with self._trace(request):
-            ordered = await self._ordered_rules()
-            matched = tuple(item for item in ordered if _matches(item.rule, request))
-            decision = _decide(request, matched)
+            if any(key in request.context.attributes for key in request.attributes):
+                decision = PolicyDecision(
+                    request_id=request.id,
+                    effect=PolicyEffect.DENY,
+                    reason="policy request attribute collision with security context; deny",
+                )
+            else:
+                ordered = await self._ordered_rules()
+                matched = tuple(item for item in ordered if _matches(item.rule, request))
+                decision = _decide(request, matched)
             await self._record(decision)
             await self._signal(request, decision)
             return decision

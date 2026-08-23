@@ -29,6 +29,7 @@ from phoenix_os.agent.coordination_runtime import (
     DelegatedAgentService,
 )
 from phoenix_os.audit import AuditLedger
+from phoenix_os.authority import CurrentSessionFreshnessValidator, SessionFreshnessSource
 from phoenix_os.events import EventBus
 from phoenix_os.observability import ObservabilityHub
 from phoenix_os.policy import PolicyEngine
@@ -107,6 +108,7 @@ def create_durable_agent_coordination_runtime_stack(
     child_services: Mapping[AgentId, DelegatedAgentService],
     policy: PolicyEngine,
     store: DurableDelegationStore,
+    session_freshness_source: SessionFreshnessSource | None = None,
     events: EventBus | None = None,
     audit: AuditLedger | None = None,
     observability: ObservabilityHub | None = None,
@@ -120,6 +122,11 @@ def create_durable_agent_coordination_runtime_stack(
         raise TypeError("policy must be PolicyEngine")
     if not isinstance(store, DurableDelegationStore):
         raise TypeError("store must implement DurableDelegationStore")
+    if session_freshness_source is not None and not isinstance(
+        session_freshness_source,
+        SessionFreshnessSource,
+    ):
+        raise TypeError("session_freshness_source must implement SessionFreshnessSource")
     if store.closed:
         raise ValueError("store must be open")
     resolved_events = EventBus() if events is None else events
@@ -166,6 +173,14 @@ def create_durable_agent_coordination_runtime_stack(
             store=store,
             limits=configuration.limits,
             root_budget_limit=configuration.root_budget_limit,
+            authority_freshness=(
+                None
+                if session_freshness_source is None
+                else CurrentSessionFreshnessValidator(
+                    session_freshness_source,
+                    clock=clock,
+                )
+            ),
             clock=clock,
         )
         recovery = DurableDelegationRecoveryCoordinator(store, clock=clock)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from math import inf, nan
 from uuid import UUID
@@ -10,6 +11,7 @@ from phoenix_os.agent import (
     MEMORY_CONTEXT_TRUST_LABEL,
     AgentLimitExceededError,
     AgentMemoryService,
+    AgentStateConflictError,
     DeterministicLexicalMemoryRetrievalAdapter,
     InMemoryAgentMemoryStore,
     MemoryContextBlock,
@@ -21,6 +23,7 @@ from phoenix_os.agent import (
     MemoryProvenance,
     MemoryReadRequest,
     MemoryRecord,
+    MemoryRecordIncarnation,
     MemoryRecordVersion,
     MemoryRetrievalCandidate,
     MemoryScope,
@@ -61,6 +64,8 @@ def _write(
     *,
     scope: MemoryScope | None = None,
     memory_id: MemoryId | None = None,
+    expected_version: MemoryRecordVersion | None = None,
+    expected_incarnation: MemoryRecordIncarnation | None = None,
 ) -> MemoryWriteRequest:
     digest = memory_content_digest(content)
     return MemoryWriteRequest(
@@ -74,6 +79,8 @@ def _write(
             attributes={"source": "test"},
         ),
         metadata={"kind": "note"},
+        expected_version=expected_version,
+        expected_incarnation=expected_incarnation,
         created_at=_NOW,
     )
 
@@ -82,6 +89,7 @@ class _AllowMemoryAuthorizer:
     def __init__(self) -> None:
         self.search_calls = 0
         self.read_calls = 0
+        self.read_requests: list[MemoryReadRequest] = []
         self.write_calls = 0
         self.delete_calls = 0
 
@@ -99,6 +107,7 @@ class _AllowMemoryAuthorizer:
         context: SecurityContext,
     ) -> None:
         assert context.authenticated
+        self.read_requests.append(request)
         self.read_calls += 1
 
     async def authorize_write(
@@ -127,6 +136,23 @@ class _AllowMemoryAuthorizer:
         assert context.authenticated
 
 
+class _BlockingReadReauthorization(_AllowMemoryAuthorizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reauthorization_started = asyncio.Event()
+        self.release_reauthorization = asyncio.Event()
+
+    async def authorize_read(
+        self,
+        request: MemoryReadRequest,
+        context: SecurityContext,
+    ) -> None:
+        if self.read_calls == 1:
+            self.reauthorization_started.set()
+            await self.release_reauthorization.wait()
+        await super().authorize_read(request, context)
+
+
 class _StaticAdapter:
     adapter_id = "static-memory-candidates"
 
@@ -147,12 +173,14 @@ def _candidate(
     *,
     score: float = 1.0,
     scope: MemoryScope | None = None,
+    incarnation: MemoryRecordIncarnation | None = None,
     version: MemoryRecordVersion | None = None,
     digest: str | None = None,
 ) -> MemoryRetrievalCandidate:
     return MemoryRetrievalCandidate(
         scope=record.scope if scope is None else scope,
         memory_id=record.memory_id,
+        incarnation=record.incarnation if incarnation is None else incarnation,
         version=record.version if version is None else version,
         content_digest=record.content_digest if digest is None else digest,
         score=score,
@@ -175,6 +203,7 @@ async def test_deterministic_lexical_adapter_returns_matching_candidates() -> No
     )
 
     assert [candidate.memory_id for candidate in candidates] == [blue.memory_id]
+    assert candidates[0].incarnation == blue.incarnation
     assert candidates[0].score > 0
 
 
@@ -243,6 +272,36 @@ async def test_stale_version_candidate_cannot_resurrect_record() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_incarnation_candidate_cannot_match_reborn_identity() -> None:
+    store = InMemoryAgentMemoryStore(clock=lambda: _NOW)
+    record = await store.write(_write("same bytes"))
+    stale_incarnation = MemoryRecordIncarnation(UUID("80000000-0000-4000-8000-000000000030"))
+    assert stale_incarnation != record.incarnation
+    service = AgentMemoryService(
+        store=store,
+        authorizer=_AllowMemoryAuthorizer(),
+        retrieval=_StaticAdapter(
+            (
+                _candidate(
+                    record,
+                    incarnation=stale_incarnation,
+                    version=record.version,
+                    digest=record.content_digest,
+                ),
+            )
+        ),
+        clock=lambda: _NOW,
+    )
+
+    result = await service.search(
+        MemorySearchRequest(scope=_scope(), query="same", created_at=_NOW),
+        _context(),
+    )
+
+    assert result.hits == ()
+
+
+@pytest.mark.asyncio
 async def test_wrong_digest_candidate_is_rejected() -> None:
     store = InMemoryAgentMemoryStore(clock=lambda: _NOW)
     record = await store.write(_write("digest"))
@@ -271,6 +330,7 @@ async def test_deleted_candidate_is_absent_after_authoritative_revalidation() ->
             scope=record.scope,
             memory_id=record.memory_id,
             expected_version=record.version,
+            expected_incarnation=record.incarnation,
             created_at=_NOW,
         )
     )
@@ -354,6 +414,7 @@ def test_candidate_scores_must_be_finite_and_bounded(score: float) -> None:
         MemoryRetrievalCandidate(
             scope=_scope(),
             memory_id=_memory_id(1),
+            incarnation=MemoryRecordIncarnation(UUID(int=123)),
             version=MemoryRecordVersion(),
             content_digest="sha256:" + "a" * 64,
             score=score,
@@ -389,6 +450,50 @@ async def test_context_block_preserves_provenance_and_renders_user_data() -> Non
 
 
 @pytest.mark.asyncio
+async def test_direct_read_update_during_version_reauthorization_is_not_disclosed() -> None:
+    store = InMemoryAgentMemoryStore(clock=lambda: _NOW)
+    created = await store.write(_write("initial"))
+    authorizer = _BlockingReadReauthorization()
+    service = AgentMemoryService(
+        store=store,
+        authorizer=authorizer,
+        retrieval=DeterministicLexicalMemoryRetrievalAdapter(store),
+        clock=lambda: _NOW,
+    )
+
+    task = asyncio.create_task(
+        service.read(
+            MemoryReadRequest(
+                scope=created.scope,
+                memory_id=created.memory_id,
+                created_at=_NOW,
+            ),
+            _context(),
+        )
+    )
+    await authorizer.reauthorization_started.wait()
+
+    updated = await store.write(
+        _write(
+            "updated",
+            memory_id=created.memory_id,
+            expected_version=created.version,
+            expected_incarnation=created.incarnation,
+        )
+    )
+    authorizer.release_reauthorization.set()
+
+    with pytest.raises(AgentStateConflictError):
+        await task
+
+    assert updated.version == created.version.next()
+    assert authorizer.read_calls == 2
+    assert authorizer.read_requests[0].expected_version is None
+    assert authorizer.read_requests[1].expected_version == created.version
+    assert authorizer.read_requests[1].expected_incarnation == created.incarnation
+
+
+@pytest.mark.asyncio
 async def test_service_direct_operations_use_independent_authorization() -> None:
     store = InMemoryAgentMemoryStore(clock=lambda: _NOW)
     authorizer = _AllowMemoryAuthorizer()
@@ -414,6 +519,7 @@ async def test_service_direct_operations_use_independent_authorization() -> None
             scope=created.scope,
             memory_id=created.memory_id,
             expected_version=created.version,
+            expected_incarnation=created.incarnation,
             created_at=_NOW,
         ),
         _context(),
@@ -421,5 +527,8 @@ async def test_service_direct_operations_use_independent_authorization() -> None
 
     assert loaded == created
     assert authorizer.write_calls == 1
-    assert authorizer.read_calls == 1
+    assert authorizer.read_calls == 2
+    assert authorizer.read_requests[0].expected_version is None
+    assert authorizer.read_requests[1].expected_version == created.version
+    assert authorizer.read_requests[1].expected_incarnation == created.incarnation
     assert authorizer.delete_calls == 1

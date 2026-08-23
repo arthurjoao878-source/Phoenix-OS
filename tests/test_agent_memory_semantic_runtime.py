@@ -21,6 +21,7 @@ from phoenix_os.agent import (
     MemoryProvenance,
     MemoryReadRequest,
     MemoryRecord,
+    MemoryRecordIncarnation,
     MemoryRecordVersion,
     MemoryRetrievalCandidate,
     MemoryRuntimeOperation,
@@ -166,6 +167,7 @@ def _write(
     content: str,
     *,
     expected_version: MemoryRecordVersion | None = None,
+    expected_incarnation: MemoryRecordIncarnation | None = None,
 ) -> MemoryWriteRequest:
     digest = memory_content_digest(content)
     return MemoryWriteRequest(
@@ -177,6 +179,7 @@ def _write(
             created_at=_NOW,
         ),
         expected_version=expected_version,
+        expected_incarnation=expected_incarnation,
         created_at=_NOW,
     )
 
@@ -185,6 +188,7 @@ def _candidate(record: MemoryRecord) -> MemoryRetrievalCandidate:
     return MemoryRetrievalCandidate(
         scope=record.scope,
         memory_id=record.memory_id,
+        incarnation=record.incarnation,
         version=record.version,
         content_digest=record.content_digest,
         score=0.0,
@@ -217,6 +221,7 @@ async def test_semantic_index_candidate_is_revalidated_after_source_delete() -> 
             scope=record.scope,
             memory_id=record.memory_id,
             expected_version=record.version,
+            expected_incarnation=record.incarnation,
             created_at=_NOW,
         )
     )
@@ -309,6 +314,7 @@ async def test_restart_recovery_rebuilds_only_authoritative_active_records() -> 
             scope=record.scope,
             memory_id=record.memory_id,
             expected_version=record.version,
+            expected_incarnation=record.incarnation,
             created_at=clock.now,
         )
     )

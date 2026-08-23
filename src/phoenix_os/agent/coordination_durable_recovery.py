@@ -37,6 +37,7 @@ from phoenix_os.agent.errors import (
     DelegationNotFoundError,
 )
 from phoenix_os.agent.state import AgentCancellationToken
+from phoenix_os.authority import AuthorityFreshnessValidator
 from phoenix_os.policy import SecurityContext
 
 
@@ -74,6 +75,7 @@ class DurableAgentDelegationCoordinator(AgentDelegationCoordinator):
         store: DurableDelegationStore,
         limits: DelegationLimits,
         root_budget_limit: DelegationBudget,
+        authority_freshness: AuthorityFreshnessValidator | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(store, DurableDelegationStore):
@@ -85,6 +87,7 @@ class DurableAgentDelegationCoordinator(AgentDelegationCoordinator):
             authorizer,
             limits=limits,
             root_budget_limit=root_budget_limit,
+            authority_freshness=authority_freshness,
             clock=clock,
         )
         self._durable_registry = registry

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -28,6 +29,13 @@ HOST_WINDOW_FOCUS_ACTION = "host.window.focus"
 HOST_APPLICATION_CLOSE_ACTION = "host.app.close"
 HOST_CLIPBOARD_WRITE_ACTION = "host.clipboard.write"
 HOST_CLIPBOARD_READ_ACTION = "host.clipboard.read"
+_CLIPBOARD_TEXT_DIGEST_PREFIX = "sha256:"
+
+
+def _canonical_clipboard_text_digest(request: HostClipboardWriteRequest) -> str:
+    """Return a content-free digest over exact normalized clipboard text."""
+
+    return _CLIPBOARD_TEXT_DIGEST_PREFIX + hashlib.sha256(request.text.encode("utf-8")).hexdigest()
 
 
 def host_resource(host_id: HostId) -> str:
@@ -256,6 +264,7 @@ class PolicyEngineHostAutomationAuthorizer:
                 **_base_attributes(request.host_id, request.request_id),
                 "text_characters": str(len(request.text)),
                 "text_bytes": str(len(request.text.encode("utf-8"))),
+                "text_digest": _canonical_clipboard_text_digest(request),
             },
             created_at=request.created_at,
         )

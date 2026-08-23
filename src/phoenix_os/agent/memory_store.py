@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from phoenix_os.agent.contracts import AgentId, AgentRunId
 from phoenix_os.agent.errors import (
@@ -24,6 +24,7 @@ from phoenix_os.agent.memory_contracts import (
     MemoryProvenance,
     MemoryReadRequest,
     MemoryRecord,
+    MemoryRecordIncarnation,
     MemoryRecordStatus,
     MemoryRecordVersion,
     MemoryScope,
@@ -42,9 +43,10 @@ from phoenix_os.state.errors import (
 from phoenix_os.state.memory import MemoryStateStore
 
 _MEMORY_STATE_NAMESPACE = "agent-memory"
-_MEMORY_DOCUMENT_SCHEMA_VERSION = 1
+_MEMORY_DOCUMENT_SCHEMA_VERSION = 2
 _MAX_MEMORY_SCOPE_LIST = 100_000
-_MEMORY_DOCUMENT_FIELDS = frozenset(
+_LEGACY_MEMORY_INCARNATION_NAMESPACE = UUID("7bb56d5a-a075-5fb7-8d32-84b5f5e99330")
+_MEMORY_DOCUMENT_SCHEMA_V1_FIELDS = frozenset(
     {
         "schema_version",
         "status",
@@ -63,6 +65,7 @@ _MEMORY_DOCUMENT_FIELDS = frozenset(
         "deleted_at",
     }
 )
+_MEMORY_DOCUMENT_SCHEMA_V2_FIELDS = _MEMORY_DOCUMENT_SCHEMA_V1_FIELDS | {"incarnation"}
 _PROVENANCE_FIELDS = frozenset(
     {
         "origin",
@@ -106,6 +109,23 @@ def _scope_digest(scope: MemoryScope) -> str:
 
 def _scope_prefix(scope: MemoryScope) -> str:
     return f"record.{_scope_digest(scope)}."
+
+
+def _legacy_record_incarnation(
+    scope: MemoryScope,
+    memory_id: MemoryId,
+    created_at: datetime,
+) -> MemoryRecordIncarnation:
+    identity = "\0".join(
+        (
+            scope.namespace.value,
+            scope.kind.value,
+            scope.scope_id.value,
+            memory_id.value.hex,
+            created_at.isoformat(),
+        )
+    )
+    return MemoryRecordIncarnation(uuid5(_LEGACY_MEMORY_INCARNATION_NAMESPACE, identity))
 
 
 def _record_key(scope: MemoryScope, memory_id: MemoryId) -> StateKey[MemoryStateDocument]:
@@ -221,6 +241,7 @@ def _encode_record(record: MemoryRecord) -> MemoryStateDocument:
         "scope_kind": record.scope.kind.value,
         "scope_id": record.scope.scope_id.value,
         "memory_id": str(record.memory_id),
+        "incarnation": str(record.incarnation),
         "version": record.version.value,
         "content": record.content,
         "content_digest": record.content_digest,
@@ -241,9 +262,18 @@ def _decode_record(
     expected_scope: MemoryScope | None = None,
     expected_memory_id: MemoryId | None = None,
 ) -> MemoryRecord:
-    if not isinstance(value, Mapping) or set(value) != _MEMORY_DOCUMENT_FIELDS:
+    if not isinstance(value, Mapping):
         raise AgentCodecError("agent memory document is invalid")
-    if value["schema_version"] != _MEMORY_DOCUMENT_SCHEMA_VERSION:
+    schema_version = value.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise AgentCodecError("agent memory document is invalid")
+    if schema_version == 1:
+        expected_fields = _MEMORY_DOCUMENT_SCHEMA_V1_FIELDS
+    elif schema_version == _MEMORY_DOCUMENT_SCHEMA_VERSION:
+        expected_fields = _MEMORY_DOCUMENT_SCHEMA_V2_FIELDS
+    else:
+        raise AgentCodecError("agent memory document is invalid")
+    if set(value) != expected_fields:
         raise AgentCodecError("agent memory document is invalid")
 
     namespace_raw = value["namespace"]
@@ -283,13 +313,22 @@ def _decode_record(
         content_raw = value["content"]
         if content_raw is not None and not isinstance(content_raw, str):
             raise AgentCodecError("agent memory document is invalid")
+        created_at = _parse_datetime(value["created_at"], label="created_at")
+        if schema_version == 1:
+            incarnation = _legacy_record_incarnation(scope, memory_id, created_at)
+        else:
+            incarnation_raw = value["incarnation"]
+            if not isinstance(incarnation_raw, str):
+                raise AgentCodecError("agent memory document is invalid")
+            incarnation = MemoryRecordIncarnation(UUID(incarnation_raw))
         record = MemoryRecord(
             scope=scope,
             memory_id=memory_id,
+            incarnation=incarnation,
             version=MemoryRecordVersion(version_raw),
             status=status,
             content_digest=digest_raw,
-            created_at=_parse_datetime(value["created_at"], label="created_at"),
+            created_at=created_at,
             updated_at=_parse_datetime(value["updated_at"], label="updated_at"),
             expires_at=_parse_datetime(value["expires_at"], label="expires_at"),
             content=content_raw,
@@ -336,6 +375,7 @@ def _active_record_from_request(
     if request.created_at > now or request.provenance.created_at > request.created_at:
         raise AgentStateConflictError()
     if current is None:
+        incarnation = MemoryRecordIncarnation()
         version = MemoryRecordVersion()
         created_at = now
     else:
@@ -345,14 +385,21 @@ def _active_record_from_request(
             or now < current.updated_at
         ):
             raise AgentStateConflictError()
-        if request.expected_version is None or current.version != request.expected_version:
+        if (
+            request.expected_version is None
+            or request.expected_incarnation is None
+            or current.version != request.expected_version
+            or current.incarnation != request.expected_incarnation
+        ):
             raise AgentStateConflictError()
+        incarnation = current.incarnation
         version = current.version.next()
         created_at = current.created_at
 
     return MemoryRecord(
         scope=request.scope,
         memory_id=request.memory_id,
+        incarnation=incarnation,
         version=version,
         status=MemoryRecordStatus.ACTIVE,
         content_digest=request.provenance.content_digest,
@@ -371,6 +418,7 @@ def _tombstone(record: MemoryRecord, *, now: datetime, limits: MemoryLimits) -> 
     return MemoryRecord(
         scope=record.scope,
         memory_id=record.memory_id,
+        incarnation=record.incarnation,
         version=record.version.next(),
         status=MemoryRecordStatus.TOMBSTONED,
         content_digest=record.content_digest,
@@ -458,7 +506,10 @@ class StateStoreMemoryStore:
                 stored = await transaction.get(key)
                 if stored is None:
                     current = None
-                    if request.expected_version is not None:
+                    if (
+                        request.expected_version is not None
+                        or request.expected_incarnation is not None
+                    ):
                         raise AgentStateConflictError()
                     state_expected = ABSENT_VERSION
                 else:
@@ -468,7 +519,7 @@ class StateStoreMemoryStore:
                         expected_memory_id=request.memory_id,
                     )
                     _require_state_identity(current, state_key=stored.key)
-                    if request.expected_version is None:
+                    if request.expected_version is None or request.expected_incarnation is None:
                         raise AgentStateConflictError()
                     state_expected = stored.version
 
@@ -515,6 +566,8 @@ class StateStoreMemoryStore:
         ) as exception:
             raise _safe_state_failure(exception) from None
         if stored is None:
+            if request.expected_version is not None or request.expected_incarnation is not None:
+                raise AgentStateConflictError()
             return None
         record = _decode_record(
             stored.value,
@@ -524,7 +577,15 @@ class StateStoreMemoryStore:
         _require_state_identity(record, state_key=stored.key)
         now = _now(self._clock)
         if record.status is not MemoryRecordStatus.ACTIVE or record.expires_at <= now:
+            if request.expected_version is not None or request.expected_incarnation is not None:
+                raise AgentStateConflictError()
             return None
+        if request.expected_version is not None and (
+            request.expected_incarnation is None
+            or record.version != request.expected_version
+            or record.incarnation != request.expected_incarnation
+        ):
+            raise AgentStateConflictError()
         return record
 
     async def delete(self, request: MemoryDeleteRequest) -> None:
@@ -550,6 +611,7 @@ class StateStoreMemoryStore:
                     current.status is not MemoryRecordStatus.ACTIVE
                     or current.expires_at <= now
                     or current.version != request.expected_version
+                    or current.incarnation != request.expected_incarnation
                 ):
                     raise AgentStateConflictError()
                 tombstone = _tombstone(current, now=now, limits=self._limits)

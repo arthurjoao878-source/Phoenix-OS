@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PYPROJECT = _ROOT / "pyproject.toml"
 _README = _ROOT / "README.md"
 _CHANGELOG = _ROOT / "CHANGELOG.md"
 _RELEASE_NOTES = _ROOT / "docs" / "releases" / "v0.32.0.md"
@@ -13,14 +11,8 @@ _RFC = _ROOT / "docs" / "rfcs" / "RFC-0032-secure-host-automation-and-desktop-co
 _GATE = _ROOT / "scripts" / "check_host_automation_release.py"
 
 
-def test_project_version_is_v0320() -> None:
-    document = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert document["project"]["version"] == "0.32.0"
-
-
-def test_readme_announces_thirty_two_specs_and_host_automation_gate() -> None:
+def test_readme_preserves_v032_release_history() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.32.0` implements thirty-two accepted specifications:" in readme
     assert "RFC-0032" in readme
     assert "Secure Host Automation and Desktop Control" in readme
     current = "[Phoenix OS 0.32.0](docs/releases/v0.32.0.md)"
@@ -30,7 +22,7 @@ def test_readme_announces_thirty_two_specs_and_host_automation_gate() -> None:
     assert "## Host-automation release gate" in readme
 
 
-def test_changelog_starts_with_v0320_release() -> None:
+def test_changelog_preserves_v0320_release() -> None:
     changelog = _CHANGELOG.read_text(encoding="utf-8")
     current = "## [0.32.0] - 2026-08-19"
     previous = "## [0.31.0] - 2026-08-14"
@@ -48,7 +40,7 @@ def test_changelog_starts_with_v0320_release() -> None:
         assert phrase in changelog
 
 
-def test_v032_release_notes_are_complete() -> None:
+def test_v032_release_notes_remain_complete() -> None:
     notes = _RELEASE_NOTES.read_text(encoding="utf-8")
     for phrase in (
         "# Phoenix OS 0.32.0",
@@ -77,7 +69,7 @@ def test_v032_release_notes_are_complete() -> None:
     assert "Verify artifact names and checksums against `SHA256SUMS`" in notes
 
 
-def test_rfc_is_fully_accepted_for_v0320() -> None:
+def test_rfc_remains_accepted_for_v0320() -> None:
     rfc = " ".join(_RFC.read_text(encoding="utf-8").split())
     assert "- Status: Accepted" in rfc
     assert "- [ ]" not in rfc
@@ -88,7 +80,7 @@ def test_rfc_is_fully_accepted_for_v0320() -> None:
     assert "RFC-0032 is accepted for Phoenix OS 0.32.0." in rfc
 
 
-def test_gate_and_previous_release_notes_remain_available() -> None:
+def test_v032_gate_and_previous_release_notes_remain_available() -> None:
     assert _GATE.is_file()
     assert _PREVIOUS_RELEASE_NOTES.is_file()
     assert "# Phoenix OS 0.31.0" in _PREVIOUS_RELEASE_NOTES.read_text(encoding="utf-8")

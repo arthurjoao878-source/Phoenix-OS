@@ -5,10 +5,15 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass
 
+from phoenix_os.authority import AuthorityInspectionSource
 from phoenix_os.capabilities import CapabilityRegistry
 from phoenix_os.control_plane.auth import (
     AdminTokenAuthenticator,
     ControlPlaneCommandAuthorizer,
+)
+from phoenix_os.control_plane.authority_http import ControlPlaneAuthorityHttpAdapter
+from phoenix_os.control_plane.authority_integration import (
+    create_control_plane_authority_service,
 )
 from phoenix_os.control_plane.command_api import ControlPlaneCommandApi
 from phoenix_os.control_plane.confirmation import InMemoryControlPlaneConfirmationService
@@ -306,6 +311,7 @@ class ControlPlaneRuntimeStack:
         inbound_manager: InboundManager | None = None,
         inbound_http: ControlPlaneInboundHttpAdapter | None = None,
         webhook_manager: WebhookManager | None = None,
+        authority_source: AuthorityInspectionSource | None = None,
         policy_engine: PolicyEngine | None = None,
         jobs: JobSnapshotSource | None = None,
         job_records: JobRecordSource | None = None,
@@ -385,6 +391,10 @@ class ControlPlaneRuntimeStack:
             raise TypeError("inbound HTTP adapter is invalid")
         if webhook_manager is not None and operator_registry is None:
             raise ValueError("webhook administration requires durable operator mode")
+        if authority_source is not None and operator_registry is None:
+            raise ValueError("authority diagnostics require durable operator mode")
+        if authority_source is not None and policy_engine is None:
+            raise ValueError("authority diagnostics require a PolicyEngine")
 
         runtime = _RuntimeSnapshotProxy()
         journal = command_journal or InMemoryControlPlaneCommandJournalRepository()
@@ -416,6 +426,7 @@ class ControlPlaneRuntimeStack:
         operator_step_up: ControlPlaneOperatorStepUpService | None = None
         durable_boundary: ControlPlaneDurableSessionHttpBoundary | None = None
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None
+        authority_http: ControlPlaneAuthorityHttpAdapter | None = None
         service_accounts: ControlPlaneServiceAccountRuntimeBundle | None = None
         service_accounts_owner: ControlPlaneServiceAccountRuntimeOwner | None = None
         inference_http: ControlPlaneInferenceHttpAdapter | None = None
@@ -463,6 +474,17 @@ class ControlPlaneRuntimeStack:
                 cookie_policy=cookie_policy,
                 public_origin=(None if network_policy is None else network_policy.public_origin),
             )
+            if authority_source is not None:
+                assert policy_engine is not None
+                authority_http = ControlPlaneAuthorityHttpAdapter(
+                    service=create_control_plane_authority_service(
+                        policy=policy_engine,
+                        source=authority_source,
+                        repository=durable_sessions,
+                        registry=operator_registry,
+                    ),
+                    boundary=durable_boundary,
+                )
             operator_step_up = ControlPlaneOperatorStepUpService(
                 authenticator=operator_authenticator,
                 registry=operator_registry,
@@ -637,6 +659,7 @@ class ControlPlaneRuntimeStack:
                 command_history=history,
                 durable_session_http=durable_boundary,
                 durable_operator_http=durable_operator_http,
+                authority_http=authority_http,
                 service_account_http=None if service_accounts is None else service_accounts.http,
                 inference_http=inference_http,
                 webhook_http=webhook_http,
@@ -654,6 +677,7 @@ class ControlPlaneRuntimeStack:
                 command_history=history,
                 durable_session_http=durable_boundary,
                 durable_operator_http=durable_operator_http,
+                authority_http=authority_http,
                 service_account_http=None if service_accounts is None else service_accounts.http,
                 service_account_machine_http=(
                     None if service_accounts is None else service_accounts.machine_http

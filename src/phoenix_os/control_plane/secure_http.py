@@ -10,6 +10,7 @@ from http import HTTPStatus
 
 from phoenix_os.control_plane.assets import DashboardAssets
 from phoenix_os.control_plane.auth import ControlPlaneAuthenticator
+from phoenix_os.control_plane.authority_http import ControlPlaneAuthorityHttpAdapter
 from phoenix_os.control_plane.command_api import ControlPlaneCommandApi
 from phoenix_os.control_plane.contracts import (
     ControlPlaneReader,
@@ -126,6 +127,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
         operator_http: ControlPlaneOperatorHttpAdapter | None = None,
         durable_session_http: ControlPlaneDurableSessionHttpBoundary | None = None,
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None,
+        authority_http: ControlPlaneAuthorityHttpAdapter | None = None,
         service_account_http: ControlPlaneServiceAccountHttpAdapter | None = None,
         service_account_machine_http: ControlPlaneServiceAccountMachineHttpAdapter | None = None,
         inference_http: ControlPlaneInferenceHttpAdapter | None = None,
@@ -158,6 +160,7 @@ class ControlPlaneSecureHttpServer(ControlPlaneHttpServer):
             operator_http=operator_http,
             durable_session_http=durable_session_http,
             durable_operator_http=durable_operator_http,
+            authority_http=authority_http,
             service_account_http=service_account_http,
             inference_http=inference_http,
             webhook_http=webhook_http,

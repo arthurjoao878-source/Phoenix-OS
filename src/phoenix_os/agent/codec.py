@@ -37,6 +37,8 @@ from phoenix_os.agent.schemas import (
 from phoenix_os.inference.contracts import ModelId, ModelProviderId
 
 _SCHEMA_VERSION = 1
+_TOOL_INVOCATION_LEGACY_SCHEMA_VERSION = 1
+_TOOL_INVOCATION_SCHEMA_VERSION = 2
 _TOOL_INPUT_SCHEMA_KIND = "phoenix.agent.tool-input-schema"
 _TOOL_OUTPUT_SCHEMA_KIND = "phoenix.agent.tool-output-schema"
 _TOOL_PROPOSAL_KIND = "phoenix.agent.tool-call-proposal"
@@ -68,7 +70,8 @@ _PROPOSAL_FIELDS = frozenset(
         "deadline",
     }
 )
-_INVOCATION_FIELDS = frozenset(_PROPOSAL_FIELDS | {"resolved_resource"})
+_INVOCATION_V1_FIELDS = frozenset(_PROPOSAL_FIELDS | {"resolved_resource"})
+_INVOCATION_FIELDS = frozenset(_INVOCATION_V1_FIELDS | {"agent_id"})
 _TOOL_RESULT_FIELDS = frozenset(
     {
         "run_id",
@@ -244,16 +247,28 @@ def encode_tool_invocation_request(request: ToolInvocationRequest) -> bytes:
         _TOOL_INVOCATION_KIND,
         _invocation_record(request),
         MAX_AGENT_INVOCATION_DOCUMENT_BYTES,
+        schema_version=_TOOL_INVOCATION_SCHEMA_VERSION,
     )
 
 
 def decode_tool_invocation_request(encoded: bytes) -> ToolInvocationRequest:
-    record = _decode(
+    schema_version, record = _decode_versioned(
         encoded,
         expected_kind=_TOOL_INVOCATION_KIND,
         maximum_bytes=MAX_AGENT_INVOCATION_DOCUMENT_BYTES,
+        supported_schema_versions=frozenset(
+            {
+                _TOOL_INVOCATION_LEGACY_SCHEMA_VERSION,
+                _TOOL_INVOCATION_SCHEMA_VERSION,
+            }
+        ),
     )
-    _require_exact_fields(record, _INVOCATION_FIELDS, label="tool invocation record")
+    fields = (
+        _INVOCATION_V1_FIELDS
+        if schema_version == _TOOL_INVOCATION_LEGACY_SCHEMA_VERSION
+        else _INVOCATION_FIELDS
+    )
+    _require_exact_fields(record, fields, label="tool invocation record")
     try:
         request = ToolInvocationRequest(
             run_id=AgentRunId(_uuid(record, "run_id")),
@@ -264,12 +279,28 @@ def decode_tool_invocation_request(encoded: bytes) -> ToolInvocationRequest:
             resolved_resource=_string(record, "resolved_resource"),
             created_at=_datetime(record, "created_at"),
             deadline=_datetime(record, "deadline"),
+            agent_id=(
+                None
+                if schema_version == _TOOL_INVOCATION_LEGACY_SCHEMA_VERSION
+                else AgentId(_string(record, "agent_id"))
+            ),
         )
     except AgentCodecError:
         raise
     except (TypeError, ValueError, OverflowError) as exception:
         raise AgentCodecError() from exception
-    if encode_tool_invocation_request(request) != encoded:
+
+    if schema_version == _TOOL_INVOCATION_LEGACY_SCHEMA_VERSION:
+        canonical = _encode(
+            _TOOL_INVOCATION_KIND,
+            _legacy_invocation_record(request),
+            MAX_AGENT_INVOCATION_DOCUMENT_BYTES,
+            schema_version=_TOOL_INVOCATION_LEGACY_SCHEMA_VERSION,
+        )
+    else:
+        canonical = encode_tool_invocation_request(request)
+
+    if canonical != encoded:
         raise AgentCodecError("tool invocation document is not canonical")
     return request
 
@@ -461,7 +492,7 @@ def _proposal_record(proposal: ToolCallProposal) -> dict[str, object]:
     }
 
 
-def _invocation_record(request: ToolInvocationRequest) -> dict[str, object]:
+def _legacy_invocation_record(request: ToolInvocationRequest) -> dict[str, object]:
     return {
         **_proposal_record(
             ToolCallProposal(
@@ -475,6 +506,15 @@ def _invocation_record(request: ToolInvocationRequest) -> dict[str, object]:
             )
         ),
         "resolved_resource": request.resolved_resource,
+    }
+
+
+def _invocation_record(request: ToolInvocationRequest) -> dict[str, object]:
+    if request.agent_id is None:
+        raise AgentCodecError("tool invocation request is missing agent binding")
+    return {
+        **_legacy_invocation_record(request),
+        "agent_id": str(request.agent_id),
     }
 
 
@@ -628,9 +668,15 @@ def _structured_to_builtin(value: object) -> object:
     return value
 
 
-def _encode(kind: str, record: Mapping[str, object], maximum_bytes: int) -> bytes:
+def _encode(
+    kind: str,
+    record: Mapping[str, object],
+    maximum_bytes: int,
+    *,
+    schema_version: int = _SCHEMA_VERSION,
+) -> bytes:
     document = {
-        "schema_version": _SCHEMA_VERSION,
+        "schema_version": schema_version,
         "kind": kind,
         "record": record,
     }
@@ -655,6 +701,22 @@ def _decode(
     expected_kind: str,
     maximum_bytes: int,
 ) -> Mapping[str, object]:
+    _, record = _decode_versioned(
+        encoded,
+        expected_kind=expected_kind,
+        maximum_bytes=maximum_bytes,
+        supported_schema_versions=frozenset({_SCHEMA_VERSION}),
+    )
+    return record
+
+
+def _decode_versioned(
+    encoded: bytes,
+    *,
+    expected_kind: str,
+    maximum_bytes: int,
+    supported_schema_versions: frozenset[int],
+) -> tuple[int, Mapping[str, object]]:
     if not isinstance(encoded, bytes):
         raise TypeError("encoded agent document must be bytes")
     if not encoded or len(encoded) > maximum_bytes:
@@ -672,11 +734,12 @@ def _decode(
     _inspect_json(decoded, depth=0, count=[0])
     envelope = _mapping(decoded, label="agent envelope")
     _require_exact_fields(envelope, _ENVELOPE_FIELDS, label="agent envelope")
-    if _integer(envelope, "schema_version") != _SCHEMA_VERSION:
+    schema_version = _integer(envelope, "schema_version")
+    if schema_version not in supported_schema_versions:
         raise AgentCodecError("unsupported agent schema version")
     if _string(envelope, "kind") != expected_kind:
         raise AgentCodecError("unexpected agent document kind")
-    return _mapping(envelope.get("record"), label="agent record")
+    return schema_version, _mapping(envelope.get("record"), label="agent record")
 
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:

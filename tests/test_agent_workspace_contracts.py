@@ -295,7 +295,12 @@ def test_list_read_and_delete_requests_bind_exact_scope_artifact_and_version() -
         max_results=8,
         created_at=_NOW,
     )
-    read = ArtifactReadRequest(scope=scope, artifact_id=_ARTIFACT_ID, created_at=_NOW)
+    read = ArtifactReadRequest(
+        scope=scope,
+        artifact_id=_ARTIFACT_ID,
+        expected_version=ArtifactVersion(7),
+        created_at=_NOW,
+    )
     delete = ArtifactDeleteRequest(
         scope=scope,
         artifact_id=_ARTIFACT_ID,
@@ -306,6 +311,7 @@ def test_list_read_and_delete_requests_bind_exact_scope_artifact_and_version() -
     assert str(listing.prefix) == "reports"
     assert listing.max_results == 8
     assert read.artifact_id == _ARTIFACT_ID
+    assert read.expected_version == ArtifactVersion(7)
     assert delete.expected_version == ArtifactVersion(7)
 
     with pytest.raises(ValueError):

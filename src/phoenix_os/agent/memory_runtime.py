@@ -234,6 +234,7 @@ class InMemoryDerivedMemoryIndex:
             MemoryRetrievalCandidate(
                 scope=entry.candidate.scope,
                 memory_id=entry.candidate.memory_id,
+                incarnation=entry.candidate.incarnation,
                 version=entry.candidate.version,
                 content_digest=entry.candidate.content_digest,
                 score=sum(
@@ -708,6 +709,7 @@ class AgentMemoryRuntimeOwner:
                 MemoryRetrievalCandidate(
                     scope=record.scope,
                     memory_id=record.memory_id,
+                    incarnation=record.incarnation,
                     version=record.version,
                     content_digest=record.content_digest,
                     score=0.0,
