@@ -1,6 +1,6 @@
 # RFC-0033: Effective Authority and Capability Non-Amplification
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.33.0
 - Owners: Phoenix OS maintainers
 - Depends on: RFC-0002, RFC-0003, RFC-0009, RFC-0010, RFC-0020, RFC-0026, RFC-0027, RFC-0028, RFC-0029, RFC-0030, RFC-0031, and RFC-0032
@@ -851,3 +851,27 @@ RFC-0033 may move to Accepted only when:
 13. the dedicated RFC-0033 release gate passes; and
 14. the complete Phoenix CI matrix is green.
 
+
+## Release acceptance evidence
+
+The v0.33.0 release candidate seals the RFC-0033 acceptance surface with the
+following executable evidence:
+
+- [x] Canonical protected-operation catalog is closed-world and inventoried.
+- [x] Supported composition paths retain their final canonical boundary.
+- [x] Principal/session/agent/run subject substitutions are covered.
+- [x] Session and other revocable authority is revalidated after untrusted waits.
+- [x] Approval evidence is exact-subject/exact-intent/exact-resource bound.
+- [x] Stale and reborn resource identities fail closed.
+- [x] Confused-deputy paths fail closed.
+- [x] Cross-agent authority borrowing fails closed.
+- [x] Authority inspect/explain is separately authorized, redacted, and non-authoritative.
+- [x] Attribute-derived session identifiers do not create session-bound authority.
+- [x] Unknown protected operations fail closed under the reviewed catalog.
+- [x] Dedicated adversarial authority tests are part of the release suite.
+- [x] Named authority release gate: `python scripts/check_authority_release.py`.
+- [x] The normal Python 3.12/3.13 Phoenix CI matrix executes the named gate.
+
+RFC-0033 is accepted for Phoenix OS 0.33.0. Tag publication and release artifact
+upload remain separate release operations after the exact release commit has
+passed the complete CI matrix.

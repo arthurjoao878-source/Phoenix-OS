@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.33.0] - 2026-08-23
+
+### Added
+- Accepted RFC-0033 effective authority and capability non-amplification with a closed-world canonical operation catalog, structural subject/intent contracts, current-session freshness validation, and separately authorized read-only inspect/explain diagnostics.
+- Cross-subsystem composition coverage for agent, tool, durable, delegation, memory, workspace, and host paths, plus dedicated subject-binding, adversarial, security-review, RFC, release-gate, and package-release evidence.
+- Thin operator authority CLI over the existing durable control-plane HTTP boundary, with redacted point-in-time responses and no reusable authority-bearing output.
+- Effective-authority migration guidance, formal threat review, v0.33.0 release metadata, and isolated offline wheel/sdist validation.
+
+### Security
+- Effective authority is the intersection of currently valid constraints, never the union of permissions encountered along a composed path.
+- Principal/session/agent/run identity, exact approval intent, resource freshness, cancellation, and final canonical admission remain independently binding; data never manufactures authority.
+- Confused-deputy and cross-agent authority borrowing paths fail closed, and unknown in-scope protected operations are rejected by the closed-world catalog.
+- Attribute-derived session IDs cannot create or preserve session-bound authority; current structural session state is authoritative after untrusted waits.
+- Authority inspection/explanation and CLI output are redacted point-in-time observations only and are non-authoritative.
+
+### Compatibility
+- Phoenix OS 0.32.0 canonical subsystem authorizers remain authoritative; v0.33.0 adds no second policy engine and no ambient capability grant.
+- Existing behavior remains compatible when authority diagnostics are unused; callers with session-backed contexts must preserve structural `session_id` binding.
+- Release validation includes the dedicated authority gate, complete regression suite, package-boundary inspection, rebuilt-sdist wheel, and isolated offline smoke validation.
+- Release publication uses Git tag `v0.33.0`, wheel and sdist artifacts, and `SHA256SUMS`.
+
+
 ## [0.32.0] - 2026-08-19
 
 ### Added
