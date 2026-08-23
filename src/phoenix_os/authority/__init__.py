@@ -1,15 +1,77 @@
-"""Effective-authority freshness primitives for RFC-0033."""
+"""Effective-authority inspection, explanation, and freshness primitives for RFC-0033."""
 
+from phoenix_os.authority.catalog import (
+    AUTHORITY_EXPLAIN_ACTION,
+    AUTHORITY_INSPECT_ACTION,
+    BUILTIN_AUTHORITY_CATALOG,
+    AuthorityCatalog,
+    AuthorityCatalogEntry,
+    InvalidAuthorityObservationError,
+    UnknownAuthorityOperationError,
+)
+from phoenix_os.authority.contracts import (
+    AuthorityConstraint,
+    AuthorityDenialReason,
+    AuthorityEffect,
+    AuthorityExplainRequest,
+    AuthorityExplanationResult,
+    AuthorityFreshnessBinding,
+    AuthorityInspectionResult,
+    AuthorityInspectionState,
+    AuthorityInspectRequest,
+    AuthorityIntent,
+    AuthorityObservationProjection,
+    AuthorityPathObservation,
+    AuthoritySubject,
+    AuthoritySubjectProjection,
+    authority_intent_fingerprint,
+    authority_subject_fingerprint,
+)
 from phoenix_os.authority.freshness import (
     AuthorityFreshnessRejectedError,
     AuthorityFreshnessValidator,
     CurrentSessionFreshnessValidator,
     SessionFreshnessSource,
 )
+from phoenix_os.authority.service import (
+    AuthorityInspectionRejectedError,
+    AuthorityInspectionSource,
+    AuthorityService,
+    authority_explanation_resource,
+    authority_subject_resource,
+)
 
 __all__ = [
+    "AUTHORITY_EXPLAIN_ACTION",
+    "AUTHORITY_INSPECT_ACTION",
+    "BUILTIN_AUTHORITY_CATALOG",
+    "AuthorityCatalog",
+    "AuthorityCatalogEntry",
+    "AuthorityConstraint",
+    "AuthorityDenialReason",
+    "AuthorityEffect",
+    "AuthorityExplainRequest",
+    "AuthorityExplanationResult",
+    "AuthorityFreshnessBinding",
     "AuthorityFreshnessRejectedError",
     "AuthorityFreshnessValidator",
+    "AuthorityInspectRequest",
+    "AuthorityInspectionRejectedError",
+    "AuthorityInspectionResult",
+    "AuthorityInspectionSource",
+    "AuthorityInspectionState",
+    "AuthorityIntent",
+    "AuthorityObservationProjection",
+    "AuthorityPathObservation",
+    "AuthorityService",
+    "AuthoritySubject",
+    "AuthoritySubjectProjection",
     "CurrentSessionFreshnessValidator",
+    "InvalidAuthorityObservationError",
     "SessionFreshnessSource",
+    "UnknownAuthorityOperationError",
+    "authority_explanation_resource",
+    "authority_intent_fingerprint",
+    "authority_subject_fingerprint",
+    "authority_subject_resource",
 ]
