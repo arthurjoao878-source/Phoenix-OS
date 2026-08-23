@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from phoenix_os.control_plane.assets import DashboardAssets
 from phoenix_os.control_plane.auth import ControlPlaneAuthenticator, ControlPlanePrincipal
+from phoenix_os.control_plane.authority_http import ControlPlaneAuthorityHttpAdapter
 from phoenix_os.control_plane.command_api import ControlPlaneCommandApi
 from phoenix_os.control_plane.command_http import ControlPlaneCommandHttpAdapter
 from phoenix_os.control_plane.contracts import (
@@ -208,6 +209,7 @@ class ControlPlaneHttpServer:
         operator_http: ControlPlaneOperatorHttpAdapter | None = None,
         durable_session_http: ControlPlaneDurableSessionHttpBoundary | None = None,
         durable_operator_http: ControlPlaneDurableOperatorHttpAdapter | None = None,
+        authority_http: ControlPlaneAuthorityHttpAdapter | None = None,
         service_account_http: ControlPlaneServiceAccountHttpAdapter | None = None,
         inference_http: ControlPlaneInferenceHttpAdapter | None = None,
         webhook_http: ControlPlaneWebhookHttpAdapter | None = None,
@@ -218,6 +220,8 @@ class ControlPlaneHttpServer:
             raise ValueError("control plane requires an authenticator or durable session boundary")
         if operator_http is not None and durable_operator_http is not None:
             raise ValueError("legacy and durable operator HTTP adapters are exclusive")
+        if authority_http is not None and durable_session_http is None:
+            raise ValueError("authority HTTP requires durable session authentication")
         if service_account_http is not None and durable_session_http is None:
             raise ValueError("service-account HTTP requires durable session authentication")
         if inference_http is not None and durable_session_http is None:
@@ -240,6 +244,7 @@ class ControlPlaneHttpServer:
         self._operator_http = operator_http
         self._durable_session_http = durable_session_http
         self._durable_operator_http = durable_operator_http
+        self._authority_http = authority_http
         self._durable_cleanup_http: ControlPlaneDurableCleanupHttpAdapter | None = None
         self._durable_reconciliation_http: ControlPlaneDurableReconciliationHttpAdapter | None = (
             None
@@ -272,6 +277,12 @@ class ControlPlaneHttpServer:
     @property
     def state(self) -> ControlPlaneHttpState:
         return self._state
+
+    @property
+    def authority_http(self) -> ControlPlaneAuthorityHttpAdapter | None:
+        """Return the optional RFC-0033 authority diagnostic boundary."""
+
+        return self._authority_http
 
     @property
     def durable_cleanup_http(self) -> ControlPlaneDurableCleanupHttpAdapter | None:
@@ -672,6 +683,20 @@ class ControlPlaneHttpServer:
         server_origin: ControlPlaneBrowserOrigin,
     ) -> tuple[HTTPStatus, Mapping[str, object] | bytes, dict[str, str]]:
         authorization = _single_header(request.headers, "authorization")
+        if (
+            durable_authentication is not None
+            and self._authority_http is not None
+            and self._authority_http.handles(request.path)
+        ):
+            return await self._authority_http.dispatch(
+                authentication=durable_authentication,
+                method=request.method,
+                path=request.path,
+                query=request.query,
+                headers=request.headers,
+                body=request.body,
+                server_origin=server_origin,
+            )
         if (
             durable_authentication is not None
             and self._durable_operator_http is not None
