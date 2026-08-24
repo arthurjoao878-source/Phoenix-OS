@@ -1,5 +1,16 @@
 """Controlled server-owned network-egress contracts for RFC-0034."""
 
+from phoenix_os.network_egress.agent_tools import (
+    MAX_NETWORK_AGENT_TOOL_BODY_BYTES,
+    MAX_NETWORK_AGENT_TOOL_INPUT_BYTES,
+    MAX_NETWORK_AGENT_TOOL_OUTPUT_BYTES,
+    NETWORK_HTTP_TOOL_ADAPTER_ID,
+    NETWORK_HTTP_TOOL_RESOLVER_ID,
+    NetworkEgressToolBinding,
+    NetworkHttpToolAdapter,
+    network_http_tool_descriptor,
+    network_http_tool_resolver,
+)
 from phoenix_os.network_egress.authorization import (
     NETWORK_HTTP_REQUEST_ACTION,
     NetworkEgressAuthorizationRejectedError,
@@ -46,6 +57,7 @@ from phoenix_os.network_egress.service import (
     MAX_NETWORK_CONCURRENT_REQUESTS,
     NetworkEgressCancellationToken,
     NetworkEgressFailureKind,
+    NetworkEgressFinalAdmissionValidator,
     NetworkEgressProfileSource,
     NetworkEgressRequestError,
     NetworkEgressService,
@@ -53,6 +65,9 @@ from phoenix_os.network_egress.service import (
 )
 
 __all__ = [
+    "MAX_NETWORK_AGENT_TOOL_BODY_BYTES",
+    "MAX_NETWORK_AGENT_TOOL_INPUT_BYTES",
+    "MAX_NETWORK_AGENT_TOOL_OUTPUT_BYTES",
     "MAX_NETWORK_CONCURRENT_REQUESTS",
     "MAX_NETWORK_CONNECT_TIMEOUT_SECONDS",
     "MAX_NETWORK_CREDENTIAL_PREFIX_LENGTH",
@@ -72,12 +87,15 @@ __all__ = [
     "MAX_NETWORK_RESPONSE_HEADER_BYTES",
     "MAX_NETWORK_TOTAL_TIMEOUT_SECONDS",
     "NETWORK_HTTP_REQUEST_ACTION",
+    "NETWORK_HTTP_TOOL_ADAPTER_ID",
+    "NETWORK_HTTP_TOOL_RESOLVER_ID",
     "NetworkCredentialBinding",
     "NetworkDestinationMode",
     "NetworkEgressAuthorizationRejectedError",
     "NetworkEgressAuthorizer",
     "NetworkEgressCancellationToken",
     "NetworkEgressFailureKind",
+    "NetworkEgressFinalAdmissionValidator",
     "NetworkEgressOperation",
     "NetworkEgressOperationId",
     "NetworkEgressProfile",
@@ -87,13 +105,17 @@ __all__ = [
     "NetworkEgressRequestError",
     "NetworkEgressService",
     "NetworkEgressServiceLimits",
+    "NetworkEgressToolBinding",
     "NetworkHttpMethod",
     "NetworkHttpRequest",
     "NetworkHttpResponse",
+    "NetworkHttpToolAdapter",
     "NetworkOperationEffect",
     "NetworkOperationLimits",
     "PolicyEngineNetworkEgressAuthorizer",
     "network_http_intent",
     "network_http_parameter_digest",
     "network_http_resource",
+    "network_http_tool_descriptor",
+    "network_http_tool_resolver",
 ]

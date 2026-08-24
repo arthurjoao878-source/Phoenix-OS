@@ -187,6 +187,7 @@ _BUILTIN_MEDIATED_TRANSITIONS: Final[frozenset[tuple[str, str]]] = frozenset(
         ("tool.invoke", "host.app.close"),
         ("tool.invoke", "host.clipboard.write"),
         ("tool.invoke", "host.clipboard.read"),
+        ("tool.invoke", NETWORK_HTTP_REQUEST_ACTION),
     }
 )
 

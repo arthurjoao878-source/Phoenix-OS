@@ -114,3 +114,25 @@ def test_rfc0034_slice4_revalidates_after_pinned_connect_without_retry_or_queue(
     )
     assert "does not claim one atomic snapshot" in normalized
     assert "Slice 4 adds no `tool.invoke -> network.http.request` mediated transition" in normalized
+
+
+def test_rfc0034_slice5_composes_tool_and_network_authority_without_ssrf_controls() -> None:
+    text = _RFC.read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+
+    assert "## Slice 5 controlled tool composition and adversarial SSRF closure" in text
+    assert "`tool.invoke -> network.http.request`" in normalized
+    assert "composition metadata, not authority inheritance" in normalized
+    assert "must satisfy both boundaries as an intersection" in normalized
+    assert "one complete immutable egress profile including generation" in normalized
+    assert "The model cannot select a URL, scheme, host, port, method, path, proxy" in normalized
+    assert "only as canonical base64 under the single `body_base64` field" in normalized
+    assert "limited to 196608 raw bytes" in normalized
+    assert "rejected before DNS" in normalized
+    assert (
+        "server-owned final-admission validator rather than a reusable ALLOW decision" in normalized
+    )
+    assert "while the session has written zero HTTP request bytes" in normalized
+    assert "Adapters that require final admission cannot execute through the legacy" in normalized
+    assert "Any failure after request bytes may have started remains `INDETERMINATE`" in normalized
+    assert "no generic URL fetch, raw socket API, browser navigation" in normalized

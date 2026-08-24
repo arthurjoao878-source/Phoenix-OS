@@ -537,3 +537,94 @@ async def test_cooperative_cancel_and_connect_completion_never_leak_pinned_sessi
     assert connector.calls == 1
     assert all(connection.written == b"" for connection in connector.connections)
     assert all(connection.closed for connection in connector.connections)
+
+
+@pytest.mark.asyncio
+async def test_expected_profile_rejects_stale_binding_before_dns() -> None:
+    profile = _profile()
+    stale = NetworkEgressProfile(
+        profile_id=profile.profile_id,
+        generation=profile.generation + 1,
+        mode=profile.mode,
+        host=profile.host,
+        port=profile.port,
+        allow_public_networks=profile.allow_public_networks,
+        allowed_networks=profile.allowed_networks,
+        operations=profile.operations,
+        credential=profile.credential,
+    )
+    resolver = _Resolver()
+    connector = _Connector()
+    service = _service(profile, resolver=resolver, connector=connector)
+
+    with pytest.raises(NetworkEgressRequestError) as caught:
+        await service.request(
+            _request(profile),
+            _context(),
+            expected_profile=stale,
+        )
+
+    assert caught.value.kind is NetworkEgressFailureKind.REJECTED
+    assert caught.value.request_started is False
+    assert resolver.calls == 0
+    assert connector.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_final_admission_runs_after_pinned_connect_before_any_http_write() -> None:
+    profile = _profile()
+    connector = _Connector()
+    freshness = _Freshness()
+    authorizer = _Authorizer()
+    service = _service(
+        profile,
+        resolver=_Resolver(),
+        connector=connector,
+        freshness=freshness,
+        authorizer=authorizer,
+    )
+    callbacks = 0
+
+    async def final_admission() -> None:
+        nonlocal callbacks
+        callbacks += 1
+        assert connector.calls == 1
+        assert len(connector.connections) == 1
+        assert connector.connections[0].written == b""
+
+    result = await service.request(
+        _request(profile),
+        _context(),
+        expected_profile=profile,
+        final_admission=final_admission,
+    )
+
+    assert result.status_code == 200
+    assert callbacks == 1
+    assert freshness.calls == 2
+    assert authorizer.calls == 2
+    assert connector.connections[0].written
+
+
+@pytest.mark.asyncio
+async def test_final_admission_rejection_closes_session_without_writing() -> None:
+    profile = _profile()
+    connector = _Connector()
+    service = _service(profile, resolver=_Resolver(), connector=connector)
+
+    async def final_admission() -> None:
+        raise RuntimeError("revoked tool authority")
+
+    with pytest.raises(NetworkEgressRequestError) as caught:
+        await service.request(
+            _request(profile),
+            _context(),
+            expected_profile=profile,
+            final_admission=final_admission,
+        )
+
+    assert caught.value.kind is NetworkEgressFailureKind.REJECTED
+    assert caught.value.request_started is False
+    assert connector.calls == 1
+    assert connector.connections[0].written == b""
+    assert connector.connections[0].closed is True

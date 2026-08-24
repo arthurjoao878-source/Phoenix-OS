@@ -28,7 +28,13 @@ from phoenix_os.agent.fake import (
 )
 from phoenix_os.agent.schemas import validate_tool_output
 from phoenix_os.agent.state import AgentCancellationToken
-from phoenix_os.agent.tools import ContextualToolAdapter, ToolAdapter, ToolDescriptor
+from phoenix_os.agent.tools import (
+    ContextualToolAdapter,
+    FinalAdmissionContextualToolAdapter,
+    ToolAdapter,
+    ToolDescriptor,
+    ToolFinalAdmissionValidator,
+)
 from phoenix_os.policy import SecurityContext
 
 
@@ -202,6 +208,7 @@ class BoundedAgentExecutor:
         descriptor: ToolDescriptor,
         *,
         context: SecurityContext | None = None,
+        final_admission: ToolFinalAdmissionValidator | None = None,
         timeout_seconds: float,
         cancellation_grace: float,
         cancellation: AgentCancellationToken,
@@ -218,6 +225,8 @@ class BoundedAgentExecutor:
             raise TypeError("descriptor must be ToolDescriptor")
         if context is not None and not isinstance(context, SecurityContext):
             raise TypeError("context must be SecurityContext or None")
+        if final_admission is not None and not callable(final_admission):
+            raise TypeError("final_admission must be callable or None")
         if not isinstance(cancellation, AgentCancellationToken):
             raise TypeError("cancellation must be AgentCancellationToken")
         if adapter.tool_id != request.tool_id or descriptor.tool_id != request.tool_id:
@@ -232,11 +241,24 @@ class BoundedAgentExecutor:
             raise AgentTimeoutError()
         effective_timeout = min(timeout, descriptor.timeout.total_seconds(), remaining)
 
-        if isinstance(adapter, ContextualToolAdapter) and context is None:
+        if isinstance(adapter, FinalAdmissionContextualToolAdapter):
+            if context is None or final_admission is None:
+                raise ToolExecutionError()
+        elif final_admission is not None:
+            raise ToolExecutionError()
+        elif isinstance(adapter, ContextualToolAdapter) and context is None:
             raise ToolExecutionError()
 
         try:
-            if isinstance(adapter, ContextualToolAdapter):
+            if isinstance(adapter, FinalAdmissionContextualToolAdapter):
+                assert context is not None
+                assert final_admission is not None
+                operation = adapter.invoke_with_context_and_final_admission(
+                    request,
+                    context,
+                    final_admission,
+                )
+            elif isinstance(adapter, ContextualToolAdapter):
                 assert context is not None
                 operation = adapter.invoke_with_context(request, context)
             else:

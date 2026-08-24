@@ -441,6 +441,57 @@ Slice 4 adds no `tool.invoke -> network.http.request` mediated transition, no ge
 tool facade, no webhook or inference migration, and no Runtime lifecycle,
 observability, or operator surface. Those remain later-slice responsibilities.
 
+## Slice 5 controlled tool composition and adversarial SSRF closure
+
+Slice 5 adds exactly one reviewed RFC-0033 mediated transition:
+`tool.invoke -> network.http.request`. The transition is composition metadata, not
+authority inheritance. A successful `tool.invoke` decision never grants
+`network.http.request`, and network authority never grants `tool.invoke`; a
+Phoenix-mediated tool request must satisfy both boundaries as an intersection.
+
+The agent facade is server configured. A `NetworkEgressToolBinding` fixes one agent ID,
+one tool ID, one complete immutable egress profile including generation, and one
+operation ID. The model cannot select a URL, scheme, host, port, method, path, proxy,
+DNS server, TLS policy, redirect policy, arbitrary header, credential, profile ID, or
+operation ID. The tool's resolved resource is the exact generation-bound
+`network-egress:<profile-id>/generation:<generation>/operation:<operation-id>`
+resource.
+
+Body bytes, when the fixed operation permits them, cross the tool boundary only as
+canonical base64 under the single `body_base64` field. Request and response bodies are
+limited to 196608 raw bytes at this facade so their base64 representation fits the
+strict 262144-character agent schema bound. Remote response bytes remain untrusted
+data. The facade exposes only status code, canonical base64 body data, and
+profile-filtered response headers; request IDs, profile IDs, destination addresses,
+credentials, secret references, and authority decisions are not returned as tool data.
+
+A binding carries the complete expected profile snapshot into `NetworkEgressService`.
+If the current profile is not exactly that snapshot, the attempt is rejected before
+DNS. This prevents a tool configured for one generation from silently retargeting to a
+later generation with the same profile ID.
+
+`AgentLoop` performs its normal fresh `tool.invoke` admission before tool execution.
+For the network facade it additionally provides a server-owned final-admission
+validator rather than a reusable ALLOW decision. After DNS admission and pinned
+TCP/TLS connection, while the session has written zero HTTP request bytes,
+`NetworkEgressService` invokes that validator. The validator repeats current RFC-0033
+subject freshness plus the exact `tool.invoke` authorization for the same invocation,
+descriptor, requester context, agent, run, tool, arguments, and resolved resource.
+The service then performs its existing final subject freshness and exact
+`network.http.request` authorization before the one-shot HTTP exchange. No approval
+prompt or new attacker-controlled blocking wait is introduced after the pinned
+connection.
+
+Adapters that require final admission cannot execute through the legacy or ordinary
+contextual executor paths. Cross-agent reuse, resource retargeting, stale profile
+generation, caller-supplied network control fields, mixed safe/unsafe DNS answers,
+redirect following, ambient proxies, credential/header laundering, and authority-like
+remote data all fail closed or remain inert data. Any failure after request bytes may
+have started remains `INDETERMINATE`, and no transparent retry is added.
+
+Slice 5 still adds no generic URL fetch, raw socket API, browser navigation, webhook or
+inference migration, Runtime lifecycle, observability, or operator surface.
+
 ## Redirects
 
 Redirect following is not supported by Phoenix OS v0.34.0.

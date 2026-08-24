@@ -611,3 +611,73 @@ async def test_queued_model_policy_revocation_blocks_fresh_admission() -> None:
 
     policy_snapshot = await model_policy.snapshot()
     assert (policy_snapshot.allowed, policy_snapshot.denied) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_final_admission_tool_reauthorizes_after_adapter_wait_boundary() -> None:
+    from phoenix_os.agent.tools import ToolFinalAdmissionValidator
+
+    class _FinalAdmissionTool:
+        adapter_id = "final-admission"
+        tool_id = ToolId("lookup")
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.final_callbacks = 0
+
+        async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+            raise AssertionError(request)
+
+        async def invoke_with_context(
+            self,
+            request: ToolInvocationRequest,
+            context: SecurityContext,
+        ) -> ToolInvocationResult:
+            raise AssertionError((request, context))
+
+        async def invoke_with_context_and_final_admission(
+            self,
+            request: ToolInvocationRequest,
+            context: SecurityContext,
+            final_admission: ToolFinalAdmissionValidator,
+        ) -> ToolInvocationResult:
+            assert context.authenticated
+            self.calls += 1
+            await asyncio.sleep(0)
+            await final_admission()
+            self.final_callbacks += 1
+            return ToolInvocationResult(
+                run_id=request.run_id,
+                step_id=request.step_id,
+                call_id=request.call_id,
+                tool_id=request.tool_id,
+                status=ToolResultStatus.SUCCEEDED,
+                output={"value": "contextual"},
+                started_at=request.created_at,
+                completed_at=request.created_at,
+            )
+
+    registry = ToolRegistry()
+    descriptor = _descriptor(adapter_id="final-admission")
+    adapter = _FinalAdmissionTool()
+    registry.register_tool(
+        descriptor,
+        resolver=StaticToolResourceResolver("static-resource", "record:fixed"),
+        adapter=adapter,
+    )
+    loop, _run_auth, _model_auth, tool_auth = _loop(
+        (
+            DeterministicToolTurn(ToolId("lookup"), {"value": "input"}),
+            DeterministicFinalTurn("complete"),
+        ),
+        registry=registry,
+    )
+
+    result = await loop.run(_request(), _context())
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert adapter.calls == 1
+    assert adapter.final_callbacks == 1
+    assert len(tool_auth.requests) == 3
+    assert tool_auth.requests[0] is tool_auth.requests[1]
+    assert tool_auth.requests[1] is tool_auth.requests[2]

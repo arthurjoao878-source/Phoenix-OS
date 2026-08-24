@@ -45,6 +45,8 @@ MAX_NETWORK_CONCURRENT_REQUESTS = 1_024
 
 _T = TypeVar("_T")
 
+type NetworkEgressFinalAdmissionValidator = Callable[[], Awaitable[None]]
+
 
 class NetworkEgressFailureKind(StrEnum):
     """Sanitized terminal class for one service attempt."""
@@ -186,6 +188,8 @@ class NetworkEgressService:
         *,
         cancellation: NetworkEgressCancellationToken | None = None,
         deadline: datetime | None = None,
+        expected_profile: NetworkEgressProfile | None = None,
+        final_admission: NetworkEgressFinalAdmissionValidator | None = None,
     ) -> NetworkHttpResponse:
         if not isinstance(request, NetworkHttpRequest):
             raise TypeError("request must be NetworkHttpRequest")
@@ -194,6 +198,13 @@ class NetworkEgressService:
         token = NetworkEgressCancellationToken() if cancellation is None else cancellation
         if not isinstance(token, NetworkEgressCancellationToken):
             raise TypeError("cancellation must be NetworkEgressCancellationToken")
+        if expected_profile is not None and not isinstance(
+            expected_profile,
+            NetworkEgressProfile,
+        ):
+            raise TypeError("expected_profile must be NetworkEgressProfile or None")
+        if final_admission is not None and not callable(final_admission):
+            raise TypeError("final_admission must be callable or None")
         self._validate_requested_deadline(deadline)
 
         await self._acquire_slot()
@@ -203,6 +214,8 @@ class NetworkEgressService:
                 context,
                 cancellation=token,
                 requested_deadline=deadline,
+                expected_profile=expected_profile,
+                final_admission=final_admission,
             )
         finally:
             await self._release_slot()
@@ -214,8 +227,15 @@ class NetworkEgressService:
         *,
         cancellation: NetworkEgressCancellationToken,
         requested_deadline: datetime | None,
+        expected_profile: NetworkEgressProfile | None,
+        final_admission: NetworkEgressFinalAdmissionValidator | None,
     ) -> NetworkHttpResponse:
         profile, operation = self._resolve_request(request)
+        if expected_profile is not None and profile != expected_profile:
+            raise NetworkEgressRequestError(
+                NetworkEgressFailureKind.REJECTED,
+                request_started=False,
+            )
         effective_deadline = self._effective_deadline(
             operation,
             requested_deadline=requested_deadline,
@@ -272,6 +292,13 @@ class NetworkEgressService:
             )
             self._require_current_admission(profile, operation, request, admission)
 
+            await self._validate_final_admission(
+                final_admission,
+                cancellation,
+                effective_deadline,
+            )
+            self._require_current_admission(profile, operation, request, admission)
+
             await self._validate_freshness(context, cancellation, effective_deadline)
             self._require_current_admission(profile, operation, request, admission)
 
@@ -319,6 +346,30 @@ class NetworkEgressService:
                     await session.aclose()
                 except Exception:
                     pass
+
+    async def _validate_final_admission(
+        self,
+        validator: NetworkEgressFinalAdmissionValidator | None,
+        cancellation: NetworkEgressCancellationToken,
+        deadline: _EffectiveDeadline,
+    ) -> None:
+        if validator is None:
+            return
+        try:
+            await self._await_pre_send(
+                validator(),
+                cancellation=cancellation,
+                deadline=deadline,
+            )
+        except NetworkEgressRequestError:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise NetworkEgressRequestError(
+                NetworkEgressFailureKind.REJECTED,
+                request_started=False,
+            ) from None
 
     async def _validate_freshness(
         self,

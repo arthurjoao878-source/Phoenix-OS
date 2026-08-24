@@ -101,7 +101,7 @@ def test_denied_observation_requires_explicit_safe_reason() -> None:
         )
 
 
-def test_network_http_request_catalog_entry_is_generation_bound_and_not_tool_mediated() -> None:
+def test_network_http_request_catalog_entry_is_generation_bound_and_tool_mediated() -> None:
     action = "network.http.request"
     resource = "network-egress:payments/generation:7/operation:charge"
     entry = BUILTIN_AUTHORITY_CATALOG.require(action)
@@ -113,7 +113,7 @@ def test_network_http_request_catalog_entry_is_generation_bound_and_not_tool_med
     assert not entry.accepts_resource(
         "network-egress:payments/generation:2147483648/operation:charge"
     )
-    assert ("tool.invoke", action) not in BUILTIN_AUTHORITY_CATALOG.mediated_transitions
+    assert ("tool.invoke", action) in BUILTIN_AUTHORITY_CATALOG.mediated_transitions
 
     intent = AuthorityIntent(
         action=action,
@@ -128,12 +128,10 @@ def test_network_http_request_catalog_entry_is_generation_bound_and_not_tool_med
             effect=AuthorityEffect.ALLOWED,
         )
     )
-    with pytest.raises(InvalidAuthorityObservationError):
-        BUILTIN_AUTHORITY_CATALOG.validate_observation(
-            AuthorityPathObservation(
-                intent=intent,
-                boundaries=("tool.invoke", action),
-                effect=AuthorityEffect.DENIED,
-                denial_reason=AuthorityDenialReason.BOUNDARY_DENIED,
-            )
+    BUILTIN_AUTHORITY_CATALOG.validate_observation(
+        AuthorityPathObservation(
+            intent=intent,
+            boundaries=("tool.invoke", action),
+            effect=AuthorityEffect.ALLOWED,
         )
+    )

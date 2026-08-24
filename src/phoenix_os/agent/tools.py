@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import MappingProxyType
@@ -272,6 +272,21 @@ class ContextualToolAdapter(ToolAdapter, Protocol):
         self,
         request: ToolInvocationRequest,
         context: SecurityContext,
+    ) -> ToolInvocationResult: ...
+
+
+type ToolFinalAdmissionValidator = Callable[[], Awaitable[None]]
+
+
+@runtime_checkable
+class FinalAdmissionContextualToolAdapter(ContextualToolAdapter, Protocol):
+    """Contextual tool requiring one fresh server-owned admission immediately pre-effect."""
+
+    async def invoke_with_context_and_final_admission(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+        final_admission: ToolFinalAdmissionValidator,
     ) -> ToolInvocationResult: ...
 
 

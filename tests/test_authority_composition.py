@@ -3020,3 +3020,35 @@ async def test_workspace_host_indirect_path_requires_full_intersection_and_prese
     host_snapshot = await host_policy.snapshot()
     assert (workspace_snapshot.allowed, workspace_snapshot.denied) == (2, 0)
     assert (host_snapshot.allowed, host_snapshot.denied) == (1, 0)
+
+
+def test_tool_to_network_path_is_reviewed_without_authority_union() -> None:
+    from phoenix_os.authority import (
+        BUILTIN_AUTHORITY_CATALOG,
+        AuthorityEffect,
+        AuthorityFreshnessBinding,
+        AuthorityIntent,
+        AuthorityPathObservation,
+    )
+
+    intent = AuthorityIntent(
+        action="network.http.request",
+        canonical_resource="network-egress:composition/generation:3/operation:read",
+        parameter_digest="sha256:" + "c" * 64,
+        freshness_bindings=(
+            AuthorityFreshnessBinding(
+                "network.profile.generation",
+                "composition:3",
+            ),
+        ),
+    )
+    observation = AuthorityPathObservation(
+        intent=intent,
+        boundaries=("tool.invoke", "network.http.request"),
+        effect=AuthorityEffect.ALLOWED,
+    )
+
+    BUILTIN_AUTHORITY_CATALOG.validate_observation(observation)
+    assert ("tool.invoke", "network.http.request") in (
+        BUILTIN_AUTHORITY_CATALOG.mediated_transitions
+    )
