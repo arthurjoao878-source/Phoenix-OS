@@ -365,6 +365,82 @@ tests.
 
 Slice 3 performs no DNS resolution, socket connection, secret lease, or HTTP send.
 
+## Slice 4 network service, final freshness, and TOCTOU closure
+
+Slice 4 introduces the `NetworkEgressService` that composes the server-owned profile,
+RFC-0033 authority, Secrets Vault, Slice 2 destination admission, and the pinned
+transport. It does not make a connected socket a bearer capability and it does not
+expose the internal transport or destination-admission objects as public authority.
+
+One admitted service attempt follows this order:
+
+```text
+resolve current profile + exact operation
+    -> apply finite no-queue concurrency admission
+    -> check cooperative cancellation and effective deadline
+    -> validate current RFC-0033 subject freshness
+    -> authorize exact network.http.request intent
+    -> lease the exact configured SecretRef when required
+    -> resolve DNS once and admit the complete answer set
+    -> pin immutable literal addresses
+    -> connect TCP/TLS only to one admitted literal without writing HTTP bytes
+    -> revalidate exact SecretLease when required
+    -> validate current RFC-0033 subject freshness again
+    -> authorize the exact network.http.request intent again
+    -> synchronously revalidate cancellation, deadline, current full profile/operation,
+       and the pinned destination admission
+    -> reveal credential bytes only at the final transport boundary
+    -> immediately perform the one-shot HTTP exchange
+```
+
+The service performs exactly two `network.http.request` authorizations: one before DNS
+or connection work, and one after the final attacker-controlled network wait. A
+successful earlier decision is never reused as bearer authority for the protected send.
+
+Current profile validation compares the complete immutable profile and exact operation,
+not only the generation number. A generation, destination, network-policy, method,
+request-target, credential-reference, media/header configuration, effect, or limit
+change rejects the attempt. The already pinned address set is re-admitted against the
+same current profile immediately before the protected send.
+
+Credential leasing uses the original requester `SecurityContext`; the service never
+substitutes a stronger service or system principal. The lease TTL cannot exceed the
+remaining effective request deadline. After the pinned connection is established, the
+exact lease is resolved again for the same principal before final subject freshness and
+network authorization. Plaintext secret material is revealed only synchronously at the
+last transport boundary. The fixed credential prefix remains transport-owned.
+
+The effective deadline is the minimum of the caller-supplied deadline, when present,
+and the operation's total timeout measured from a server-owned invocation time. Caller
+request timestamps are not trusted as security clocks. Cooperative cancellation may
+stop work before the protected send. After request bytes begin, cooperative
+cancellation does not trigger reconnect or transparent retry.
+
+Service concurrency is finite and has no request queue in Slice 4. Saturation rejects
+immediately before DNS, secret material use, connection establishment, or request
+bytes. Queueing and Runtime lifecycle ownership are intentionally deferred rather than
+creating another attacker-controlled wait in the final admission path.
+
+Failures are content-minimized. Authority, freshness, profile, secret, destination, and
+saturation rejection produce a sanitized `REJECTED` result class; cooperative
+pre-send cancellation produces `CANCELLED`; pre-send deadline expiry produces
+`TIMED_OUT`; and a transport failure known to occur before request bytes produces
+`FAILED`. Any failure or timeout once request bytes may have started is
+`INDETERMINATE`. The service never transparently retries an indeterminate remote
+effect.
+
+Final trusted validation follows RFC-0033 source-specific freshness semantics. Slice 4
+does not claim one atomic snapshot spanning policy, identity/session state, Secrets
+Vault lease state, and profile state. A revocation or policy change that linearizes
+before that source's final revalidation rejects the attempt; a change that linearizes
+after that source's final revalidation is not reported as a fictitious rollback merely
+because another trusted Phoenix source is validated later in the same admission
+sequence.
+
+Slice 4 adds no `tool.invoke -> network.http.request` mediated transition, no general
+tool facade, no webhook or inference migration, and no Runtime lifecycle,
+observability, or operator surface. Those remain later-slice responsibilities.
+
 ## Redirects
 
 Redirect following is not supported by Phoenix OS v0.34.0.

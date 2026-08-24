@@ -91,3 +91,26 @@ def test_rfc0034_slice3_adds_generation_bound_network_authority_without_tool_inh
         "Slice 3 performs no DNS resolution, socket connection, secret lease, or HTTP send."
         in normalized
     )
+
+
+def test_rfc0034_slice4_revalidates_after_pinned_connect_without_retry_or_queue() -> None:
+    text = _RFC.read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+
+    assert "## Slice 4 network service, final freshness, and TOCTOU closure" in text
+    assert "exactly two `network.http.request` authorizations" in normalized
+    assert "connect TCP/TLS only to one admitted literal without writing HTTP bytes" in normalized
+    assert "revalidate exact SecretLease when required" in normalized
+    assert "validate current RFC-0033 subject freshness again" in normalized
+    assert "Current profile validation compares the complete immutable profile" in normalized
+    assert "Service concurrency is finite and has no request queue in Slice 4." in normalized
+    assert (
+        "Any failure or timeout once request bytes may have started is `INDETERMINATE`."
+        in normalized
+    )
+    assert "never transparently retries an indeterminate remote effect" in normalized
+    assert "Final trusted validation follows RFC-0033 source-specific freshness semantics." in (
+        normalized
+    )
+    assert "does not claim one atomic snapshot" in normalized
+    assert "Slice 4 adds no `tool.invoke -> network.http.request` mediated transition" in normalized

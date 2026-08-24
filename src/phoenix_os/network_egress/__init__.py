@@ -42,8 +42,18 @@ from phoenix_os.network_egress.profiles import (
     NetworkOperationEffect,
     NetworkOperationLimits,
 )
+from phoenix_os.network_egress.service import (
+    MAX_NETWORK_CONCURRENT_REQUESTS,
+    NetworkEgressCancellationToken,
+    NetworkEgressFailureKind,
+    NetworkEgressProfileSource,
+    NetworkEgressRequestError,
+    NetworkEgressService,
+    NetworkEgressServiceLimits,
+)
 
 __all__ = [
+    "MAX_NETWORK_CONCURRENT_REQUESTS",
     "MAX_NETWORK_CONNECT_TIMEOUT_SECONDS",
     "MAX_NETWORK_CREDENTIAL_PREFIX_LENGTH",
     "MAX_NETWORK_EXPOSED_RESPONSE_HEADERS",
@@ -66,11 +76,17 @@ __all__ = [
     "NetworkDestinationMode",
     "NetworkEgressAuthorizationRejectedError",
     "NetworkEgressAuthorizer",
+    "NetworkEgressCancellationToken",
+    "NetworkEgressFailureKind",
     "NetworkEgressOperation",
     "NetworkEgressOperationId",
     "NetworkEgressProfile",
     "NetworkEgressProfileCatalog",
     "NetworkEgressProfileId",
+    "NetworkEgressProfileSource",
+    "NetworkEgressRequestError",
+    "NetworkEgressService",
+    "NetworkEgressServiceLimits",
     "NetworkHttpMethod",
     "NetworkHttpRequest",
     "NetworkHttpResponse",
