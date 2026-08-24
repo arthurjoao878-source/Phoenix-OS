@@ -258,6 +258,67 @@ Slice 2 will implement the following requirements:
 
 A DNS answer is data. It does not widen the configured destination policy.
 
+## Slice 2 transport boundary
+
+Slice 2 separates destination resolution/admission, pinned connection establishment, and
+the one-shot HTTP exchange so that later slices can place fresh authority checks at the
+correct boundary.
+
+The sequence is:
+
+```text
+resolve canonical server-owned host
+    -> validate the complete DNS answer set
+    -> pin immutable literal addresses
+    -> connect TCP/TLS to one admitted literal
+    -> return a connected session without sending HTTP bytes
+    -> later final freshness/authority admission
+    -> one-shot HTTP exchange
+```
+
+Opening a pinned session MUST NOT write HTTP request bytes. The connected session may be
+closed without sending a request when later freshness, cancellation, profile-generation,
+or authority checks fail.
+
+Before any request byte may have been written, the connector may fall back among the
+already-admitted pinned literals. After a request write may have started, the session is
+one-shot: it performs no reconnect, alternate-address fallback, or transparent retry.
+
+The direct connector uses numeric destination addresses only. Hosted HTTPS retains the
+canonical profile host for TLS SNI and certificate verification, requires TLS 1.2 or
+newer, and offers only HTTP/1.1 through ALPN. Loopback HTTP uses no TLS hostname.
+Ambient HTTP proxy variables are not consulted because Slice 2 uses no ambient HTTP
+client or proxy stack.
+
+Automatic public-network admission also rejects known IPv4-transition/tunnel IPv6
+prefixes such as IPv4-compatible, NAT64 well-known/local-use, Teredo, and 6to4. These
+destinations require a trusted explicit `allowed_networks` CIDR; an apparently global
+transition address does not gain destination authority merely from `is_global`.
+
+Automatic public admission is additionally protected by Phoenix-owned conservative
+special-use IPv4/IPv6 deny ranges rather than trusting the host Python point release's
+`ipaddress.is_global` classification as the sole security decision. Legacy site-local,
+documentation, benchmarking, shared, translation, loopback/link-local, multicast,
+reserved, and other reviewed special-use ranges require an explicit trusted
+`allowed_networks` CIDR. Explicit CIDRs remain the server-owned opt-in for deliberately
+configured non-public destinations.
+
+The HTTP/1.1 parser enforces finite status-line, header-count, header-byte, and body
+limits. Connection teardown waits are bounded as well; remote close behavior cannot
+create an unbounded post-exchange wait. Ambiguous `Content-Length` plus
+`Transfer-Encoding`, duplicate headers, unsupported transfer encodings, protocol
+upgrade, chunk extensions, and response trailers fail closed. Redirect responses are
+returned only as bounded untrusted data and never trigger another request.
+
+No DNS lookup, proxy selection, redirect handling, or alternate-address fallback occurs
+after HTTP request bytes may have been written.
+
+Slice 2 does not add `network.http.request` to the authority catalog and does not claim
+that a connected socket is authority. Slice 3 introduces the canonical network
+authorizer. Slice 4 owns secret leasing plus final subject/profile/cancellation/freshness
+revalidation immediately before the protected send. Existing webhook and inference
+transports remain unchanged and independently authoritative.
+
 ## Redirects
 
 Redirect following is not supported by Phoenix OS v0.34.0.

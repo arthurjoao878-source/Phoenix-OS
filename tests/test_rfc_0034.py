@@ -49,3 +49,22 @@ def test_rfc0034_slice1_is_non_networking_and_non_authoritative() -> None:
         "The resource will be added to the RFC-0033 closed-world authority catalog in Slice 3"
         in text
     )
+
+
+def test_rfc0034_slice2_separates_connect_from_protected_http_send() -> None:
+    text = _RFC.read_text(encoding="utf-8")
+
+    assert "Opening a pinned session MUST NOT write HTTP request bytes." in text
+    assert (
+        "No DNS lookup, proxy selection, redirect handling, or alternate-address fallback occurs"
+        in text
+    )
+    assert "after HTTP request bytes may have been written." in text
+    assert "Slice 2 does not add `network.http.request` to the authority catalog" in text
+    assert "Slice 4 owns secret leasing plus final subject/profile/cancellation/freshness" in text
+    assert "Ambient HTTP proxy variables are not consulted" in text
+    assert "Connection teardown waits are bounded as well" in text
+    assert "apparently global" in text
+    assert "transition address does not gain destination authority" in text
+    assert "Phoenix-owned conservative" in text
+    assert "`ipaddress.is_global` classification as the sole security decision" in text
