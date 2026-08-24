@@ -1,5 +1,12 @@
 """Controlled server-owned network-egress contracts for RFC-0034."""
 
+from phoenix_os.network_egress.administration import (
+    NETWORK_EGRESS_HEALTH_READ_PERMISSION,
+    NETWORK_EGRESS_HEALTH_RESOURCE,
+    NetworkEgressAdministration,
+    NetworkEgressAdministrationAccessDeniedError,
+    NetworkEgressAdministrationSnapshot,
+)
 from phoenix_os.network_egress.agent_tools import (
     MAX_NETWORK_AGENT_TOOL_BODY_BYTES,
     MAX_NETWORK_AGENT_TOOL_INPUT_BYTES,
@@ -32,6 +39,15 @@ from phoenix_os.network_egress.contracts import (
     NetworkHttpRequest,
     NetworkHttpResponse,
 )
+from phoenix_os.network_egress.observer import (
+    MAX_NETWORK_OBSERVATION_DURATION_MS,
+    ContentFreeNetworkEgressObserver,
+    NetworkEgressObservabilityConfiguration,
+    NetworkEgressObserver,
+    NetworkEgressOperationObservation,
+    NetworkEgressOperationOutcome,
+    NullNetworkEgressObserver,
+)
 from phoenix_os.network_egress.profiles import (
     MAX_NETWORK_CONNECT_TIMEOUT_SECONDS,
     MAX_NETWORK_CREDENTIAL_PREFIX_LENGTH,
@@ -53,8 +69,15 @@ from phoenix_os.network_egress.profiles import (
     NetworkOperationEffect,
     NetworkOperationLimits,
 )
+from phoenix_os.network_egress.runtime import (
+    NETWORK_EGRESS_RUNTIME_COMPONENT_NAME,
+    NETWORK_EGRESS_RUNTIME_SERVICE_NAME,
+    NetworkEgressRuntimeComponent,
+    network_egress_runtime_component_spec,
+)
 from phoenix_os.network_egress.service import (
     MAX_NETWORK_CONCURRENT_REQUESTS,
+    MAX_NETWORK_OBSERVER_RECORD_SECONDS,
     NetworkEgressCancellationToken,
     NetworkEgressFailureKind,
     NetworkEgressFinalAdmissionValidator,
@@ -62,6 +85,7 @@ from phoenix_os.network_egress.service import (
     NetworkEgressRequestError,
     NetworkEgressService,
     NetworkEgressServiceLimits,
+    NetworkEgressServiceSnapshot,
 )
 
 __all__ = [
@@ -76,6 +100,8 @@ __all__ = [
     "MAX_NETWORK_HEADER_VALUE_LENGTH",
     "MAX_NETWORK_IDENTIFIER_LENGTH",
     "MAX_NETWORK_MEDIA_TYPE_LENGTH",
+    "MAX_NETWORK_OBSERVATION_DURATION_MS",
+    "MAX_NETWORK_OBSERVER_RECORD_SECONDS",
     "MAX_NETWORK_PROFILE_COUNT",
     "MAX_NETWORK_PROFILE_NETWORKS",
     "MAX_NETWORK_PROFILE_OPERATIONS",
@@ -86,25 +112,39 @@ __all__ = [
     "MAX_NETWORK_RESPONSE_HEADERS",
     "MAX_NETWORK_RESPONSE_HEADER_BYTES",
     "MAX_NETWORK_TOTAL_TIMEOUT_SECONDS",
+    "NETWORK_EGRESS_HEALTH_READ_PERMISSION",
+    "NETWORK_EGRESS_HEALTH_RESOURCE",
+    "NETWORK_EGRESS_RUNTIME_COMPONENT_NAME",
+    "NETWORK_EGRESS_RUNTIME_SERVICE_NAME",
     "NETWORK_HTTP_REQUEST_ACTION",
     "NETWORK_HTTP_TOOL_ADAPTER_ID",
     "NETWORK_HTTP_TOOL_RESOLVER_ID",
+    "ContentFreeNetworkEgressObserver",
     "NetworkCredentialBinding",
     "NetworkDestinationMode",
+    "NetworkEgressAdministration",
+    "NetworkEgressAdministrationAccessDeniedError",
+    "NetworkEgressAdministrationSnapshot",
     "NetworkEgressAuthorizationRejectedError",
     "NetworkEgressAuthorizer",
     "NetworkEgressCancellationToken",
     "NetworkEgressFailureKind",
     "NetworkEgressFinalAdmissionValidator",
+    "NetworkEgressObservabilityConfiguration",
+    "NetworkEgressObserver",
     "NetworkEgressOperation",
     "NetworkEgressOperationId",
+    "NetworkEgressOperationObservation",
+    "NetworkEgressOperationOutcome",
     "NetworkEgressProfile",
     "NetworkEgressProfileCatalog",
     "NetworkEgressProfileId",
     "NetworkEgressProfileSource",
     "NetworkEgressRequestError",
+    "NetworkEgressRuntimeComponent",
     "NetworkEgressService",
     "NetworkEgressServiceLimits",
+    "NetworkEgressServiceSnapshot",
     "NetworkEgressToolBinding",
     "NetworkHttpMethod",
     "NetworkHttpRequest",
@@ -112,7 +152,9 @@ __all__ = [
     "NetworkHttpToolAdapter",
     "NetworkOperationEffect",
     "NetworkOperationLimits",
+    "NullNetworkEgressObserver",
     "PolicyEngineNetworkEgressAuthorizer",
+    "network_egress_runtime_component_spec",
     "network_http_intent",
     "network_http_parameter_digest",
     "network_http_resource",

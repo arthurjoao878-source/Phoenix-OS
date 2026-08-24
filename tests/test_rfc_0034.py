@@ -136,3 +136,20 @@ def test_rfc0034_slice5_composes_tool_and_network_authority_without_ssrf_control
     assert "Adapters that require final admission cannot execute through the legacy" in normalized
     assert "Any failure after request bytes may have started remains `INDETERMINATE`" in normalized
     assert "no generic URL fetch, raw socket API, browser navigation" in normalized
+
+
+def test_rfc0034_slice6_runtime_observability_is_content_free_and_non_authoritative() -> None:
+    text = _RFC.read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+
+    assert "## Slice 6 runtime lifecycle, observability, and redacted inspection" in text
+    assert "Runtime state never grants network authority" in normalized
+    assert "drains already admitted requests before closing" in normalized
+    assert "Drain does not cancel an admitted request" in normalized
+    assert "remain borrowed and are never closed by `NetworkEgressService`" in normalized
+    assert "Event Bus payloads are empty." in normalized
+    assert "schedules observation without awaiting the sink" in normalized
+    assert "no observer, audit, event, log, metric, health, or inspection wait" in normalized
+    assert "`network.egress.health.read`" in normalized
+    assert "Inspection authority does not imply `network.http.request`" in normalized
+    assert "Slice 6 adds no mediated authority transition" in normalized

@@ -20,6 +20,10 @@ from phoenix_os.network_egress.contracts import (
     NetworkEgressProfileId,
     NetworkHttpRequest,
 )
+from phoenix_os.network_egress.observer import (
+    NetworkEgressObserver,
+    NetworkEgressOperationObservation,
+)
 from phoenix_os.network_egress.profiles import (
     NetworkDestinationMode,
     NetworkEgressOperation,
@@ -305,6 +309,7 @@ def _service(
     freshness: _Freshness | None = None,
     authorizer: _Authorizer | None = None,
     limits: NetworkEgressServiceLimits | None = None,
+    observer: NetworkEgressObserver | None = None,
 ) -> NetworkEgressService:
     return NetworkEgressService(
         profiles=_Profiles(profile),
@@ -313,6 +318,7 @@ def _service(
         resolver=resolver,
         transport=NetworkTransport(connector=connector),
         limits=limits,
+        observer=observer,
     )
 
 
@@ -628,3 +634,99 @@ async def test_final_admission_rejection_closes_session_without_writing() -> Non
     assert connector.calls == 1
     assert connector.connections[0].written == b""
     assert connector.connections[0].closed is True
+
+
+class _ExplodingObserver:
+    async def record(
+        self,
+        observation: NetworkEgressOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        del observation, context
+        raise RuntimeError("TOP-SECRET-OBSERVER-FAILURE")
+
+
+class _BlockingObserver:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def record(
+        self,
+        observation: NetworkEgressOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        del observation, context
+        self.started.set()
+        await self.release.wait()
+
+
+@pytest.mark.asyncio
+async def test_observer_failure_cannot_change_network_request_result() -> None:
+    profile = _profile()
+    service = _service(
+        profile,
+        resolver=_Resolver(),
+        connector=_Connector(),
+        observer=_ExplodingObserver(),
+    )
+
+    result = await service.request(_request(profile), _context())
+
+    assert result.status_code == 200
+    await service.close()
+    assert (await service.snapshot()).closed is True
+
+
+@pytest.mark.asyncio
+async def test_close_drains_admitted_request_and_rejects_new_requests() -> None:
+    profile = _profile()
+    resolver = _BlockingResolver()
+    service = _service(profile, resolver=resolver, connector=_Connector())
+
+    attempt = asyncio.create_task(service.request(_request(profile), _context()))
+    await asyncio.wait_for(resolver.started.wait(), timeout=1)
+
+    close_task = asyncio.create_task(service.close())
+    await asyncio.sleep(0)
+    closing = await service.snapshot()
+    assert closing.closing is True
+    assert closing.available is False
+    assert closing.active_requests == 1
+
+    with pytest.raises(NetworkEgressRequestError) as caught:
+        await service.request(_request(profile), _context())
+    assert caught.value.kind is NetworkEgressFailureKind.REJECTED
+    assert caught.value.request_started is False
+
+    resolver.release.set()
+    result = await attempt
+    assert result.status_code == 200
+    await asyncio.wait_for(close_task, timeout=1)
+
+    closed = await service.snapshot()
+    assert closed.closed is True
+    assert closed.available is False
+    assert closed.active_requests == 0
+
+
+@pytest.mark.asyncio
+async def test_observer_is_nonblocking_and_close_has_finite_observer_drain() -> None:
+    profile = _profile()
+    observer = _BlockingObserver()
+    service = _service(
+        profile,
+        resolver=_Resolver(),
+        connector=_Connector(),
+        observer=observer,
+    )
+
+    result = await asyncio.wait_for(
+        service.request(_request(profile), _context()),
+        timeout=1,
+    )
+    assert result.status_code == 200
+    await asyncio.wait_for(observer.started.wait(), timeout=1)
+
+    await asyncio.wait_for(service.close(), timeout=1)
+    assert (await service.snapshot()).closed is True

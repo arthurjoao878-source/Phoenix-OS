@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from time import monotonic_ns
 from typing import Protocol, TypeVar, runtime_checkable
 
 from phoenix_os.authority import AuthorityFreshnessValidator, AuthorityIntent
@@ -34,6 +35,13 @@ from phoenix_os.network_egress.contracts import (
     NetworkHttpRequest,
     NetworkHttpResponse,
 )
+from phoenix_os.network_egress.observer import (
+    MAX_NETWORK_OBSERVATION_DURATION_MS,
+    NetworkEgressObserver,
+    NetworkEgressOperationObservation,
+    NetworkEgressOperationOutcome,
+    NullNetworkEgressObserver,
+)
 from phoenix_os.network_egress.profiles import (
     NetworkEgressOperation,
     NetworkEgressProfile,
@@ -42,6 +50,7 @@ from phoenix_os.policy import SecurityContext
 from phoenix_os.secrets import SecretLease, SecretsManager
 
 MAX_NETWORK_CONCURRENT_REQUESTS = 1_024
+MAX_NETWORK_OBSERVER_RECORD_SECONDS = 0.25
 
 _T = TypeVar("_T")
 
@@ -89,6 +98,43 @@ class NetworkEgressServiceLimits:
             raise ValueError("max_concurrent_requests is outside supported bounds")
 
 
+@dataclass(frozen=True, slots=True)
+class NetworkEgressServiceSnapshot:
+    """Content-free bounded point-in-time network-egress runtime health."""
+
+    limits: NetworkEgressServiceLimits
+    closed: bool
+    closing: bool
+    available: bool
+    runtime_managed: bool
+    active_requests: int
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.limits, NetworkEgressServiceLimits):
+            raise TypeError("limits must be NetworkEgressServiceLimits")
+        for label, value in (
+            ("closed", self.closed),
+            ("closing", self.closing),
+            ("available", self.available),
+            ("runtime_managed", self.runtime_managed),
+        ):
+            if type(value) is not bool:
+                raise TypeError(f"{label} must be a boolean")
+        if (
+            isinstance(self.active_requests, bool)
+            or not isinstance(self.active_requests, int)
+            or not 0 <= self.active_requests <= self.limits.max_concurrent_requests
+        ):
+            raise ValueError("active_requests is outside configured bounds")
+        if self.closed and (self.available or self.closing or self.active_requests):
+            raise ValueError("closed service snapshot cannot be available, closing, or active")
+        if self.closing and self.available:
+            raise ValueError("closing service snapshot cannot be available")
+        if self.schema_version != 1:
+            raise ValueError("unsupported network egress service snapshot version")
+
+
 class NetworkEgressCancellationToken:
     """Idempotent cooperative cancellation signal for one network request."""
 
@@ -133,6 +179,31 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _duration_ms(started_ns: int) -> int:
+    elapsed = max(0, (monotonic_ns() - started_ns) // 1_000_000)
+    return min(elapsed, MAX_NETWORK_OBSERVATION_DURATION_MS)
+
+
+def _observation_outcome(
+    kind: NetworkEgressFailureKind,
+) -> NetworkEgressOperationOutcome:
+    mapping = {
+        NetworkEgressFailureKind.REJECTED: NetworkEgressOperationOutcome.REJECTED,
+        NetworkEgressFailureKind.CANCELLED: NetworkEgressOperationOutcome.CANCELLED,
+        NetworkEgressFailureKind.TIMED_OUT: NetworkEgressOperationOutcome.TIMED_OUT,
+        NetworkEgressFailureKind.FAILED: NetworkEgressOperationOutcome.FAILED,
+        NetworkEgressFailureKind.INDETERMINATE: NetworkEgressOperationOutcome.INDETERMINATE,
+    }
+    return mapping[kind]
+
+
+def _consume_background_task(task: asyncio.Task[None]) -> None:
+    try:
+        task.result()
+    except BaseException:
+        pass
+
+
 class NetworkEgressService:
     """Compose profile, authority, freshness, secret, DNS, and pinned transport boundaries."""
 
@@ -146,6 +217,7 @@ class NetworkEgressService:
         resolver: NetworkResolver | None = None,
         transport: NetworkTransport | None = None,
         limits: NetworkEgressServiceLimits | None = None,
+        observer: NetworkEgressObserver | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not isinstance(profiles, NetworkEgressProfileSource):
@@ -163,6 +235,8 @@ class NetworkEgressService:
         resolved_limits = NetworkEgressServiceLimits() if limits is None else limits
         if not isinstance(resolved_limits, NetworkEgressServiceLimits):
             raise TypeError("limits must be NetworkEgressServiceLimits")
+        if observer is not None and not isinstance(observer, NetworkEgressObserver):
+            raise TypeError("observer must implement NetworkEgressObserver")
         if clock is not None and not callable(clock):
             raise TypeError("clock must be callable")
 
@@ -173,13 +247,73 @@ class NetworkEgressService:
         self._resolver = resolver
         self._transport = NetworkTransport() if transport is None else transport
         self._limits = resolved_limits
+        self._observer = observer if observer is not None else NullNetworkEgressObserver()
         self._clock: Callable[[], datetime] = _utc_now if clock is None else clock
         self._active = 0
-        self._active_lock = asyncio.Lock()
+        self._activity = asyncio.Condition()
+        self._close_lock = asyncio.Lock()
+        self._closed = False
+        self._closing = False
+        self._runtime_managed = False
+        self._runtime_availability: Callable[[], bool] | None = None
+        self._observer_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def limits(self) -> NetworkEgressServiceLimits:
         return self._limits
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    async def snapshot(self) -> NetworkEgressServiceSnapshot:
+        """Return content-free bounded runtime health without probing destinations."""
+
+        async with self._activity:
+            return NetworkEgressServiceSnapshot(
+                limits=self._limits,
+                closed=self._closed,
+                closing=self._closing,
+                available=self._is_available(),
+                runtime_managed=self._runtime_managed,
+                active_requests=self._active,
+            )
+
+    def _bind_runtime_lifecycle(self) -> None:
+        if self._closed or self._closing:
+            raise RuntimeError("closed network egress service cannot be Runtime-owned")
+        if self._runtime_managed:
+            raise RuntimeError("network egress service is already Runtime-owned")
+        if self._active:
+            raise RuntimeError("active network egress service cannot become Runtime-owned")
+        self._runtime_managed = True
+        self._runtime_availability = None
+
+    def _activate_runtime_lifecycle(self, availability: Callable[[], bool]) -> None:
+        if not callable(availability):
+            raise TypeError("availability must be callable")
+        if not self._runtime_managed:
+            raise RuntimeError("network egress service is not Runtime-owned")
+        if self._closed or self._closing:
+            raise RuntimeError("network egress service is already closing or closed")
+        if self._runtime_availability is not None:
+            raise RuntimeError("network egress Runtime lifecycle is already active")
+        self._runtime_availability = availability
+
+    async def close(self) -> None:
+        async with self._close_lock:
+            if self._closed:
+                return
+            async with self._activity:
+                self._runtime_availability = None
+                self._closing = True
+                while self._active:
+                    await self._activity.wait()
+            await self._drain_observers()
+            async with self._activity:
+                self._closed = True
+                self._closing = False
+                self._activity.notify_all()
 
     async def request(
         self,
@@ -208,8 +342,15 @@ class NetworkEgressService:
         self._validate_requested_deadline(deadline)
 
         await self._acquire_slot()
+        started = NetworkEgressOperationObservation(
+            request_id=request.request_id,
+            outcome=NetworkEgressOperationOutcome.STARTED,
+            request_started=False,
+        )
+        self._record(started, context)
+        started_ns = monotonic_ns()
         try:
-            return await self._request_admitted(
+            result = await self._request_admitted(
                 request,
                 context,
                 cancellation=token,
@@ -217,6 +358,50 @@ class NetworkEgressService:
                 expected_profile=expected_profile,
                 final_admission=final_admission,
             )
+        except asyncio.CancelledError:
+            self._record(
+                replace(
+                    started,
+                    outcome=NetworkEgressOperationOutcome.CANCELLED,
+                    request_started=None,
+                    duration_ms=_duration_ms(started_ns),
+                ),
+                context,
+            )
+            raise
+        except NetworkEgressRequestError as exception:
+            self._record(
+                replace(
+                    started,
+                    outcome=_observation_outcome(exception.kind),
+                    request_started=exception.request_started,
+                    duration_ms=_duration_ms(started_ns),
+                ),
+                context,
+            )
+            raise
+        except Exception:
+            self._record(
+                replace(
+                    started,
+                    outcome=NetworkEgressOperationOutcome.FAILED,
+                    request_started=None,
+                    duration_ms=_duration_ms(started_ns),
+                ),
+                context,
+            )
+            raise
+        else:
+            self._record(
+                replace(
+                    started,
+                    outcome=NetworkEgressOperationOutcome.SUCCEEDED,
+                    request_started=True,
+                    duration_ms=_duration_ms(started_ns),
+                ),
+                context,
+            )
+            return result
         finally:
             await self._release_slot()
 
@@ -814,7 +999,12 @@ class NetworkEgressService:
         return value
 
     async def _acquire_slot(self) -> None:
-        async with self._active_lock:
+        async with self._activity:
+            if not self._is_available():
+                raise NetworkEgressRequestError(
+                    NetworkEgressFailureKind.REJECTED,
+                    request_started=False,
+                )
             if self._active >= self._limits.max_concurrent_requests:
                 raise NetworkEgressRequestError(
                     NetworkEgressFailureKind.REJECTED,
@@ -823,10 +1013,77 @@ class NetworkEgressService:
             self._active += 1
 
     async def _release_slot(self) -> None:
-        async with self._active_lock:
+        async with self._activity:
             if self._active <= 0:
                 raise RuntimeError("network egress active request count is inconsistent")
             self._active -= 1
+            self._activity.notify_all()
+
+    def _is_available(self) -> bool:
+        if self._closed or self._closing:
+            return False
+        if not self._runtime_managed:
+            return True
+        availability = self._runtime_availability
+        if availability is None:
+            return False
+        try:
+            return availability() is True
+        except Exception:
+            return False
+
+    def _record(
+        self,
+        observation: NetworkEgressOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        if isinstance(self._observer, NullNetworkEgressObserver):
+            return
+        try:
+            task = asyncio.create_task(self._observe(observation, context))
+        except Exception:
+            return
+        self._observer_tasks.add(task)
+        task.add_done_callback(self._observer_tasks.discard)
+
+    async def _observe(
+        self,
+        observation: NetworkEgressOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        worker = asyncio.create_task(self._observer.record(observation, context))
+        try:
+            done, _pending = await asyncio.wait(
+                {worker},
+                timeout=MAX_NETWORK_OBSERVER_RECORD_SECONDS,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            worker.cancel()
+            worker.add_done_callback(_consume_background_task)
+            return
+        if worker not in done:
+            worker.cancel()
+            worker.add_done_callback(_consume_background_task)
+            return
+        try:
+            worker.result()
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    async def _drain_observers(self) -> None:
+        tasks = tuple(self._observer_tasks)
+        if not tasks:
+            return
+        _done, pending = await asyncio.wait(
+            tasks,
+            timeout=MAX_NETWORK_OBSERVER_RECORD_SECONDS + 0.05,
+            return_when=asyncio.ALL_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.sleep(0)
 
     def _public_response(
         self,

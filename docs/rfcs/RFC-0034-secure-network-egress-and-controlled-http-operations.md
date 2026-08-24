@@ -492,6 +492,51 @@ have started remains `INDETERMINATE`, and no transparent retry is added.
 Slice 5 still adds no generic URL fetch, raw socket API, browser navigation, webhook or
 inference migration, Runtime lifecycle, observability, or operator surface.
 
+## Slice 6 runtime lifecycle, observability, and redacted inspection
+
+Slice 6 adds optional lifecycle ownership and content-free operational observation
+without changing the canonical `network.http.request` authority boundary. Runtime
+ownership may make the network-egress service unavailable or close it, but Runtime
+state never grants network authority and a health snapshot is never a bearer
+capability.
+
+A standalone `NetworkEgressService` remains available until explicitly closed. A
+Runtime-owned service is unavailable before the owning `PhoenixRuntime` reaches
+`RUNNING`, becomes unavailable as soon as the Runtime leaves `RUNNING`, rejects new
+requests while closing, and drains already admitted requests before closing. Drain does
+not cancel an admitted request because request bytes may already have produced a remote
+effect. Profile sources, authorizers, freshness validators, Secrets Vault, resolvers,
+Event Bus, audit, and observability dependencies remain borrowed and are never closed
+by `NetworkEgressService`.
+
+Network observations use a closed typed shape containing only request ID, fixed outcome,
+whether request bytes are known to have started, and bounded duration. They never carry
+profile ID, generation, operation ID, hostname, port, request target, DNS answers,
+literal addresses, request or response bodies, HTTP status, headers, TLS details,
+`SecretRef`, credential material, authority intents, destination admissions, or
+transport sessions. Event Bus payloads are empty. Metrics use only finite fixed-label
+metadata and never request IDs as metric labels.
+
+Observation is best-effort and bounded. The request path schedules observation without
+awaiting the sink, so an observer failure, delay, or caller cancellation during
+telemetry cannot change a network operation result. In particular, no observer, audit,
+event, log, metric, health, or inspection wait is inserted between the pinned
+connection's final tool/subject/network admission sequence and the one-shot HTTP
+exchange. Runtime close drains tracked observer work only within a finite
+server-owned bound.
+
+The read-only `NetworkEgressAdministration` surface requires
+`network.egress.health.read` and exposes only a schema-versioned service snapshot:
+configured concurrency limits, closed/closing/available/runtime-owned state, and the
+bounded active-request count. It does not enumerate profiles, operations, destinations,
+credentials, policy decisions, DNS state, or response data. Inspection authority does
+not imply `network.http.request`, and `network.http.request` does not imply inspection
+authority.
+
+Slice 6 adds no mediated authority transition, generic URL fetch, redirect following,
+proxy behavior, browser authority, webhook migration, inference migration, retry after
+an indeterminate effect, or modification to the final S4/S5 authority ordering.
+
 ## Redirects
 
 Redirect following is not supported by Phoenix OS v0.34.0.
@@ -551,7 +596,7 @@ would require a separate reviewed authority contract and destination re-admissio
 40. RFC-0034 does not silently reroute webhook or inference transport through this subsystem.
 41. New mediated tool-to-network transitions require RFC-0033 closed-world catalog review.
 42. Unknown in-scope network operations fail closed.
-43. Observability excludes request/response bodies, credentials, unrestricted headers, and resolved private addresses by default.
+43. Observability and inspection are content-free: they exclude profile/destination identity, request/response bodies, HTTP status, credentials, headers, DNS/IP results, TLS details, secret references, and authority objects.
 44. Browser automation remains outside this RFC.
 45. Existing Phoenix OS v0.33.0 behavior is unchanged when network-egress configuration is absent.
 
