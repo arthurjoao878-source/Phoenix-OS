@@ -68,3 +68,26 @@ def test_rfc0034_slice2_separates_connect_from_protected_http_send() -> None:
     assert "transition address does not gain destination authority" in text
     assert "Phoenix-owned conservative" in text
     assert "`ipaddress.is_global` classification as the sole security decision" in text
+
+
+def test_rfc0034_slice3_adds_generation_bound_network_authority_without_tool_inheritance() -> None:
+    text = _RFC.read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+
+    assert "## Slice 3 canonical network authority" in text
+    assert "`network-egress:<profile-id>/generation:<generation>/operation:<operation-id>`" in text
+    assert "The request body enters the intent only through its exact `body_digest`" in normalized
+    assert (
+        "Plaintext secret material is never hashed into or attached to the authority intent."
+        in normalized
+    )
+    assert (
+        "A successful authorization is a point-in-time decision, not a bearer capability."
+        in normalized
+    )
+    assert "generic `SecurityContext.confirmed` flag is cleared" in normalized
+    assert "`tool.invoke -> network.http.request` is not added in Slice 3." in normalized
+    assert (
+        "Slice 3 performs no DNS resolution, socket connection, secret lease, or HTTP send."
+        in normalized
+    )

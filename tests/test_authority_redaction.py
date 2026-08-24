@@ -134,7 +134,7 @@ def test_redaction_does_not_project_parameter_or_freshness_identity() -> None:
     assert not hasattr(projected, "freshness_bindings")
 
 
-def test_builtin_catalog_is_exact_closed_world_rfc_0033_inventory() -> None:
+def test_builtin_catalog_is_exact_closed_world_authority_inventory() -> None:
     assert set(BUILTIN_AUTHORITY_CATALOG.actions) == {
         "agent.run",
         "model.infer",
@@ -161,6 +161,7 @@ def test_builtin_catalog_is_exact_closed_world_rfc_0033_inventory() -> None:
         "host.app.close",
         "host.clipboard.write",
         "host.clipboard.read",
+        "network.http.request",
         "authority.inspect",
         "authority.explain",
     }

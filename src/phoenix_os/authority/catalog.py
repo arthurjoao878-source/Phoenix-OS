@@ -12,6 +12,7 @@ from phoenix_os.authority.contracts import AuthorityIntent, AuthorityPathObserva
 
 AUTHORITY_INSPECT_ACTION: Final = "authority.inspect"
 AUTHORITY_EXPLAIN_ACTION: Final = "authority.explain"
+NETWORK_HTTP_REQUEST_ACTION: Final = "network.http.request"
 
 _ID = r"[a-z0-9][a-z0-9._-]{0,127}"
 _SCOPE_ID = r"[a-z0-9][a-z0-9._-]{0,191}"
@@ -21,6 +22,12 @@ _RESOLVED_TOOL_RESOURCE = r"[a-z0-9](?:[a-z0-9._:/-]{0,1023})"
 _MEMORY_SCOPE = rf"agent-memory:{_ID}/scope:(?:run|agent|principal):{_SCOPE_ID}"
 _WORKSPACE_SCOPE = rf"agent-workspace:{_ID}/scope:(?:run|agent|principal):{_SCOPE_ID}"
 _HOST_ROOT = rf"host-automation:host:{_ID}"
+_POSITIVE_INT32 = (
+    r"(?:[1-9][0-9]{0,8}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|"
+    r"214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|"
+    r"214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])"
+)
+_NETWORK_EGRESS_RESOURCE = rf"network-egress:{_ID}/generation:{_POSITIVE_INT32}/operation:{_ID}"
 
 
 class UnknownAuthorityOperationError(RuntimeError):
@@ -145,6 +152,11 @@ _BUILTIN_ENTRIES = (
         "host.clipboard.read",
         "host.clipboard.read",
         rf"{_HOST_ROOT}/clipboard:text",
+    ),
+    AuthorityCatalogEntry(
+        NETWORK_HTTP_REQUEST_ACTION,
+        NETWORK_HTTP_REQUEST_ACTION,
+        _NETWORK_EGRESS_RESOURCE,
     ),
     AuthorityCatalogEntry(
         AUTHORITY_INSPECT_ACTION,

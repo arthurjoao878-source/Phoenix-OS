@@ -1,5 +1,14 @@
 """Controlled server-owned network-egress contracts for RFC-0034."""
 
+from phoenix_os.network_egress.authorization import (
+    NETWORK_HTTP_REQUEST_ACTION,
+    NetworkEgressAuthorizationRejectedError,
+    NetworkEgressAuthorizer,
+    PolicyEngineNetworkEgressAuthorizer,
+    network_http_intent,
+    network_http_parameter_digest,
+    network_http_resource,
+)
 from phoenix_os.network_egress.contracts import (
     MAX_NETWORK_HEADER_NAME_LENGTH,
     MAX_NETWORK_HEADER_VALUE_LENGTH,
@@ -52,8 +61,11 @@ __all__ = [
     "MAX_NETWORK_RESPONSE_HEADERS",
     "MAX_NETWORK_RESPONSE_HEADER_BYTES",
     "MAX_NETWORK_TOTAL_TIMEOUT_SECONDS",
+    "NETWORK_HTTP_REQUEST_ACTION",
     "NetworkCredentialBinding",
     "NetworkDestinationMode",
+    "NetworkEgressAuthorizationRejectedError",
+    "NetworkEgressAuthorizer",
     "NetworkEgressOperation",
     "NetworkEgressOperationId",
     "NetworkEgressProfile",
@@ -64,4 +76,8 @@ __all__ = [
     "NetworkHttpResponse",
     "NetworkOperationEffect",
     "NetworkOperationLimits",
+    "PolicyEngineNetworkEgressAuthorizer",
+    "network_http_intent",
+    "network_http_parameter_digest",
+    "network_http_resource",
 ]

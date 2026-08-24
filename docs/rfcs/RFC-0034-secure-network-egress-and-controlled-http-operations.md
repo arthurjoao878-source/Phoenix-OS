@@ -319,6 +319,52 @@ authorizer. Slice 4 owns secret leasing plus final subject/profile/cancellation/
 revalidation immediately before the protected send. Existing webhook and inference
 transports remain unchanged and independently authoritative.
 
+## Slice 3 canonical network authority
+
+Slice 3 adds `network.http.request` to the RFC-0033 closed-world authority catalog.
+The canonical resource is generation-bound and operation-specific:
+
+`network-egress:<profile-id>/generation:<generation>/operation:<operation-id>`
+
+The profile ID, positive profile generation, and operation ID are server-owned identifiers.
+The hostname, URL-like request target, request body, DNS answers, and credential material do
+not become canonical authority resources.
+
+Each authorization builds an exact `AuthorityIntent`. Its parameter digest uses deterministic
+length-framed fields covering the selected profile, destination mode and configured host/port,
+explicit network policy, exact operation method/target/effect/limits, server-owned media/header
+configuration, request identity/timestamp, and request-body metadata. The request body enters
+the intent only through its exact `body_digest`; raw body bytes are never included in policy
+resources or authority observations.
+
+Credential configuration contributes only the reviewed header binding plus the exact
+versioned `SecretRef` identity and non-secret fixed prefix. Plaintext secret material is never
+hashed into or attached to the authority intent.
+
+The intent carries a `network.profile.generation` freshness binding in addition to the
+generation present in the canonical resource. A policy grant for one generation therefore
+does not authorize a later profile generation merely because profile and operation IDs are
+unchanged.
+
+The canonical authorizer requires the authenticated requester context and submits the exact
+`network.http.request` action/resource to `PolicyEngine`. The generic `SecurityContext.confirmed`
+flag is cleared for this boundary so an unrelated ambient confirmation cannot satisfy network
+authority. Policy rejection, confirmation requirements, catalog mismatch, stale operation
+binding, profile mismatch, and operation-specific body-limit mismatch fail closed through one
+content-free authorization error.
+
+A successful authorization is a point-in-time decision, not a bearer capability. Slice 4 must
+resolve current server-owned profile state and perform the required final freshness,
+cancellation, and authority revalidation after the final attacker-controlled wait and before
+the protected send.
+
+`tool.invoke -> network.http.request` is not added in Slice 3. Tool authorization therefore
+does not inherit or manufacture network authority. Any reviewed mediated tool-to-network
+transition is deferred to Slice 5 together with the bounded tool facade and confused-deputy
+tests.
+
+Slice 3 performs no DNS resolution, socket connection, secret lease, or HTTP send.
+
 ## Redirects
 
 Redirect following is not supported by Phoenix OS v0.34.0.
