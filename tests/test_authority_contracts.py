@@ -99,3 +99,39 @@ def test_denied_observation_requires_explicit_safe_reason() -> None:
             boundaries=("host.process.list",),
             effect=AuthorityEffect.DENIED,
         )
+
+
+def test_network_http_request_catalog_entry_is_generation_bound_and_tool_mediated() -> None:
+    action = "network.http.request"
+    resource = "network-egress:payments/generation:7/operation:charge"
+    entry = BUILTIN_AUTHORITY_CATALOG.require(action)
+
+    assert entry.canonical_boundary == action
+    assert entry.accepts_resource(resource)
+    assert not entry.accepts_resource("network-egress:payments/generation:0/operation:charge")
+    assert not entry.accepts_resource("network-egress:payments/operation:charge")
+    assert not entry.accepts_resource(
+        "network-egress:payments/generation:2147483648/operation:charge"
+    )
+    assert ("tool.invoke", action) in BUILTIN_AUTHORITY_CATALOG.mediated_transitions
+
+    intent = AuthorityIntent(
+        action=action,
+        canonical_resource=resource,
+        parameter_digest=_DIGEST_A,
+        freshness_bindings=(AuthorityFreshnessBinding("network.profile.generation", "payments:7"),),
+    )
+    BUILTIN_AUTHORITY_CATALOG.validate_observation(
+        AuthorityPathObservation(
+            intent=intent,
+            boundaries=(action,),
+            effect=AuthorityEffect.ALLOWED,
+        )
+    )
+    BUILTIN_AUTHORITY_CATALOG.validate_observation(
+        AuthorityPathObservation(
+            intent=intent,
+            boundaries=("tool.invoke", action),
+            effect=AuthorityEffect.ALLOWED,
+        )
+    )

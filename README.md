@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.33.0` implements thirty-three accepted specifications:
+Version `0.34.0` implements thirty-four accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -97,6 +97,11 @@ Version `0.33.0` implements thirty-three accepted specifications:
   canonical protected-operation inventory, structural principal/session/agent/run
   binding, current-authority freshness, exact intent/resource binding, composition
   non-amplification, and separately authorized redacted point-in-time diagnostics.
+- **RFC-0034 - Secure Network Egress and Controlled HTTP Operations:** opt-in
+  server-owned egress profiles, exact generation-bound operations, DNS/IP admission,
+  literal destination pinning, verified TLS, independent fresh `network.http.request`
+  authority, bounded one-shot HTTP exchange, controlled tool composition, and
+  content-free Runtime-owned lifecycle and inspection.
 
 The core intentionally contains no AI model, remote database driver, external vector database,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -326,6 +331,30 @@ The packaged smoke uses only deterministic authority contracts and the
 closed-world catalog. It performs no network request, policy mutation, durable
 mutation, host effect, or reuse of diagnostic output as authority.
 
+## Network-egress release gate
+
+RFC-0034 adds a named release gate for server-owned profile contracts, DNS/IP/TLS
+admission, pinned transport, fresh exact network authority, tool composition,
+SSRF/confused-deputy resistance, Runtime lifecycle, content-free observation,
+migration, security review, and package boundaries:
+
+```bash
+python scripts/check_network_egress_release.py
+```
+
+The gate reruns every `test_network_egress*.py` regression plus the RFC-0034,
+v0.34.0 release, and relevant agent/authority integration specifications. It
+requires the exact reviewed `phoenix_os/network_egress` module set, validates
+wheel and sdist metadata and archive paths, rebuilds a wheel from the validated
+sdist, and installs both wheel forms with `--no-deps --no-index` in isolated
+environments.
+
+The installed-package smoke is deterministic and non-networking. It validates
+public network-egress identifiers/contracts and the closed-world
+`network.http.request` catalog transition without performing DNS resolution,
+opening a socket, sending HTTP bytes, consulting ambient proxies, leasing a
+credential, or causing a remote effect.
+
 ## Windows host-automation dogfood
 
 Gate 5 is manual and Windows-only because it exercises the interactive desktop through
@@ -357,6 +386,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 
 ## Release notes
 
+- [Phoenix OS 0.34.0](docs/releases/v0.34.0.md)
 - [Phoenix OS 0.33.0](docs/releases/v0.33.0.md)
 - [Phoenix OS 0.32.0](docs/releases/v0.32.0.md)
 - [Phoenix OS 0.31.0](docs/releases/v0.31.0.md)
@@ -368,7 +398,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize effective-authority, host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
+The release notes summarize network-egress, effective-authority, host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
 security boundaries, compatibility, migration, architecture decisions,
 validation, and package artifacts.
 
@@ -473,6 +503,19 @@ non-authoritative. The
 [RFC-0033 effective-authority threat-model and security-invariant review](docs/security/RFC-0033-effective-authority-threat-model-review.md)
 records release-candidate evidence and residual risks.
 
+Phoenix OS 0.34.0 adds an opt-in controlled network-egress boundary. Rollout
+starts disabled, creates no profile or grant automatically, preserves independent
+webhook/inference authorizers, and requires exact current `network.http.request`
+authority for each configured generation-bound operation:
+
+- [Migrate v0.33.0 deployments to v0.34.0 secure network egress](docs/migrations/v0.33.0-to-v0.34.0-secure-network-egress.md)
+
+Remote responses remain untrusted data, redirects and ambient proxies remain
+disabled, and tool-mediated requests require both `tool.invoke` and
+`network.http.request`. The
+[RFC-0034 network-egress threat-model and security-invariant review](docs/security/RFC-0034-secure-network-egress-threat-model-review.md)
+maps all forty-five release invariants and residual risks.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -525,6 +568,16 @@ principal/session/agent/run binding, current-authority freshness, and
 non-authoritative inspect/explain surface. The
 [RFC-0033 effective-authority threat-model and security-invariant review](docs/security/RFC-0033-effective-authority-threat-model-review.md)
 records the composition, confused-deputy, replay, freshness, and diagnostic
+release evidence.
+
+RFC-0034 adds a separate canonical network boundary rather than ambient Internet
+authority: callers select Phoenix-owned operation IDs, destination policy is
+server-owned, DNS/IP admission is pinned before connection, and the protected
+send remains dominated by final RFC-0033 freshness plus exact
+`network.http.request` authorization. Existing webhook and inference network
+paths remain independently authoritative. The
+[RFC-0034 network-egress threat-model and security-invariant review](docs/security/RFC-0034-secure-network-egress-threat-model-review.md)
+records the SSRF, freshness, credential, transport, composition, lifecycle, and
 release evidence.
 
 ## Local dashboard example

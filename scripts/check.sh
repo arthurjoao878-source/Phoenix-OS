@@ -14,3 +14,4 @@ python scripts/check_agent_memory_release.py
 python scripts/check_agent_workspace_release.py
 python scripts/check_host_automation_release.py
 python scripts/check_authority_release.py
+python scripts/check_network_egress_release.py

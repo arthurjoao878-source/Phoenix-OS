@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.34.0] - 2026-08-24
+
+### Added
+- Accepted RFC-0034 secure network egress and controlled HTTP operations with immutable server-owned profiles, exact generation-bound operations, pinned destination transport, and a canonical `network.http.request` authority boundary.
+- Controlled agent-tool composition preserves independent `tool.invoke` and `network.http.request` admission, with dedicated SSRF, DNS-rebinding, stale-profile, credential, cancellation, redirect, and confused-deputy regression coverage.
+- Runtime-owned optional lifecycle, content-free network observability and health inspection, v0.33.0-to-v0.34.0 migration guidance, formal forty-five-invariant threat review, and isolated offline package validation.
+- Dedicated `check_network_egress_release.py` release gate validates the reviewed network-egress package surface, wheel/sdist boundaries, rebuilt-sdist wheel, and deterministic installed-package smoke behavior without performing a network request.
+
+### Security
+- Remote data is data. Network effects require fresh, exact, server-owned authority, and effective authority remains an intersection rather than a union.
+- Callers and models select only Phoenix-owned profile and operation identifiers; URL, scheme, host, port, DNS resolver, proxy, TLS policy, redirect policy, credentials, literal destination addresses, and arbitrary headers remain server-owned.
+- DNS resolution is bounded, every answer must pass destination policy, connections use admitted literal addresses, ambient proxies are ignored, redirects are not followed, and response data never manufactures follow-on authority.
+- Final subject, exact profile/operation, credential lease, cancellation/deadline, network authorization, and pinned-destination state are revalidated after the final attacker-controlled wait before the one-shot HTTP exchange.
+- Potentially effectful requests are never transparently retried once request bytes may have started; ambiguous post-send outcomes remain indeterminate.
+
+### Compatibility
+- Phoenix OS 0.33.0 behavior is preserved when network-egress configuration is omitted; upgrade creates no profile, grant, credential, request, socket, worker, or remote effect automatically.
+- Existing webhook and inference transports and authorizers remain independently authoritative and are not silently migrated through RFC-0034.
+- `tool.invoke` does not imply `network.http.request`, network authority does not imply tool/browser/webhook/inference/host/workspace/memory authority, and `network.egress.health.read` remains read-only inspection authority.
+- Release validation includes the complete regression suite, dedicated network gate, package-boundary inspection, rebuilt-sdist wheel, isolated offline smoke validation, and exact Python 3.12/3.13 CI.
+- Release publication uses annotated Git tag `v0.34.0`, wheel and sdist artifacts, and `SHA256SUMS`.
+
+
 ## [0.33.0] - 2026-08-23
 
 ### Added

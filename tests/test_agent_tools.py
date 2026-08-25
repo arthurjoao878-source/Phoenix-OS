@@ -129,3 +129,41 @@ def test_schema_contract_still_rejects_unknown_properties() -> None:
             descriptor.input_schema,
             {"path": "docs/readme.md", "unexpected": True},
         )
+
+
+def test_final_admission_protocol_is_distinct_from_plain_contextual_adapter() -> None:
+    from phoenix_os.agent.contracts import ToolInvocationRequest, ToolInvocationResult
+    from phoenix_os.agent.tools import (
+        ContextualToolAdapter,
+        FinalAdmissionContextualToolAdapter,
+        ToolFinalAdmissionValidator,
+    )
+    from phoenix_os.policy import SecurityContext
+
+    class PlainContextual:
+        adapter_id = "plain"
+        tool_id = ToolId("plain")
+
+        async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+            raise AssertionError(request)
+
+        async def invoke_with_context(
+            self,
+            request: ToolInvocationRequest,
+            context: SecurityContext,
+        ) -> ToolInvocationResult:
+            raise AssertionError((request, context))
+
+    class FinalContextual(PlainContextual):
+        async def invoke_with_context_and_final_admission(
+            self,
+            request: ToolInvocationRequest,
+            context: SecurityContext,
+            final_admission: ToolFinalAdmissionValidator,
+        ) -> ToolInvocationResult:
+            raise AssertionError((request, context, final_admission))
+
+    assert isinstance(PlainContextual(), ContextualToolAdapter)
+    assert not isinstance(PlainContextual(), FinalAdmissionContextualToolAdapter)
+    assert isinstance(FinalContextual(), ContextualToolAdapter)
+    assert isinstance(FinalContextual(), FinalAdmissionContextualToolAdapter)

@@ -73,7 +73,11 @@ from phoenix_os.agent.observer import (
 )
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.state import AgentCancellationToken, AgentRunStateMachine
-from phoenix_os.agent.tools import ToolDescriptor
+from phoenix_os.agent.tools import (
+    FinalAdmissionContextualToolAdapter,
+    ToolDescriptor,
+    ToolFinalAdmissionValidator,
+)
 from phoenix_os.agent.workspace_context import (
     AgentArtifactContextProvider,
     artifact_context_messages,
@@ -574,11 +578,23 @@ class AgentLoop:
                             ),
                             context,
                         )
+                        adapter = self._registry.resolve_adapter(invocation.tool_id)
+                        final_admission = (
+                            self._tool_final_admission_validator(
+                                invocation,
+                                resolution.descriptor,
+                                context,
+                                token,
+                            )
+                            if isinstance(adapter, FinalAdmissionContextualToolAdapter)
+                            else None
+                        )
                         tool_result = await self._executor.invoke_tool(
-                            self._registry.resolve_adapter(invocation.tool_id),
+                            adapter,
                             invocation,
                             resolution.descriptor,
                             context=context,
+                            final_admission=final_admission,
                             timeout_seconds=state.budget.tool_timeout_seconds(now=self._now()),
                             cancellation_grace=request.limits.cancellation_grace.total_seconds(),
                             cancellation=token,
@@ -709,6 +725,20 @@ class AgentLoop:
     ) -> None:
         await self._validate_authority_freshness(context)
         await self._tool_authorizer.authorize(invocation, descriptor, context)
+
+    def _tool_final_admission_validator(
+        self,
+        invocation: ToolInvocationRequest,
+        descriptor: ToolDescriptor,
+        context: SecurityContext,
+        cancellation: AgentCancellationToken,
+    ) -> ToolFinalAdmissionValidator:
+        async def validate() -> None:
+            cancellation.raise_if_cancelled()
+            await self._authorize_fresh_tool_admission(invocation, descriptor, context)
+            cancellation.raise_if_cancelled()
+
+        return validate
 
     async def _approve(
         self,

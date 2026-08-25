@@ -359,8 +359,6 @@ def main() -> None:
     project_name, version, requires_python = _project_metadata()
     if project_name != "phoenix-os":
         raise RuntimeError("authority release gate requires phoenix-os project metadata")
-    if version != "0.33.0":
-        raise RuntimeError("authority release gate requires version 0.33.0")
 
     tests = _authority_test_files()
     _authority_source_files()

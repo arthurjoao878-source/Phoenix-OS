@@ -539,3 +539,116 @@ async def test_tool_initiation_failures_are_indeterminate_inside_executor_bounda
     assert contextual_result.error_code == "execution_indeterminate"
     assert contextual.context_calls == 1
     assert contextual.plain_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_final_admission_adapter_requires_and_executes_server_callback_once() -> None:
+    from phoenix_os.agent.tools import ToolFinalAdmissionValidator
+
+    class _FinalTool:
+        adapter_id = "deterministic-read-only"
+        tool_id = ToolId("lookup")
+
+        def __init__(self) -> None:
+            self.specialized_calls = 0
+            self.legacy_calls = 0
+            self.contextual_calls = 0
+
+        async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+            del request
+            self.legacy_calls += 1
+            raise AssertionError("legacy path must remain closed")
+
+        async def invoke_with_context(
+            self,
+            request: ToolInvocationRequest,
+            context: SecurityContext,
+        ) -> ToolInvocationResult:
+            del request, context
+            self.contextual_calls += 1
+            raise AssertionError("plain contextual path must remain closed")
+
+        async def invoke_with_context_and_final_admission(
+            self,
+            request: ToolInvocationRequest,
+            context: SecurityContext,
+            final_admission: ToolFinalAdmissionValidator,
+        ) -> ToolInvocationResult:
+            assert context.authenticated
+            self.specialized_calls += 1
+            await final_admission()
+            return ToolInvocationResult(
+                run_id=request.run_id,
+                step_id=request.step_id,
+                call_id=request.call_id,
+                tool_id=request.tool_id,
+                status=ToolResultStatus.SUCCEEDED,
+                output={"value": "final"},
+                started_at=request.created_at,
+                completed_at=request.created_at,
+            )
+
+    adapter = _FinalTool()
+    request = _invocation()
+    context = SecurityContext(
+        principal="service:test",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+    )
+    executor = BoundedAgentExecutor(clock=lambda: _NOW)
+
+    with pytest.raises(ToolExecutionError):
+        await executor.invoke_tool(
+            adapter,
+            request,
+            _descriptor(),
+            context=context,
+            timeout_seconds=1,
+            cancellation_grace=0.1,
+            cancellation=AgentCancellationToken(),
+        )
+
+    callbacks = 0
+
+    async def final_admission() -> None:
+        nonlocal callbacks
+        callbacks += 1
+
+    result = await executor.invoke_tool(
+        adapter,
+        request,
+        _descriptor(),
+        context=context,
+        final_admission=final_admission,
+        timeout_seconds=1,
+        cancellation_grace=0.1,
+        cancellation=AgentCancellationToken(),
+    )
+
+    assert result.status is ToolResultStatus.SUCCEEDED
+    assert result.output == {"value": "final"}
+    assert callbacks == 1
+    assert adapter.specialized_calls == 1
+    assert adapter.legacy_calls == 0
+    assert adapter.contextual_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_final_admission_callback_cannot_be_attached_to_plain_tool() -> None:
+    adapter = DeterministicReadOnlyTool("lookup", {"value": "fixed"})
+
+    async def final_admission() -> None:
+        raise AssertionError("must not run")
+
+    with pytest.raises(ToolExecutionError):
+        await BoundedAgentExecutor(clock=lambda: _NOW).invoke_tool(
+            adapter,
+            _invocation(),
+            _descriptor(),
+            final_admission=final_admission,
+            timeout_seconds=1,
+            cancellation_grace=0.1,
+            cancellation=AgentCancellationToken(),
+        )
+
+    assert adapter.requests == ()
