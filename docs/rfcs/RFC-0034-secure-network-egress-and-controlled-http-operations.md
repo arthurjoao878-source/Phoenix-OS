@@ -1,6 +1,6 @@
 # RFC-0034: Secure Network Egress and Controlled HTTP Operations
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.34.0
 - Owners: Phoenix OS maintainers
 - Architecture freeze: 2026-08-23
@@ -679,10 +679,29 @@ RFC as ambient Internet authority. Browser navigation and browser session state 
 their own canonical authority boundary and must compose with network authority without
 amplification.
 
+## Release acceptance evidence
+
+The v0.34.0 release candidate seals RFC-0034 with the following executable evidence:
+
+- [x] All seven RFC-0034 slices are complete and retain the frozen authority model.
+- [x] The canonical `network.http.request` resource remains generation-bound and operation-specific.
+- [x] Direct and tool-mediated requests retain the final canonical network boundary.
+- [x] SSRF, DNS rebinding, unsafe address, redirect, proxy, header, credential, stale-profile, cancellation, and authority-laundering regressions are covered.
+- [x] Final subject/profile/credential/cancellation/network/destination checks remain after the final attacker-controlled wait and before the protected send.
+- [x] Existing webhook and inference transports remain independently authoritative.
+- [x] Runtime observation and health inspection remain content-free data and never bearer authority.
+- [x] Named release gate: `python scripts/check_network_egress_release.py`.
+- [x] Wheel/sdist package boundaries, rebuilt-sdist wheel, and isolated offline smoke are part of the release gate.
+- [x] The normal Python 3.12/3.13 CI matrix executes the named network release gate.
+
 ## Acceptance
 
-RFC-0034 remains Draft until all seven slices, adversarial review, dedicated release
-gate, package verification, and the exact release CI matrix pass. Acceptance requires
-evidence that every Phoenix-mediated network effect remains dominated by the canonical
-network authority boundary regardless of whether it is reached directly or through an
-agent/tool composition.
+RFC-0034 is accepted for Phoenix OS 0.34.0 after the complete regression suite,
+dedicated network release gate, package verification, adversarial review, and exact
+release-commit CI matrix pass. Every Phoenix-mediated network effect remains dominated
+by the canonical network authority boundary regardless of whether it is reached directly
+or through an agent/tool composition.
+
+Annotated tag publication, release artifact upload, `SHA256SUMS`, GitHub Release
+publication, PR review, and merge remain separate explicitly authorized release
+operations after the exact release commit has passed the complete CI matrix.

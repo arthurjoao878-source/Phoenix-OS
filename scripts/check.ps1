@@ -41,3 +41,6 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 python scripts/check_authority_release.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+python scripts/check_network_egress_release.py
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

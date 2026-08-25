@@ -4,10 +4,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 _RFC = _ROOT / "docs" / "rfcs" / "RFC-0034-secure-network-egress-and-controlled-http-operations.md"
 
 
-def test_rfc0034_is_draft_for_v034_and_names_the_canonical_network_action() -> None:
+def test_rfc0034_is_accepted_for_v034_and_names_the_canonical_network_action() -> None:
     text = _RFC.read_text(encoding="utf-8")
 
-    assert "- Status: Draft" in text
+    assert "- Status: Accepted" in text
     assert "- Target release: Phoenix OS v0.34.0" in text
     assert "network.http.request" in text
     assert "spaces and non-ASCII bytes require explicit" in text
@@ -153,3 +153,19 @@ def test_rfc0034_slice6_runtime_observability_is_content_free_and_non_authoritat
     assert "`network.egress.health.read`" in normalized
     assert "Inspection authority does not imply `network.http.request`" in normalized
     assert "Slice 6 adds no mediated authority transition" in normalized
+
+
+def test_rfc0034_release_acceptance_is_complete_and_names_the_release_gate() -> None:
+    text = _RFC.read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+
+    assert "- Status: Accepted" in text
+    assert "- [ ]" not in text
+    assert "## Release acceptance evidence" in text
+    assert "python scripts/check_network_egress_release.py" in text
+    assert (
+        "RFC-0034 is accepted for Phoenix OS 0.34.0 after the complete regression suite"
+        in normalized
+    )
+    assert "Annotated tag publication" in normalized
+    assert "Every Phoenix-mediated network effect remains dominated" in normalized

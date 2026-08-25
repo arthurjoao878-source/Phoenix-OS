@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PYPROJECT = _ROOT / "pyproject.toml"
 _README = _ROOT / "README.md"
 _CHANGELOG = _ROOT / "CHANGELOG.md"
 _RELEASE_NOTES = _ROOT / "docs" / "releases" / "v0.33.0.md"
@@ -15,14 +13,8 @@ _RFC = _ROOT / "docs" / "rfcs" / "RFC-0033-effective-authority-and-capability-no
 _GATE = _ROOT / "scripts" / "check_authority_release.py"
 
 
-def test_project_version_is_v0330() -> None:
-    document = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    assert document["project"]["version"] == "0.33.0"
-
-
-def test_readme_announces_thirty_three_specs_and_authority_gate() -> None:
+def test_readme_preserves_v033_release_history() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.33.0` implements thirty-three accepted specifications:" in readme
     assert "RFC-0033" in readme
     assert "Effective Authority and Capability Non-Amplification" in readme
     current = "[Phoenix OS 0.33.0](docs/releases/v0.33.0.md)"
@@ -32,7 +24,7 @@ def test_readme_announces_thirty_three_specs_and_authority_gate() -> None:
     assert "## Effective-authority release gate" in readme
 
 
-def test_changelog_starts_with_v0330_release() -> None:
+def test_changelog_preserves_v0330_release() -> None:
     changelog = _CHANGELOG.read_text(encoding="utf-8")
     current = "## [0.33.0] - 2026-08-23"
     previous = "## [0.32.0] - 2026-08-19"
@@ -50,7 +42,7 @@ def test_changelog_starts_with_v0330_release() -> None:
         assert phrase.lower() in changelog.lower()
 
 
-def test_v033_release_notes_and_migration_are_complete() -> None:
+def test_v033_release_notes_and_migration_remain_complete() -> None:
     notes = _RELEASE_NOTES.read_text(encoding="utf-8")
     for phrase in (
         "# Phoenix OS 0.33.0",
@@ -67,10 +59,8 @@ def test_v033_release_notes_and_migration_are_complete() -> None:
         "SHA256SUMS",
     ):
         assert phrase in notes
-    upper = notes.upper()
-    assert "TODO" not in upper
-    assert "TBD" not in upper
-
+    assert "TODO" not in notes.upper()
+    assert "TBD" not in notes.upper()
     migration = _MIGRATION.read_text(encoding="utf-8")
     for phrase in (
         "# Migrating Phoenix OS 0.32.0 to 0.33.0",
@@ -82,7 +72,7 @@ def test_v033_release_notes_and_migration_are_complete() -> None:
         assert phrase in migration
 
 
-def test_security_review_and_rfc_are_release_candidates() -> None:
+def test_v033_security_review_and_rfc_remain_accepted() -> None:
     assert _SECURITY.is_file()
     rfc = _RFC.read_text(encoding="utf-8")
     assert "- Status: Accepted" in rfc
@@ -90,7 +80,7 @@ def test_security_review_and_rfc_are_release_candidates() -> None:
     assert "RFC-0033 is accepted for Phoenix OS 0.33.0." in rfc
 
 
-def test_gate_and_previous_release_notes_remain_available() -> None:
+def test_v033_gate_and_previous_release_notes_remain_available() -> None:
     assert _GATE.is_file()
     assert _PREVIOUS_RELEASE_NOTES.is_file()
     assert "# Phoenix OS 0.32.0" in _PREVIOUS_RELEASE_NOTES.read_text(encoding="utf-8")
