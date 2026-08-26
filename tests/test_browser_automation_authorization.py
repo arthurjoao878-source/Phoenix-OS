@@ -19,6 +19,7 @@ from phoenix_os.browser_automation import (
     BrowserAuthorizationRejectedError,
     BrowserDestinationMode,
     BrowserElementId,
+    BrowserNavigationRequest,
     BrowserNavigationTarget,
     BrowserNavigationTargetId,
     BrowserOrigin,
@@ -42,6 +43,7 @@ from phoenix_os.browser_automation import (
     browser_session_close_intent,
     browser_session_open_intent,
     browser_session_resource,
+    derive_browser_redirect_request,
 )
 from phoenix_os.policy import (
     PolicyDecision,
@@ -289,6 +291,32 @@ def test_navigation_intent_rejects_unconfigured_target_substitution() -> None:
 
     with pytest.raises(BrowserAuthorizationRejectedError):
         browser_page_navigate_intent(profile, _session(), _page(), forged)
+
+
+def test_redirect_navigation_intent_binds_exact_candidate_and_hop_count() -> None:
+    profile = _profile()
+    session = _session()
+    page = _page()
+    initial = BrowserNavigationRequest.from_target(profile.initial_targets[0])
+    redirected = derive_browser_redirect_request(profile, initial, "/next")
+
+    initial_intent = browser_page_navigate_intent(profile, session, page, initial)
+    redirected_intent = browser_page_navigate_intent(profile, session, page, redirected)
+
+    assert initial_intent.parameter_digest != redirected_intent.parameter_digest
+    changed = replace(redirected, request_target="/other")
+    assert (
+        browser_page_navigate_intent(profile, session, page, changed).parameter_digest
+        != redirected_intent.parameter_digest
+    )
+
+    over_limit = replace(redirected, redirect_count=profile.limits.max_redirects + 1)
+    with pytest.raises(BrowserAuthorizationRejectedError):
+        browser_page_navigate_intent(profile, session, page, over_limit)
+
+    forged_initial = replace(initial, request_target="/response-granted")
+    with pytest.raises(BrowserAuthorizationRejectedError):
+        browser_page_navigate_intent(profile, session, page, forged_initial)
 
 
 def test_session_page_and_prepared_stale_bindings_fail_closed() -> None:

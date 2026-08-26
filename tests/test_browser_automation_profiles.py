@@ -5,6 +5,7 @@ import pytest
 from phoenix_os.browser_automation import (
     BrowserAdapterId,
     BrowserDestinationMode,
+    BrowserNavigationRequest,
     BrowserNavigationTarget,
     BrowserNavigationTargetId,
     BrowserNetworkPolicy,
@@ -13,6 +14,7 @@ from phoenix_os.browser_automation import (
     BrowserProfileCatalog,
     BrowserProfileId,
     BrowserProfileLimits,
+    derive_browser_redirect_request,
 )
 
 
@@ -78,6 +80,47 @@ def test_navigation_target_rejects_arbitrary_urls_fragments_and_path_ambiguity()
             )
 
     assert _target().request_target == "/docs/start?lang=en"
+
+
+def test_redirect_request_is_canonical_exact_origin_and_finite() -> None:
+    profile = _profile()
+    initial = BrowserNavigationRequest.from_target(profile.initial_targets[0])
+
+    redirected = derive_browser_redirect_request(
+        profile,
+        initial,
+        "/docs/next?lang=pt",
+    )
+
+    assert redirected.target_id == initial.target_id
+    assert redirected.origin == initial.origin
+    assert redirected.request_target == "/docs/next?lang=pt"
+    assert redirected.redirect_count == 1
+    assert redirected.absolute_url == "https://docs.example.com/docs/next?lang=pt"
+
+    for location in (
+        "https://evil.example.com/next",
+        "https://user:pass@docs.example.com/next",
+        "/safe/../admin",
+        "/safe%2Fadmin",
+        "/safe#fragment",
+        "/safe\\windows",
+        " /space",
+    ):
+        with pytest.raises(ValueError):
+            derive_browser_redirect_request(profile, initial, location)
+
+    no_redirects = BrowserProfile(
+        profile_id=profile.profile_id,
+        generation=profile.generation,
+        adapter_id=profile.adapter_id,
+        allowed_origins=profile.allowed_origins,
+        initial_targets=profile.initial_targets,
+        network_policy=profile.network_policy,
+        limits=BrowserProfileLimits(max_redirects=0),
+    )
+    with pytest.raises(ValueError, match="redirect limit"):
+        derive_browser_redirect_request(no_redirects, initial, "/next")
 
 
 def test_network_policy_is_server_owned_finite_and_normalizes_explicit_cidrs() -> None:

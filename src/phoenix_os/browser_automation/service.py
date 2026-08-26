@@ -14,12 +14,16 @@ from phoenix_os.authority import AuthorityFreshnessValidator, AuthorityIntent
 from phoenix_os.browser_automation.adapter import (
     BrowserAdapter,
     BrowserAdapterCommitResult,
+    BrowserNavigationCommitResult,
     BrowserPreparedEffect,
     BrowserPreparedEffectKind,
+    BrowserPreparedNavigation,
+    BrowserPreparedNavigationPlan,
 )
 from phoenix_os.browser_automation.authorization import (
     BrowserAuthorizer,
     browser_element_fill_intent,
+    browser_page_navigate_intent,
     browser_page_read_intent,
     browser_session_close_intent,
     browser_session_open_intent,
@@ -29,6 +33,7 @@ from phoenix_os.browser_automation.contracts import (
     BrowserAdapterId,
     BrowserElementId,
     BrowserFillInput,
+    BrowserNavigationTargetId,
     BrowserOperationOutcome,
     BrowserOperationResult,
     BrowserPageDescriptor,
@@ -51,7 +56,17 @@ from phoenix_os.browser_automation.errors import (
     BrowserAutomationTargetNotFoundError,
     BrowserAutomationTimeoutError,
 )
-from phoenix_os.browser_automation.profiles import BrowserProfile
+from phoenix_os.browser_automation.network import (
+    BrowserDestinationAdmission,
+    BrowserNetworkResolver,
+    resolve_and_admit_browser_destination,
+)
+from phoenix_os.browser_automation.profiles import (
+    BrowserNavigationRequest,
+    BrowserNavigationTarget,
+    BrowserProfile,
+    derive_browser_redirect_request,
+)
 from phoenix_os.policy import PrincipalType, SecurityContext
 
 _T = TypeVar("_T")
@@ -147,7 +162,7 @@ class _BrowserSessionState:
 
 
 class BrowserAutomationService:
-    """Apply exact current browser authority around S4 local browser operations only."""
+    """Apply exact current browser authority around controlled S5 browser operations."""
 
     def __init__(
         self,
@@ -157,6 +172,7 @@ class BrowserAutomationService:
         adapter: BrowserAdapter,
         authorizer: BrowserAuthorizer,
         freshness: AuthorityFreshnessValidator,
+        network_resolver: BrowserNetworkResolver | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not isinstance(profiles, BrowserProfileSource):
@@ -169,6 +185,10 @@ class BrowserAutomationService:
             raise TypeError("authorizer must implement BrowserAuthorizer")
         if not isinstance(freshness, AuthorityFreshnessValidator):
             raise TypeError("freshness must implement AuthorityFreshnessValidator")
+        if network_resolver is not None and not isinstance(
+            network_resolver, BrowserNetworkResolver
+        ):
+            raise TypeError("network_resolver must implement BrowserNetworkResolver or be None")
         if clock is not None and not callable(clock):
             raise TypeError("clock must be callable")
         self._profiles = profiles
@@ -176,6 +196,7 @@ class BrowserAutomationService:
         self._adapter = adapter
         self._authorizer = authorizer
         self._freshness = freshness
+        self._network_resolver = network_resolver
         self._clock: Callable[[], datetime] = _utc_now if clock is None else clock
         self._sessions: dict[BrowserSessionId, _BrowserSessionState] = {}
         self._session_counts: dict[tuple[BrowserProfileId, int], int] = {}
@@ -395,6 +416,210 @@ class BrowserAutomationService:
             self._require_current_profile_sync(state)
             self._require_current_page_sync(state, page)
             return snapshot
+
+
+    async def navigate(
+        self,
+        page: BrowserPageDescriptor,
+        target_id: BrowserNavigationTargetId,
+        context: SecurityContext,
+        *,
+        cancellation: BrowserAutomationCancellationToken | None = None,
+        deadline: datetime | None = None,
+    ) -> BrowserOperationResult:
+        """Follow one finite exact-authorized top-level navigation chain without retries."""
+
+        if not isinstance(page, BrowserPageDescriptor):
+            raise TypeError("page must be BrowserPageDescriptor")
+        if not isinstance(target_id, BrowserNavigationTargetId):
+            raise TypeError("target_id must be BrowserNavigationTargetId")
+        _BrowserSubjectBinding.from_context(context)
+        self._require_service_active()
+        token = self._token(cancellation)
+        self._validate_requested_deadline(deadline)
+        state = await self._lookup_state(page.session_id)
+        operation_deadline = self._operation_deadline(state.profile, deadline)
+
+        async with state.lock:
+            await self._require_live_current_state(
+                state,
+                context,
+                expected_page=page,
+                cancellation=token,
+                deadline=operation_deadline,
+            )
+            effective = self._bound_deadline_to_session(state, operation_deadline)
+            target = self._require_navigation_target(state.profile, target_id)
+            request = BrowserNavigationRequest.from_target(target)
+            self._require_pre_effect(token, effective)
+            if page.revision.value >= MAX_BROWSER_PAGE_REVISION:
+                raise BrowserAutomationLimitExceededError()
+
+            operation_id = uuid4()
+            result_created_at = self._now()
+            remote_started = False
+
+            while True:
+                plan: BrowserPreparedNavigationPlan | None = None
+                try:
+                    try:
+                        plan = await self._call_prepare_navigation(
+                            page,
+                            request,
+                            token,
+                            effective,
+                        )
+                        self._validate_prepared_navigation_plan(page, request, plan)
+                    except (BrowserAutomationAdapterError, BrowserAutomationStaleError):
+                        if plan is not None:
+                            await self._discard_navigation_best_effort(
+                                plan,
+                                cancellation=token,
+                                deadline=effective,
+                            )
+                            plan = None
+                        if remote_started:
+                            await self._poison_after_possible_effect(
+                                state,
+                                cancellation=token,
+                                deadline=effective,
+                            )
+                            raise BrowserAutomationIndeterminateEffectError() from None
+                        await self._invalidate_state(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise
+
+                    if plan is None:  # pragma: no cover - exact preparation invariant
+                        raise BrowserAutomationAdapterError()
+
+                    destination = await self._resolve_navigation_destination(
+                        state.profile,
+                        request,
+                        token,
+                        effective,
+                    )
+                    await self._require_live_current_state(
+                        state,
+                        context,
+                        expected_page=page,
+                        cancellation=token,
+                        deadline=effective,
+                    )
+                    self._require_pre_effect(token, effective)
+
+                    # DNS and adapter preparation are attacker-influenceable zero-effect
+                    # waits. This is the final freshness and exact authority decision for
+                    # this hop; no attacker-controlled wait occurs before commit.
+                    await self._validate_freshness(context, token, effective)
+                    await self._authorize_page_navigate(
+                        state,
+                        page,
+                        request,
+                        context,
+                        token,
+                        effective,
+                    )
+                    self._require_pre_effect(token, effective)
+                    state.subject.require_context(context)
+                    self._require_current_profile_sync(state)
+                    self._require_current_page_sync(state, page)
+
+                    prepared = BrowserPreparedNavigation(
+                        plan=plan,
+                        destination=destination,
+                    )
+                    try:
+                        committed = await self._await_commit(
+                            self._adapter.commit_navigation(prepared),
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                    except asyncio.CancelledError:
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError() from None
+                    except BrowserAutomationIndeterminateEffectError:
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise
+                    except Exception:
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError() from None
+
+                    remote_started = True
+                    plan = None
+                    if not self._valid_navigation_hop_result(page, prepared, committed):
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError()
+
+                    if committed.redirect_location is not None:
+                        try:
+                            request = derive_browser_redirect_request(
+                                state.profile,
+                                request,
+                                committed.redirect_location,
+                            )
+                        except Exception:
+                            await self._poison_after_possible_effect(
+                                state,
+                                cancellation=token,
+                                deadline=effective,
+                            )
+                            raise BrowserAutomationIndeterminateEffectError() from None
+                        continue
+
+                    next_page = committed.page
+                    if next_page is None:  # pragma: no cover - result invariant
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError()
+                    state.page = next_page
+                    return BrowserOperationResult(
+                        operation_id=operation_id,
+                        outcome=BrowserOperationOutcome.SUCCEEDED,
+                        session_id=next_page.session_id,
+                        page_id=next_page.page_id,
+                        revision=next_page.revision,
+                        effect_started=True,
+                        created_at=result_created_at,
+                    )
+                except BrowserAutomationIndeterminateEffectError:
+                    raise
+                except BaseException:
+                    if plan is not None:
+                        await self._discard_navigation_best_effort(
+                            plan,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                    if remote_started:
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError() from None
+                    raise
 
     async def fill_element(
         self,
@@ -799,6 +1024,38 @@ class BrowserAutomationService:
             deadline,
         )
 
+
+    async def _authorize_page_navigate(
+        self,
+        state: _BrowserSessionState,
+        page: BrowserPageDescriptor,
+        request: BrowserNavigationRequest,
+        context: SecurityContext,
+        cancellation: BrowserAutomationCancellationToken,
+        deadline: _EffectiveDeadline,
+    ) -> AuthorityIntent:
+        try:
+            expected = browser_page_navigate_intent(
+                state.profile,
+                state.descriptor,
+                page,
+                request,
+            )
+        except Exception:
+            raise BrowserAutomationRejectedError() from None
+        return await self._authorize_exact(
+            self._authorizer.authorize_page_navigate(
+                state.profile,
+                state.descriptor,
+                page,
+                request,
+                context,
+            ),
+            expected,
+            cancellation,
+            deadline,
+        )
+
     async def _authorize_page_read(
         self,
         state: _BrowserSessionState,
@@ -903,6 +1160,65 @@ class BrowserAutomationService:
             raise BrowserAutomationAdapterError()
         return result
 
+
+    async def _call_prepare_navigation(
+        self,
+        page: BrowserPageDescriptor,
+        request: BrowserNavigationRequest,
+        cancellation: BrowserAutomationCancellationToken,
+        deadline: _EffectiveDeadline,
+    ) -> BrowserPreparedNavigationPlan:
+        try:
+            result = await self._await_pre_effect(
+                self._adapter.prepare_navigation(page, request),
+                cancellation=cancellation,
+                deadline=deadline,
+            )
+        except asyncio.CancelledError:
+            raise
+        except BrowserAutomationError:
+            raise
+        except Exception:
+            raise BrowserAutomationAdapterError() from None
+        if not isinstance(result, BrowserPreparedNavigationPlan):
+            raise BrowserAutomationAdapterError()
+        return result
+
+    async def _resolve_navigation_destination(
+        self,
+        profile: BrowserProfile,
+        request: BrowserNavigationRequest,
+        cancellation: BrowserAutomationCancellationToken,
+        deadline: _EffectiveDeadline,
+    ) -> BrowserDestinationAdmission:
+        resolver = self._network_resolver
+        if resolver is None:
+            raise BrowserAutomationOperationDisabledError()
+        try:
+            result = await self._await_pre_effect(
+                resolve_and_admit_browser_destination(
+                    profile,
+                    request.origin,
+                    resolver=resolver,
+                ),
+                cancellation=cancellation,
+                deadline=deadline,
+            )
+        except asyncio.CancelledError:
+            raise
+        except BrowserAutomationError:
+            raise
+        except Exception:
+            raise BrowserAutomationAdapterError() from None
+        if (
+            not isinstance(result, BrowserDestinationAdmission)
+            or result.profile_id != profile.profile_id
+            or result.profile_generation != profile.generation
+            or result.origin != request.origin
+        ):
+            raise BrowserAutomationAdapterError()
+        return result
+
     async def _call_prepare_fill(
         self,
         page: BrowserPageDescriptor,
@@ -927,6 +1243,24 @@ class BrowserAutomationService:
             raise BrowserAutomationAdapterError()
         return result
 
+    async def _discard_navigation_best_effort(
+        self,
+        prepared: BrowserPreparedNavigationPlan,
+        *,
+        cancellation: BrowserAutomationCancellationToken,
+        deadline: _EffectiveDeadline,
+    ) -> None:
+        if not self._cleanup_may_wait(cancellation, deadline):
+            if not self._quarantined:
+                await self._trip_quarantine()
+            return
+        await self._cleanup_best_effort(
+            self._adapter.discard_navigation(prepared),
+            cancellation=cancellation,
+            deadline=deadline,
+            cap_seconds=_CLEANUP_CAP_SECONDS,
+        )
+
     async def _discard_best_effort(
         self,
         prepared: BrowserPreparedEffect,
@@ -945,6 +1279,21 @@ class BrowserAutomationService:
             cap_seconds=_CLEANUP_CAP_SECONDS,
         )
 
+
+    @staticmethod
+    def _validate_prepared_navigation_plan(
+        page: BrowserPageDescriptor,
+        request: BrowserNavigationRequest,
+        prepared: BrowserPreparedNavigationPlan,
+    ) -> None:
+        if (
+            prepared.session_id != page.session_id
+            or prepared.page_id != page.page_id
+            or prepared.revision != page.revision
+            or prepared.request != request
+        ):
+            raise BrowserAutomationAdapterError()
+
     @staticmethod
     def _validate_prepared_fill(
         page: BrowserPageDescriptor,
@@ -961,6 +1310,28 @@ class BrowserAutomationService:
             or prepared.input_digest != value.digest
         ):
             raise BrowserAutomationAdapterError()
+
+
+    @staticmethod
+    def _valid_navigation_hop_result(
+        page: BrowserPageDescriptor,
+        prepared: BrowserPreparedNavigation,
+        committed: object,
+    ) -> bool:
+        if not isinstance(committed, BrowserNavigationCommitResult):
+            return False
+        if committed.prepared_token != prepared.token or committed.effect_started is not True:
+            return False
+        if committed.redirect_location is not None:
+            return committed.page is None
+        next_page = committed.page
+        if next_page is None:
+            return False
+        return (
+            next_page.session_id == page.session_id
+            and next_page.page_id == page.page_id
+            and next_page.revision.value == page.revision.value + 1
+        )
 
     @staticmethod
     def _valid_commit_result(
@@ -1005,6 +1376,16 @@ class BrowserAutomationService:
                 raise BrowserAutomationAdapterError()
             if element.value is not None and len(element.value) > limits.max_element_value_chars:
                 raise BrowserAutomationAdapterError()
+
+    @staticmethod
+    def _require_navigation_target(
+        profile: BrowserProfile,
+        target_id: BrowserNavigationTargetId,
+    ) -> BrowserNavigationTarget:
+        try:
+            return profile.require_target(target_id)
+        except KeyError:
+            raise BrowserAutomationTargetNotFoundError() from None
 
     @staticmethod
     def _require_fill_limits(profile: BrowserProfile, value: BrowserFillInput) -> None:
@@ -1056,11 +1437,11 @@ class BrowserAutomationService:
 
     async def _await_commit(
         self,
-        awaitable: Awaitable[BrowserAdapterCommitResult],
+        awaitable: Awaitable[_T],
         *,
         cancellation: BrowserAutomationCancellationToken,
         deadline: _EffectiveDeadline,
-    ) -> BrowserAdapterCommitResult:
+    ) -> _T:
         self._require_pre_effect(cancellation, deadline)
         operation = asyncio.ensure_future(awaitable)
         cancelled = asyncio.create_task(cancellation.wait())
