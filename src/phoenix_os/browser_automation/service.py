@@ -1,19 +1,22 @@
-"""Canonical S6 browser sessions, click effects, navigation, and tool-scope mediation."""
+"""Canonical S7 browser sessions, lifecycle, observation, and tool-scope mediation."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, TypeVar, cast, runtime_checkable
+from functools import wraps
+from time import monotonic_ns
+from typing import Any, ParamSpec, Protocol, TypeVar, cast, runtime_checkable
 from uuid import UUID, uuid4
 
 from phoenix_os.authority import AuthorityFreshnessValidator, AuthorityIntent
 from phoenix_os.browser_automation.adapter import (
     BrowserAdapter,
     BrowserAdapterCommitResult,
+    BrowserAdapterLifecycle,
     BrowserClickCommitResult,
     BrowserNavigationCommitResult,
     BrowserPreparedClickRequest,
@@ -56,6 +59,7 @@ from phoenix_os.browser_automation.errors import (
     BrowserAutomationLimitExceededError,
     BrowserAutomationOperationDisabledError,
     BrowserAutomationRejectedError,
+    BrowserAutomationServiceUnavailableError,
     BrowserAutomationStaleError,
     BrowserAutomationTargetNotFoundError,
     BrowserAutomationTimeoutError,
@@ -64,6 +68,14 @@ from phoenix_os.browser_automation.network import (
     BrowserDestinationAdmission,
     BrowserNetworkResolver,
     resolve_and_admit_browser_destination,
+)
+from phoenix_os.browser_automation.observer import (
+    MAX_BROWSER_OBSERVATION_DURATION_MS,
+    BrowserAutomationObservationOutcome,
+    BrowserAutomationObservedOperation,
+    BrowserAutomationObserver,
+    BrowserAutomationOperationObservation,
+    NullBrowserAutomationObserver,
 )
 from phoenix_os.browser_automation.profiles import (
     BrowserClickRequest,
@@ -76,10 +88,149 @@ from phoenix_os.browser_automation.profiles import (
 from phoenix_os.policy import PrincipalType, SecurityContext
 
 _T = TypeVar("_T")
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 BrowserFinalAdmissionValidator = Callable[[], Awaitable[None]]
 
 _CANCELLATION_GRACE_SECONDS = 0.05
 _CLEANUP_CAP_SECONDS = 1.0
+MAX_BROWSER_ADAPTER_SHUTDOWN_SECONDS = 5.0
+MAX_BROWSER_OBSERVER_RECORD_SECONDS = 0.25
+
+
+class _BrowserOperationTracker(Protocol):
+    async def _acquire_operation(self) -> None: ...
+
+    async def _release_operation(self) -> None: ...
+
+    def _record_observation(
+        self,
+        observation: BrowserAutomationOperationObservation,
+        context: SecurityContext,
+    ) -> None: ...
+
+
+def _duration_ms(started_ns: int) -> int:
+    elapsed = max(0, (monotonic_ns() - started_ns) // 1_000_000)
+    return min(elapsed, MAX_BROWSER_OBSERVATION_DURATION_MS)
+
+
+def _observation_failure(
+    exception: BrowserAutomationError,
+) -> tuple[BrowserAutomationObservationOutcome, bool | None]:
+    if isinstance(exception, BrowserAutomationIndeterminateEffectError):
+        return BrowserAutomationObservationOutcome.INDETERMINATE, True
+    if isinstance(exception, BrowserAutomationRejectedError):
+        return BrowserAutomationObservationOutcome.REJECTED, False
+    if isinstance(exception, BrowserAutomationStaleError):
+        return BrowserAutomationObservationOutcome.STALE, False
+    if isinstance(exception, BrowserAutomationCancelledError):
+        return BrowserAutomationObservationOutcome.CANCELLED, False
+    if isinstance(exception, BrowserAutomationTimeoutError):
+        return BrowserAutomationObservationOutcome.TIMED_OUT, False
+    return BrowserAutomationObservationOutcome.FAILED, None
+
+
+def _tracked_browser_operation(
+    operation: BrowserAutomationObservedOperation,
+) -> Callable[
+    [Callable[_P, Coroutine[Any, Any, _R]]],
+    Callable[_P, Coroutine[Any, Any, _R]],
+]:
+    def decorate(
+        function: Callable[_P, Coroutine[Any, Any, _R]],
+    ) -> Callable[_P, Coroutine[Any, Any, _R]]:
+        @wraps(function)
+        async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            if not args:
+                raise RuntimeError("tracked browser operation requires service instance")
+            service = cast(_BrowserOperationTracker, args[0])
+            await service._acquire_operation()
+
+            context: SecurityContext | None = None
+            for value in (*args, *kwargs.values()):
+                if isinstance(value, SecurityContext):
+                    context = value
+                    break
+
+            operation_id = uuid4()
+            started_ns = monotonic_ns()
+            if context is not None:
+                service._record_observation(
+                    BrowserAutomationOperationObservation(
+                        operation_id=operation_id,
+                        operation=operation,
+                        outcome=BrowserAutomationObservationOutcome.STARTED,
+                        effect_started=False,
+                    ),
+                    context,
+                )
+            try:
+                result = await function(*args, **kwargs)
+            except asyncio.CancelledError:
+                if context is not None:
+                    service._record_observation(
+                        BrowserAutomationOperationObservation(
+                            operation_id=operation_id,
+                            operation=operation,
+                            outcome=BrowserAutomationObservationOutcome.CANCELLED,
+                            effect_started=None,
+                            duration_ms=_duration_ms(started_ns),
+                        ),
+                        context,
+                    )
+                raise
+            except BrowserAutomationError as exception:
+                if context is not None:
+                    outcome, effect_started = _observation_failure(exception)
+                    service._record_observation(
+                        BrowserAutomationOperationObservation(
+                            operation_id=operation_id,
+                            operation=operation,
+                            outcome=outcome,
+                            effect_started=effect_started,
+                            duration_ms=_duration_ms(started_ns),
+                        ),
+                        context,
+                    )
+                raise
+            except Exception:
+                if context is not None:
+                    service._record_observation(
+                        BrowserAutomationOperationObservation(
+                            operation_id=operation_id,
+                            operation=operation,
+                            outcome=BrowserAutomationObservationOutcome.FAILED,
+                            effect_started=None,
+                            duration_ms=_duration_ms(started_ns),
+                        ),
+                        context,
+                    )
+                raise
+            else:
+                if context is not None:
+                    effect_started = (
+                        result.effect_started
+                        if isinstance(result, BrowserOperationResult)
+                        else False
+                    )
+                    service._record_observation(
+                        BrowserAutomationOperationObservation(
+                            operation_id=operation_id,
+                            operation=operation,
+                            outcome=BrowserAutomationObservationOutcome.SUCCEEDED,
+                            effect_started=effect_started,
+                            duration_ms=_duration_ms(started_ns),
+                        ),
+                        context,
+                    )
+                return result
+            finally:
+                await service._release_operation()
+
+        return wrapper
+
+    return decorate
 
 
 @runtime_checkable
@@ -106,6 +257,47 @@ class BrowserSessionOpenResult:
             or self.page.page_id != self.session.page_id
         ):
             raise ValueError("opened browser page must belong to the opened session")
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserAutomationServiceSnapshot:
+    """Content-free bounded point-in-time browser runtime health."""
+
+    closed: bool
+    closing: bool
+    available: bool
+    runtime_managed: bool
+    quarantined: bool
+    active_operations: int
+    active_sessions: int
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("closed", self.closed),
+            ("closing", self.closing),
+            ("available", self.available),
+            ("runtime_managed", self.runtime_managed),
+            ("quarantined", self.quarantined),
+        ):
+            if type(value) is not bool:
+                raise TypeError(f"{label} must be a boolean")
+        for label, count in (
+            ("active_operations", self.active_operations),
+            ("active_sessions", self.active_sessions),
+        ):
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError(f"{label} must be a non-negative integer")
+        if self.closed and (
+            self.available or self.closing or self.active_operations or self.active_sessions
+        ):
+            raise ValueError("closed browser service cannot be available, closing, or active")
+        if self.closing and self.available:
+            raise ValueError("closing browser service cannot be available")
+        if self.quarantined and self.available:
+            raise ValueError("quarantined browser service cannot be available")
+        if self.schema_version != 1:
+            raise ValueError("unsupported browser service snapshot version")
 
 
 class BrowserAutomationCancellationToken:
@@ -170,7 +362,7 @@ class _BrowserSessionState:
 
 
 class BrowserAutomationService:
-    """Apply exact current browser and optional tool authority around S6 operations."""
+    """Apply exact browser/tool authority with S7 lifecycle and observation boundaries."""
 
     def __init__(
         self,
@@ -181,6 +373,7 @@ class BrowserAutomationService:
         authorizer: BrowserAuthorizer,
         freshness: AuthorityFreshnessValidator,
         network_resolver: BrowserNetworkResolver | None = None,
+        observer: BrowserAutomationObserver | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not isinstance(profiles, BrowserProfileSource):
@@ -197,6 +390,8 @@ class BrowserAutomationService:
             network_resolver, BrowserNetworkResolver
         ):
             raise TypeError("network_resolver must implement BrowserNetworkResolver or be None")
+        if observer is not None and not isinstance(observer, BrowserAutomationObserver):
+            raise TypeError("observer must implement BrowserAutomationObserver")
         if clock is not None and not callable(clock):
             raise TypeError("clock must be callable")
         self._profiles = profiles
@@ -205,14 +400,126 @@ class BrowserAutomationService:
         self._authorizer = authorizer
         self._freshness = freshness
         self._network_resolver = network_resolver
+        self._observer = observer if observer is not None else NullBrowserAutomationObserver()
         self._clock: Callable[[], datetime] = _utc_now if clock is None else clock
         self._sessions: dict[BrowserSessionId, _BrowserSessionState] = {}
         self._session_counts: dict[tuple[BrowserProfileId, int], int] = {}
         self._state_lock = asyncio.Lock()
+        self._active_operations = 0
+        self._activity = asyncio.Condition()
+        self._close_lock = asyncio.Lock()
+        self._closed = False
+        self._closing = False
+        self._runtime_managed = False
+        self._runtime_availability: Callable[[], bool] | None = None
         self._quarantined = False
         self._quarantine_event = asyncio.Event()
         self._abandoned_tasks: set[asyncio.Future[object]] = set()
+        self._observer_tasks: set[asyncio.Task[None]] = set()
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    async def snapshot(self) -> BrowserAutomationServiceSnapshot:
+        """Return bounded content-free service health without observing browser content."""
+
+        async with self._activity:
+            closed = self._closed
+            closing = self._closing
+            available = self._is_available()
+            runtime_managed = self._runtime_managed
+            quarantined = self._quarantined
+            active_operations = self._active_operations
+        async with self._state_lock:
+            active_sessions = len(self._sessions)
+        return BrowserAutomationServiceSnapshot(
+            closed=closed,
+            closing=closing,
+            available=available,
+            runtime_managed=runtime_managed,
+            quarantined=quarantined,
+            active_operations=active_operations,
+            active_sessions=active_sessions,
+        )
+
+    def _bind_runtime_lifecycle(self) -> None:
+        if self._closed or self._closing:
+            raise RuntimeError("closed browser automation service cannot be Runtime-owned")
+        if self._runtime_managed:
+            raise RuntimeError("browser automation service is already Runtime-owned")
+        if self._active_operations or self._sessions:
+            raise RuntimeError("active browser automation service cannot become Runtime-owned")
+        self._runtime_managed = True
+        self._runtime_availability = None
+
+    def _activate_runtime_lifecycle(self, availability: Callable[[], bool]) -> None:
+        if not callable(availability):
+            raise TypeError("availability must be callable")
+        if not self._runtime_managed:
+            raise RuntimeError("browser automation service is not Runtime-owned")
+        if self._closed or self._closing:
+            raise RuntimeError("browser automation service is already closing or closed")
+        if self._runtime_availability is not None:
+            raise RuntimeError("browser automation Runtime lifecycle is already active")
+        self._runtime_availability = availability
+
+    async def close(self) -> None:
+        async with self._close_lock:
+            if self._closed:
+                return
+
+            async with self._activity:
+                self._runtime_availability = None
+                self._closing = True
+                while self._active_operations:
+                    await self._activity.wait()
+
+            async with self._state_lock:
+                session_ids = tuple(self._sessions)
+                self._sessions.clear()
+                self._session_counts.clear()
+
+            failure: BrowserAutomationError | None = None
+            try:
+                await self._close_adapter_owned(session_ids)
+            except BrowserAutomationError as exception:
+                failure = exception
+
+            await self._drain_observers()
+
+            async with self._activity:
+                self._closed = True
+                self._closing = False
+                self._activity.notify_all()
+
+            if failure is not None:
+                raise failure
+
+    async def _close_adapter_owned(
+        self,
+        session_ids: tuple[BrowserSessionId, ...],
+    ) -> None:
+        try:
+            async with asyncio.timeout(MAX_BROWSER_ADAPTER_SHUTDOWN_SECONDS):
+                if isinstance(self._adapter, BrowserAdapterLifecycle):
+                    await self._adapter.aclose()
+                    return
+                for session_id in session_ids:
+                    try:
+                        await self._adapter.close_session(session_id)
+                    except BrowserAutomationTargetNotFoundError:
+                        pass
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            raise BrowserAutomationAdapterError() from None
+        except BrowserAutomationError:
+            raise
+        except Exception:
+            raise BrowserAutomationAdapterError() from None
+
+    @_tracked_browser_operation(BrowserAutomationObservedOperation.SESSION_OPEN)
     async def open_session(
         self,
         profile_id: BrowserProfileId,
@@ -306,6 +613,7 @@ class BrowserAutomationService:
                 await self._remove_state(state)
             raise
 
+    @_tracked_browser_operation(BrowserAutomationObservedOperation.SESSION_CLOSE)
     async def close_session(
         self,
         session_id: BrowserSessionId,
@@ -390,6 +698,7 @@ class BrowserAutomationService:
                 created_at=self._now(),
             )
 
+    @_tracked_browser_operation(BrowserAutomationObservedOperation.PAGE_READ)
     async def read_page(
         self,
         page: BrowserPageDescriptor,
@@ -462,6 +771,7 @@ class BrowserAutomationService:
             self._require_agent_scope(state, agent_scope)
             return snapshot
 
+    @_tracked_browser_operation(BrowserAutomationObservedOperation.PAGE_NAVIGATE)
     async def navigate(
         self,
         page: BrowserPageDescriptor,
@@ -677,6 +987,7 @@ class BrowserAutomationService:
                         raise BrowserAutomationIndeterminateEffectError() from None
                     raise
 
+    @_tracked_browser_operation(BrowserAutomationObservedOperation.ELEMENT_FILL)
     async def fill_element(
         self,
         page: BrowserPageDescriptor,
@@ -823,6 +1134,7 @@ class BrowserAutomationService:
                     )
                 raise
 
+    @_tracked_browser_operation(BrowserAutomationObservedOperation.ELEMENT_CLICK)
     async def click_element(
         self,
         page: BrowserPageDescriptor,
@@ -2215,9 +2527,91 @@ class BrowserAutomationService:
         cancellation.raise_if_cancelled()
         self._remaining_seconds(deadline)
 
+    async def _acquire_operation(self) -> None:
+        async with self._activity:
+            self._require_service_active()
+            if not self._is_available():
+                raise BrowserAutomationServiceUnavailableError()
+            self._active_operations += 1
+
+    async def _release_operation(self) -> None:
+        async with self._activity:
+            if self._active_operations <= 0:
+                raise RuntimeError("browser automation active operation count is inconsistent")
+            self._active_operations -= 1
+            self._activity.notify_all()
+
+    def _is_available(self) -> bool:
+        if self._closed or self._closing or self._quarantined:
+            return False
+        if not self._runtime_managed:
+            return True
+        availability = self._runtime_availability
+        if availability is None:
+            return False
+        try:
+            return availability() is True
+        except Exception:
+            return False
+
+    def _record_observation(
+        self,
+        observation: BrowserAutomationOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        if isinstance(self._observer, NullBrowserAutomationObserver):
+            return
+        try:
+            task = asyncio.create_task(self._observe(observation, context))
+        except Exception:
+            return
+        self._observer_tasks.add(task)
+        task.add_done_callback(self._observer_tasks.discard)
+
+    async def _observe(
+        self,
+        observation: BrowserAutomationOperationObservation,
+        context: SecurityContext,
+    ) -> None:
+        worker = asyncio.create_task(self._observer.record(observation, context))
+        try:
+            done, _pending = await asyncio.wait(
+                {worker},
+                timeout=MAX_BROWSER_OBSERVER_RECORD_SECONDS,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            worker.cancel()
+            worker.add_done_callback(self._consume_future)
+            return
+        if worker not in done:
+            worker.cancel()
+            worker.add_done_callback(self._consume_future)
+            return
+        try:
+            worker.result()
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    async def _drain_observers(self) -> None:
+        tasks = tuple(self._observer_tasks)
+        if not tasks:
+            return
+        _done, pending = await asyncio.wait(
+            tasks,
+            timeout=MAX_BROWSER_OBSERVER_RECORD_SECONDS + 0.05,
+            return_when=asyncio.ALL_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.sleep(0)
+
     def _require_service_active(self) -> None:
         if self._quarantined:
             raise BrowserAutomationOperationDisabledError()
+        if self._closed:
+            raise BrowserAutomationServiceUnavailableError()
 
     def _remaining_seconds(self, deadline: _EffectiveDeadline) -> float:
         wall_remaining = (deadline.wall_clock - self._now()).total_seconds()

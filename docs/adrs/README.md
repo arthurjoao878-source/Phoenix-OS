@@ -62,6 +62,10 @@ the decision requires a new ADR that explicitly supersedes the previous one.
 | [ADR-0061](ADR-0061-server-owned-configured-application-profiles.md) | Accepted | Launch only server-owned configured application profiles without model-selected executable or command-line authority. |
 | [ADR-0062](ADR-0062-opaque-phoenix-host-identities.md) | Accepted | Keep public process/window identities opaque and native PID/HWND correlations adapter-private and stale-safe. |
 | [ADR-0063](ADR-0063-immediate-ui-toctou-revalidation.md) | Accepted | Revalidate exact UI identity and desktop state immediately before effects and fail closed on TOCTOU changes. |
+| [ADR-0064](ADR-0064-web-content-and-browser-state-are-data.md) | Accepted | Treat web content and browser state as untrusted data that never grants Phoenix authority. |
+| [ADR-0065](ADR-0065-server-owned-browser-profiles-and-navigation-targets.md) | Accepted | Keep browser profiles, generations, origins, adapters, and initial navigation targets server-owned and exact. |
+| [ADR-0066](ADR-0066-opaque-stale-safe-browser-identities.md) | Accepted | Use opaque subject-bound session/page/revision/element identities and fail closed on stale browser state. |
+| [ADR-0067](ADR-0067-zero-effect-preparation-and-final-browser-admission.md) | Accepted | Separate zero-effect preparation from final revalidated commit and never transparently retry ambiguous effects. |
 
 ## Related specifications
 
@@ -84,3 +88,5 @@ the decision requires a new ADR that explicitly supersedes the previous one.
   [RFC-0031 — Secure Agent Workspaces and Artifact Handling](../rfcs/RFC-0031-secure-agent-workspaces-and-artifact-handling.md).
 - ADR-0060 through ADR-0063 record the principal durable choices implemented by
   [RFC-0032 — Secure Host Automation and Desktop Control](../rfcs/RFC-0032-secure-host-automation-and-desktop-control.md).
+- ADR-0064 through ADR-0067 record the principal durable choices implemented by
+  [RFC-0035 — Secure Browser Automation and Controlled Web Interaction](../rfcs/RFC-0035-secure-browser-automation-and-controlled-web-interaction.md).
