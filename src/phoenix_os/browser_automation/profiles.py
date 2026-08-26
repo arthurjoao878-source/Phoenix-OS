@@ -485,8 +485,7 @@ def derive_browser_redirect_request(
     if current.origin not in profile.allowed_origins:
         raise ValueError("current navigation origin is not allowed")
     if current.redirect_count == 0 and (
-        current.origin != configured.origin
-        or current.request_target != configured.request_target
+        current.origin != configured.origin or current.request_target != configured.request_target
     ):
         raise ValueError("initial navigation request does not match its server-owned target")
     if current.redirect_count >= profile.limits.max_redirects:

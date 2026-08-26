@@ -103,21 +103,14 @@ class BrowserDestinationAdmission:
             address = _parse_literal(item)
             if _hard_forbidden(address):
                 raise ValueError("destination admission contains a forbidden address")
-            if (
-                self.origin.mode is BrowserDestinationMode.LOOPBACK_HTTP
-                and not address.is_loopback
-            ):
-                raise ValueError(
-                    "loopback HTTP destination admission requires loopback addresses"
-                )
+            if self.origin.mode is BrowserDestinationMode.LOOPBACK_HTTP and not address.is_loopback:
+                raise ValueError("loopback HTTP destination admission requires loopback addresses")
             normalized.append(address)
 
         if len(normalized) != len(set(normalized)):
             raise ValueError("destination admission addresses must be unique")
 
-        ordered = tuple(
-            address.compressed for address in sorted(normalized, key=_ip_sort_key)
-        )
+        ordered = tuple(address.compressed for address in sorted(normalized, key=_ip_sort_key))
         object.__setattr__(self, "addresses", ordered)
 
     @property
@@ -175,15 +168,11 @@ def admit_browser_destination(
             address.version == network.version and address in network
             for network in explicit_networks
         )
-        publicly_allowed = (
-            profile.network_policy.allow_public_networks and _public_unicast(address)
-        )
+        publicly_allowed = profile.network_policy.allow_public_networks and _public_unicast(address)
         if not (explicitly_allowed or publicly_allowed):
             raise BrowserAutomationRejectedError()
 
-    ordered = tuple(
-        address.compressed for address in sorted(parsed, key=_ip_sort_key)
-    )
+    ordered = tuple(address.compressed for address in sorted(parsed, key=_ip_sort_key))
     return BrowserDestinationAdmission(
         profile_id=profile.profile_id,
         profile_generation=profile.generation,

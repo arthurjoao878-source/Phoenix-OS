@@ -253,7 +253,6 @@ class DeterministicBrowserAdapter:
             created_at=state.descriptor.created_at,
         )
 
-
     async def prepare_navigation(
         self,
         page: BrowserPageDescriptor,
@@ -326,7 +325,6 @@ class DeterministicBrowserAdapter:
             input_digest=None,
             fill_value=None,
         )
-
 
     async def commit_navigation(
         self,

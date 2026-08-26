@@ -417,7 +417,6 @@ class BrowserAutomationService:
             self._require_current_page_sync(state, page)
             return snapshot
 
-
     async def navigate(
         self,
         page: BrowserPageDescriptor,
@@ -1024,7 +1023,6 @@ class BrowserAutomationService:
             deadline,
         )
 
-
     async def _authorize_page_navigate(
         self,
         state: _BrowserSessionState,
@@ -1160,7 +1158,6 @@ class BrowserAutomationService:
             raise BrowserAutomationAdapterError()
         return result
 
-
     async def _call_prepare_navigation(
         self,
         page: BrowserPageDescriptor,
@@ -1279,7 +1276,6 @@ class BrowserAutomationService:
             cap_seconds=_CLEANUP_CAP_SECONDS,
         )
 
-
     @staticmethod
     def _validate_prepared_navigation_plan(
         page: BrowserPageDescriptor,
@@ -1310,7 +1306,6 @@ class BrowserAutomationService:
             or prepared.input_digest != value.digest
         ):
             raise BrowserAutomationAdapterError()
-
 
     @staticmethod
     def _valid_navigation_hop_result(

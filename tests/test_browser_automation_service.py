@@ -266,7 +266,6 @@ class CountingAdapter(DeterministicBrowserAdapter):
         return await super().commit_prepared(prepared)
 
 
-
 class RaisingAfterNavigationCommitAdapter(CountingAdapter):
     async def commit_navigation(
         self,

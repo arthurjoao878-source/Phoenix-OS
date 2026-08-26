@@ -529,8 +529,7 @@ def _require_navigation_request_binding(
     if request.redirect_count > profile.limits.max_redirects:
         raise BrowserAuthorizationRejectedError()
     if request.redirect_count == 0 and (
-        request.origin != configured.origin
-        or request.request_target != configured.request_target
+        request.origin != configured.origin or request.request_target != configured.request_target
     ):
         raise BrowserAuthorizationRejectedError()
 
