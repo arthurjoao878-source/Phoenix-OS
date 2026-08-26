@@ -166,6 +166,22 @@ class BrowserElementId:
         return str(self.value)
 
 
+@dataclass(frozen=True, slots=True)
+class BrowserAgentScope:
+    """Server-derived model/tool scope; identity data, never bearer authority."""
+
+    agent_id: str
+    run_id: UUID
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "agent_id",
+            _normalize_identifier(self.agent_id, label="browser agent id"),
+        )
+        _require_uuid(self.run_id, label="browser agent run id")
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class BrowserPageRevision:
     """Positive Phoenix-owned freshness identity for one exact page state."""

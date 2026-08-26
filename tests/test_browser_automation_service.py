@@ -1643,14 +1643,14 @@ async def test_cancellation_after_effect_start_is_indeterminate_and_quarantines_
     assert not service._sessions
 
 
-def test_s5_service_exposes_only_controlled_navigation_without_generic_escape_hatch() -> None:
+def test_s6_service_surface_allows_only_controlled_click_and_navigation() -> None:
     service, _, _, _, _, _ = _service()
 
     assert hasattr(service, "navigate")
+    assert hasattr(service, "click_element")
     for name in (
         "navigate_page",
         "click",
-        "click_element",
         "execute",
         "fetch",
         "request",

@@ -411,20 +411,33 @@ class PolicyEngineBrowserAuthorizer:
         context: SecurityContext,
     ) -> AuthorityIntent:
         intent = browser_element_click_intent(profile, session, page, prepared)
-        return await self._enforce(
-            intent,
-            context,
-            {
-                "profile_id": str(profile.profile_id),
-                "profile_generation": str(profile.generation),
-                "session_id": str(session.session_id),
-                "page_id": str(page.page_id),
-                "page_revision": str(page.revision),
-                "element_id": str(prepared.element_id),
-                "prepared_token": str(prepared.token),
-                "effect_kind": prepared.kind.value,
-            },
-        )
+        attributes = {
+            "profile_id": str(profile.profile_id),
+            "profile_generation": str(profile.generation),
+            "session_id": str(session.session_id),
+            "page_id": str(page.page_id),
+            "page_revision": str(page.revision),
+            "element_id": str(prepared.element_id),
+            "prepared_token": str(prepared.token),
+            "effect_kind": prepared.kind.value,
+            "remote_effect": "true" if prepared.request is not None else "false",
+        }
+        request = prepared.request
+        if request is not None:
+            attributes.update(
+                {
+                    "request_method": request.method.value,
+                    "request_origin": request.origin.canonical,
+                    "request_target_digest": (
+                        "sha256:"
+                        + hashlib.sha256(request.request_target.encode("utf-8")).hexdigest()
+                    ),
+                    "redirect_count": str(request.redirect_count),
+                }
+            )
+            if request.body_digest is not None:
+                attributes["request_body_digest"] = request.body_digest
+        return await self._enforce(intent, context, attributes)
 
     async def _enforce(
         self,
@@ -553,6 +566,14 @@ def _require_prepared_binding(
         raise BrowserAuthorizationRejectedError()
     if expected_kind is not None and prepared.kind is not expected_kind:
         raise BrowserAuthorizationRejectedError()
+    request = prepared.request
+    if request is not None:
+        if prepared.kind is not BrowserPreparedEffectKind.CLICK:
+            raise BrowserAuthorizationRejectedError()
+        if request.origin not in profile.allowed_origins:
+            raise BrowserAuthorizationRejectedError()
+        if request.redirect_count > profile.limits.max_redirects:
+            raise BrowserAuthorizationRejectedError()
 
 
 def _require_authenticated_context(context: SecurityContext) -> None:
@@ -713,6 +734,14 @@ def _update_prepared(digest: _Digest, prepared: BrowserPreparedEffect) -> None:
     _update_field(digest, "prepared.revision", str(prepared.revision))
     _update_field(digest, "prepared.element_id", str(prepared.element_id))
     _update_field(digest, "prepared.input_digest", prepared.input_digest)
+    request = prepared.request
+    _update_field(digest, "prepared.remote_request", "true" if request is not None else "false")
+    if request is not None:
+        _update_field(digest, "prepared.request.method", request.method.value)
+        _update_field(digest, "prepared.request.origin", request.origin.canonical)
+        _update_field(digest, "prepared.request.target", request.request_target)
+        _update_field(digest, "prepared.request.body_digest", request.body_digest)
+        _update_field(digest, "prepared.request.redirect_count", str(request.redirect_count))
 
 
 def _update_sequence(digest: _Digest, label: str, values: tuple[str, ...]) -> None:
