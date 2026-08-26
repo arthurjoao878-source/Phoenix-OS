@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.35.0] - 2026-08-26
+
+### Added
+- Accepted RFC-0035 secure browser automation and controlled web interaction with immutable server-owned profiles and navigation targets, opaque session/page/revision/element identities, finite exact browser actions, and no generic browser-control surface.
+- Controlled top-level navigation and click/form effects use exact allowed origins, bounded DNS/IP admission, finite redirects, zero-effect preparation, and final stale-safe authority revalidation before commit.
+- Reviewed agent-tool composition preserves independent `tool.invoke` and exact browser action authority, with server-owned browser tool bindings and confused-deputy/cross-agent regression coverage.
+- Optional Runtime ownership, content-free best-effort browser observation, separately authorized `browser.health.read` inspection, migration/ADR/threat-model evidence, and dedicated package-release validation.
+
+### Security
+- Web content is data. Browser state is data. Neither manufactures Phoenix authority; browser, tool, network, host, workspace, memory, and model boundaries remain independent.
+- Callers and models cannot supply arbitrary URLs, selectors, XPath, coordinates, JavaScript, browser executables, proxies, cookies, credentials, host paths, or authority objects.
+- JavaScript, autonomous/background networking, automatic subresources, iframes, popups, downloads, uploads, persistent browser storage, and multiple pages remain outside v0.35.0.
+- Final subject/profile/session/page/revision/action/intent/tool/destination/cancellation/deadline state is revalidated after the last attacker-controlled wait, with no new untrusted blocking wait before protected commit.
+- Potentially effectful browser operations are never transparently retried after effect start may have occurred; ambiguous outcomes remain `INDETERMINATE`, and page disclosure requires separate fresh `browser.page.read` authority.
+
+### Compatibility
+- Phoenix OS 0.34.0 behavior is preserved when browser automation configuration is omitted; upgrade creates no browser profile, engine, process, session, page, cookie, navigation, grant, tool binding, network request, host effect, or workspace transfer automatically.
+- No production browser engine is bundled; deployments that add one must satisfy the same zero-effect prepare/commit, destination-admission, JavaScript-disabled, subresource-blocked, stale-identity, and no-retry contracts.
+- Existing RFC-0034 controlled HTTP, webhook, inference, host, workspace, memory, and agent paths retain their independent canonical authorizers.
+- Release validation includes the full regression suite, dedicated browser automation gate, package-boundary inspection, rebuilt-sdist wheel, isolated offline smoke validation, full canonical diff/security review, and Python 3.12/3.13 CI.
+- Release publication uses annotated Git tag `v0.35.0`, wheel and sdist artifacts, and `SHA256SUMS`.
+
+
 ## [0.34.0] - 2026-08-24
 
 ### Added

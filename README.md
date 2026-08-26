@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.34.0` implements thirty-four accepted specifications:
+Version `0.35.0` implements thirty-five accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -102,6 +102,11 @@ Version `0.34.0` implements thirty-four accepted specifications:
   literal destination pinning, verified TLS, independent fresh `network.http.request`
   authority, bounded one-shot HTTP exchange, controlled tool composition, and
   content-free Runtime-owned lifecycle and inspection.
+- **RFC-0035 - Secure Browser Automation and Controlled Web Interaction:** opt-in
+  server-owned browser profiles and navigation targets, exact stale-safe opaque
+  session/page/revision/element identities, independent fresh exact browser-action authority,
+  bounded top-level destination admission, zero-effect preparation and final commit
+  revalidation, controlled tool composition, and content-free Runtime lifecycle.
 
 The core intentionally contains no AI model, remote database driver, external vector database,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -109,6 +114,9 @@ queue broker, audit signature provider, remote audit archive, telemetry vendor, 
 service, implicit remote exposure, or implicit operating-system automation. RFC-0032 adds an explicit
 opt-in host-automation boundary with OS-neutral public contracts and a reviewed Windows adapter; it
 does not add generic shell, keyboard/mouse, force-kill, elevation, or arbitrary executable authority.
+RFC-0035 adds explicit opt-in browser-automation mediation but does not bundle a production browser
+engine or expose arbitrary URL, selector, coordinate, script, executable, proxy, cookie, credential,
+or host-path control.
 The standard-library SQLite adapter is a local reference implementation; stronger storage remains behind
 the State Store and Audit Store protocols. Other integrations belong behind capability providers,
 lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
@@ -355,6 +363,28 @@ public network-egress identifiers/contracts and the closed-world
 opening a socket, sending HTTP bytes, consulting ambient proxies, leasing a
 credential, or causing a remote effect.
 
+## Browser-automation release gate
+
+RFC-0035 adds a named release gate for immutable browser profiles/targets,
+stale-safe opaque identities, exact browser authority, top-level destination
+admission, zero-effect prepare/commit, tool composition, Runtime lifecycle,
+content-free observation, migration/ADRs/security review, and package boundaries:
+
+```bash
+python scripts/check_browser_automation_release.py
+```
+
+The gate reruns every `test_browser_automation*.py` regression plus the RFC-0035
+specification. It requires the exact reviewed `phoenix_os/browser_automation`
+module set, validates wheel and sdist metadata and archive paths, rebuilds a wheel
+from the validated sdist, and installs both wheel forms with `--no-deps --no-index`
+in isolated environments.
+
+The installed-package smoke is deterministic and non-networking. It validates
+public browser identifiers/contracts and closed-world authority-catalog shape
+without DNS resolution, sockets, HTTP exchange, browser-process launch,
+navigation, click, fill, page disclosure, credential access, or remote effect.
+
 ## Windows host-automation dogfood
 
 Gate 5 is manual and Windows-only because it exercises the interactive desktop through
@@ -386,6 +416,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 
 ## Release notes
 
+- [Phoenix OS 0.35.0](docs/releases/v0.35.0.md)
 - [Phoenix OS 0.34.0](docs/releases/v0.34.0.md)
 - [Phoenix OS 0.33.0](docs/releases/v0.33.0.md)
 - [Phoenix OS 0.32.0](docs/releases/v0.32.0.md)
@@ -398,7 +429,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize network-egress, effective-authority, host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
+The release notes summarize browser-automation, network-egress, effective-authority, host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
 security boundaries, compatibility, migration, architecture decisions,
 validation, and package artifacts.
 
@@ -516,6 +547,20 @@ disabled, and tool-mediated requests require both `tool.invoke` and
 [RFC-0034 network-egress threat-model and security-invariant review](docs/security/RFC-0034-secure-network-egress-threat-model-review.md)
 maps all forty-five release invariants and residual risks.
 
+Phoenix OS 0.35.0 adds opt-in secure browser automation through immutable
+server-owned profiles and navigation targets, opaque stale-safe identities, exact
+browser authority, bounded destination admission, and zero-effect preparation
+before final effect admission:
+
+- [Migrate v0.34.0 deployments to v0.35.0 secure browser automation](docs/migrations/v0.34.0-to-v0.35.0-secure-browser-automation.md)
+
+Web content and browser state remain untrusted data. Model-originated browser work
+retains independent `tool.invoke` plus exact browser action authority, JavaScript
+and autonomous browser channels remain disabled, and no production browser engine
+is bundled. The
+[RFC-0035 browser-automation threat-model and security-invariant review](docs/security/RFC-0035-secure-browser-automation-threat-model-review.md)
+maps all fifty release invariants and residual risks.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -578,6 +623,16 @@ send remains dominated by final RFC-0033 freshness plus exact
 paths remain independently authoritative. The
 [RFC-0034 network-egress threat-model and security-invariant review](docs/security/RFC-0034-secure-network-egress-threat-model-review.md)
 records the SSRF, freshness, credential, transport, composition, lifecycle, and
+release evidence.
+
+RFC-0035 treats web content and browser state as data rather than authority.
+Profiles, navigation targets, origin policy, opaque session/page/revision/element
+identity, and tool bindings remain server-owned. Potentially effectful navigation
+and clicks use zero-effect preparation followed by final current-authority and
+destination revalidation, with no transparent retry after an indeterminate
+effect. The
+[RFC-0035 browser-automation threat-model and security-invariant review](docs/security/RFC-0035-secure-browser-automation-threat-model-review.md)
+records the stale-identity, SSRF, composition, prepare/commit, lifecycle, and
 release evidence.
 
 ## Local dashboard example

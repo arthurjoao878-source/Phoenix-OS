@@ -15,7 +15,10 @@ from email.policy import default
 from pathlib import Path, PurePosixPath
 
 _ROOT = Path(__file__).resolve().parents[1]
-_COMPANION_TESTS = ("tests/test_rfc_0035.py",)
+_COMPANION_TESTS = (
+    "tests/test_rfc_0035.py",
+    "tests/test_v035_release.py",
+)
 _REQUIRED_BROWSER_TESTS = frozenset(
     {
         "tests/test_browser_automation_adapter.py",
@@ -68,6 +71,7 @@ _REQUIRED_INTEGRATION_FILES = frozenset(
 _REQUIRED_RELEASE_HARDENING_FILES = (
     "docs/rfcs/RFC-0035-secure-browser-automation-and-controlled-web-interaction.md",
     "docs/migrations/v0.34.0-to-v0.35.0-secure-browser-automation.md",
+    "docs/releases/v0.35.0.md",
     "docs/security/RFC-0035-secure-browser-automation-threat-model-review.md",
     "docs/adrs/README.md",
     "docs/adrs/ADR-0064-web-content-and-browser-state-are-data.md",

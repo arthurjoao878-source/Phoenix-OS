@@ -84,9 +84,7 @@ _REQUIRED_SDIST_DOCUMENTS = (
 )
 _FORBIDDEN_ARCHIVE_COMPONENTS = frozenset({".env", ".git", "__pycache__"})
 _FORBIDDEN_ARCHIVE_SUFFIXES = frozenset({".key", ".p12", ".pem", ".pfx", ".pyc", ".pyo"})
-_EXPECTED_RELEASE_VERSION = "0.34.0"
-_EXPECTED_WHEEL_NAME = "phoenix_os-0.34.0-py3-none-any.whl"
-_EXPECTED_SDIST_NAME = "phoenix_os-0.34.0.tar.gz"
+_SUPPORTED_RELEASE_VERSIONS = frozenset({"0.34.0", "0.35.0"})
 
 
 def _run(
@@ -325,12 +323,12 @@ assert NETWORK_EGRESS_HEALTH_READ_PERMISSION == "network.egress.health.read"
 
 
 def _release_artifact_names(version: str) -> tuple[str, str]:
-    if version != _EXPECTED_RELEASE_VERSION:
-        raise RuntimeError(
-            "network-egress release gate requires version "
-            f"{_EXPECTED_RELEASE_VERSION}; got {version}"
-        )
-    return _EXPECTED_WHEEL_NAME, _EXPECTED_SDIST_NAME
+    if not isinstance(version, str) or version not in _SUPPORTED_RELEASE_VERSIONS:
+        raise RuntimeError(f"unsupported network-egress release version: {version!r}")
+    return (
+        f"phoenix_os-{version}-py3-none-any.whl",
+        f"phoenix_os-{version}.tar.gz",
+    )
 
 
 def _exact_artifacts(

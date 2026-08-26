@@ -6,10 +6,10 @@ _RFC = (
 )
 
 
-def test_rfc0035_is_draft_for_v035_with_frozen_browser_boundaries() -> None:
+def test_rfc0035_is_accepted_for_v035_with_frozen_browser_boundaries() -> None:
     text = _RFC.read_text(encoding="utf-8")
 
-    assert "- Status: Draft" in text
+    assert "- Status: Accepted" in text
     assert "- Target release: Phoenix OS v0.35.0" in text
     assert "- Architecture freeze: 2026-08-25" in text
     assert "Web content is data. Browser state is data." in text
@@ -65,3 +65,19 @@ def test_rfc0035_s7_release_hardening_is_wired_without_s8_metadata() -> None:
     assert "isolated offline installed smoke behavior" in text
     assert "S7 does not update package version" in text
     assert "Those remain S8-only finalization work" in text
+
+
+def test_rfc0035_release_acceptance_is_sealed_without_publication_side_effects() -> None:
+    text = _RFC.read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+
+    assert "## Release acceptance evidence" in text
+    assert "## Acceptance" in text
+    assert "- [ ]" not in text
+    assert (
+        "RFC-0035 is accepted for Phoenix OS 0.35.0 after the complete regression suite"
+        in normalized
+    )
+    assert "python scripts/check_browser_automation_release.py" in text
+    assert "Annotated tag publication" in text
+    assert "separate explicitly authorized release operations" in normalized

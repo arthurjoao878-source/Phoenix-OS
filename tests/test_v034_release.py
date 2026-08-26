@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PYPROJECT = _ROOT / "pyproject.toml"
 _README = _ROOT / "README.md"
 _CHANGELOG = _ROOT / "CHANGELOG.md"
 _RELEASE_NOTES = _ROOT / "docs" / "releases" / "v0.34.0.md"
@@ -15,14 +13,16 @@ _RFC = _ROOT / "docs" / "rfcs" / "RFC-0034-secure-network-egress-and-controlled-
 _GATE = _ROOT / "scripts" / "check_network_egress_release.py"
 
 
-def test_project_version_is_v0340() -> None:
-    assert tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]["version"] == "0.34.0"
+def test_v034_release_history_remains_available() -> None:
+    assert _RELEASE_NOTES.is_file()
+    assert "# Phoenix OS 0.34.0" in _RELEASE_NOTES.read_text(encoding="utf-8")
+    assert "## [0.34.0] - 2026-08-24" in _CHANGELOG.read_text(encoding="utf-8")
 
 
-def test_readme_announces_thirty_four_specs_and_network_gate() -> None:
+def test_readme_preserves_v034_release_history_and_network_gate() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.34.0` implements thirty-four accepted specifications:" in readme
-    assert "RFC-0034" in readme and "Secure Network Egress and Controlled HTTP Operations" in readme
+    assert "RFC-0034" in readme
+    assert "Secure Network Egress and Controlled HTTP Operations" in readme
     current = "[Phoenix OS 0.34.0](docs/releases/v0.34.0.md)"
     previous = "[Phoenix OS 0.33.0](docs/releases/v0.33.0.md)"
     assert readme.count(current) == 1 and readme.index(current) < readme.index(previous)

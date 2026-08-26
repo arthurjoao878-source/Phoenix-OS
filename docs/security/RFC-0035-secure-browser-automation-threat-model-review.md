@@ -155,7 +155,13 @@ configuration scope and must review that configuration.
 
 ## Release conclusion
 
-RFC-0035 S7 is acceptable only when all fifty invariants remain mapped, the complete
-browser targeted suite is green, global quality checks remain green, the dedicated
-browser package gate passes, and the final S8 canonical diff/release review confirms
-that metadata-only finalization did not widen the frozen browser architecture.
+RFC-0035 is acceptable for the Phoenix OS 0.35.0 release candidate only when all fifty invariants
+remain mapped, the complete browser targeted suite and global quality checks
+are green, the dedicated browser package gate and package boundaries pass, and the final
+S8 canonical diff/adversarial review confirms that release metadata finalization plus
+compatibility-only release-gate wiring did not widen the frozen browser architecture or alter
+runtime behavior, package authority, browser semantics, or network semantics.
+
+The exact release commit must then pass the normal Python 3.12/3.13 CI matrix. Annotated
+tag creation, artifact/checksum publication, GitHub Release publication, PR review, and
+merge remain separate explicitly authorized release operations.
