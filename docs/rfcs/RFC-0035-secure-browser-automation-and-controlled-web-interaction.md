@@ -1,6 +1,6 @@
 # RFC-0035: Secure Browser Automation and Controlled Web Interaction
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.35.0
 - Owners: Phoenix OS maintainers
 - Architecture freeze: 2026-08-25
@@ -733,6 +733,43 @@ remote release state. Those remain S8-only finalization work after the S1-S7 gat
 Update version/release metadata only after S1-S7 pass targeted security review, global gates, package
 boundary validation, full canonical diff review, and final adversarial security review. Publication,
 tagging, remote branch/PR operations, and merge remain separately authorized release operations.
+
+## Release acceptance evidence
+
+The v0.35.0 release candidate seals RFC-0035 with the following executable evidence:
+
+- [x] All eight RFC-0035 slices are complete and retain the frozen browser authority model.
+- [x] Browser content and state remain data and cannot manufacture Phoenix authority.
+- [x] The finite exact browser action set remains independent from tool, network, host, workspace,
+  memory, model, and other authority boundaries.
+- [x] Caller/model contracts expose no arbitrary URL, selector, coordinate, script, browser
+  executable, proxy, cookie, credential, or host-path escape hatch.
+- [x] Opaque session/page/revision/element identities remain stale-safe and non-bearer.
+- [x] JavaScript, autonomous networking, subresources, frames, popups, downloads, uploads,
+  persistent browser storage, and multiple pages remain outside v0.35.0.
+- [x] Every potentially remote browser effect retains exact origin/DNS/IP admission, zero-effect
+  preparation, final current-authority revalidation, and no attacker-controlled wait before commit.
+- [x] Page disclosure retains separate fresh `browser.page.read` authorization.
+- [x] Potentially effectful operations receive no transparent retry after possible effect start;
+  ambiguous outcomes remain `INDETERMINATE`.
+- [x] Runtime lifecycle, content-free observation, and `browser.health.read` inspection remain
+  non-authoritative and bounded.
+- [x] Named release gate: `python scripts/check_browser_automation_release.py`.
+- [x] Wheel/sdist package boundaries, rebuilt-sdist wheel, isolated offline smoke, global quality
+  checks, canonical diff review, and final adversarial review are release requirements.
+- [x] The normal Python 3.12/3.13 CI matrix executes the named browser release gate.
+
+## Acceptance
+
+RFC-0035 is accepted for Phoenix OS 0.35.0 after the complete regression suite, dedicated browser
+automation release gate, package verification, final adversarial and canonical release review, and
+exact release-commit Python 3.12/3.13 CI matrix pass. Every Phoenix-mediated browser operation remains
+dominated by its exact canonical browser authority boundary regardless of whether it is reached
+directly or through an agent/tool composition.
+
+Annotated tag publication, release artifact upload, `SHA256SUMS`, GitHub Release publication, PR
+review, and merge remain separate explicitly authorized release operations after the exact release
+commit has passed the complete CI matrix.
 
 ## Compatibility
 

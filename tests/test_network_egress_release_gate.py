@@ -114,19 +114,23 @@ def test_network_release_gate_rejects_non_python_network_package_entries() -> No
         validate(names, prefix="", label="test wheel")
 
 
-def test_network_release_gate_requires_exact_v034_artifact_set(tmp_path: Path) -> None:
+def test_network_release_gate_artifact_names_are_exact_and_s8_compatible(tmp_path: Path) -> None:
     namespace = _gate_namespace()
     release_artifact_names = namespace["_release_artifact_names"]
     exact_artifacts = namespace["_exact_artifacts"]
 
-    expected = (
-        "phoenix_os-0.34.0-py3-none-any.whl",
-        "phoenix_os-0.34.0.tar.gz",
-    )
-    assert release_artifact_names("0.34.0") == expected
-    with pytest.raises(RuntimeError, match=r"requires version 0\.34\.0"):
-        release_artifact_names("0.34.1")
+    for version in ("0.34.0", "0.35.0"):
+        expected = (
+            f"phoenix_os-{version}-py3-none-any.whl",
+            f"phoenix_os-{version}.tar.gz",
+        )
+        assert release_artifact_names(version) == expected
 
+    for unsupported in ("0.35.0.dev1", "0.35.1", "0.36.0", "1.0.0"):
+        with pytest.raises(RuntimeError, match="unsupported network-egress release version"):
+            release_artifact_names(unsupported)
+
+    expected = release_artifact_names("0.35.0")
     for name in expected:
         (tmp_path / name).write_bytes(b"release-test")
 
@@ -141,8 +145,9 @@ def test_network_release_gate_requires_exact_v034_artifact_set(tmp_path: Path) -
 def test_network_release_gate_main_uses_exact_artifact_names_without_wildcards() -> None:
     text = _GATE.read_text(encoding="utf-8")
     for phrase in (
-        '_EXPECTED_WHEEL_NAME = "phoenix_os-0.34.0-py3-none-any.whl"',
-        '_EXPECTED_SDIST_NAME = "phoenix_os-0.34.0.tar.gz"',
+        '_SUPPORTED_RELEASE_VERSIONS = frozenset({"0.34.0", "0.35.0"})',
+        'f"phoenix_os-{version}-py3-none-any.whl"',
+        'f"phoenix_os-{version}.tar.gz"',
         "wheel_name, sdist_name = _release_artifact_names(version)",
         'label="release build"',
         'label="rebuilt wheel"',

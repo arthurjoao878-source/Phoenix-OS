@@ -24,6 +24,8 @@ def test_browser_release_gate_covers_normative_suite_and_exact_package_surface()
         '"tests/test_browser_automation_security_review.py"',
         '"tests/test_browser_automation_s6.py"',
         '"tests/test_rfc_0035.py"',
+        '"tests/test_v035_release.py"',
+        '"docs/releases/v0.35.0.md"',
         '"phoenix_os/browser_automation/administration.py"',
         '"phoenix_os/browser_automation/agent_tools.py"',
         '"phoenix_os/browser_automation/network.py"',
