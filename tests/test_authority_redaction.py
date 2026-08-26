@@ -162,6 +162,12 @@ def test_builtin_catalog_is_exact_closed_world_authority_inventory() -> None:
         "host.clipboard.write",
         "host.clipboard.read",
         "network.http.request",
+        "browser.session.open",
+        "browser.session.close",
+        "browser.page.navigate",
+        "browser.page.read",
+        "browser.element.fill",
+        "browser.element.click",
         "authority.inspect",
         "authority.explain",
     }
