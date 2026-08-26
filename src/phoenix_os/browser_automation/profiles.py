@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
+from urllib.parse import urljoin, urlsplit
 
 from phoenix_os.browser_automation.contracts import (
     MAX_BROWSER_ELEMENT_NAME_CHARS,
@@ -29,6 +30,7 @@ MAX_BROWSER_PROFILE_ORIGINS = 64
 MAX_BROWSER_PROFILE_TARGETS = 256
 MAX_BROWSER_PROFILE_NETWORKS = 64
 MAX_BROWSER_REQUEST_TARGET_LENGTH = 2_048
+MAX_BROWSER_REDIRECT_LOCATION_LENGTH = 4_096
 MAX_BROWSER_RESOLVED_ADDRESSES = 32
 MAX_BROWSER_REDIRECTS = 16
 MAX_BROWSER_COOKIE_COUNT = 512
@@ -231,6 +233,44 @@ class BrowserNavigationTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class BrowserNavigationRequest:
+    """One exact top-level request rooted in one server-owned initial target."""
+
+    target_id: BrowserNavigationTargetId
+    origin: BrowserOrigin
+    request_target: str
+    redirect_count: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.target_id, BrowserNavigationTargetId):
+            raise TypeError("target_id must be BrowserNavigationTargetId")
+        if not isinstance(self.origin, BrowserOrigin):
+            raise TypeError("origin must be BrowserOrigin")
+        redirect_count = _non_negative_int(
+            self.redirect_count,
+            label="browser navigation redirect count",
+            maximum=MAX_BROWSER_REDIRECTS,
+        )
+        object.__setattr__(self, "request_target", _normalize_request_target(self.request_target))
+        object.__setattr__(self, "redirect_count", redirect_count)
+
+    @classmethod
+    def from_target(cls, target: BrowserNavigationTarget) -> BrowserNavigationRequest:
+        if not isinstance(target, BrowserNavigationTarget):
+            raise TypeError("target must be BrowserNavigationTarget")
+        return cls(
+            target_id=target.target_id,
+            origin=target.origin,
+            request_target=target.request_target,
+            redirect_count=0,
+        )
+
+    @property
+    def absolute_url(self) -> str:
+        return f"{self.origin.canonical}{self.request_target}"
+
+
+@dataclass(frozen=True, slots=True)
 class BrowserProfileLimits:
     """Finite server-owned limits for one v0.35.0 browser profile."""
 
@@ -422,6 +462,87 @@ class BrowserProfile:
             if target.target_id == target_id:
                 return target
         raise KeyError(f"unknown browser navigation target: {target_id}")
+
+
+def derive_browser_redirect_request(
+    profile: BrowserProfile,
+    current: BrowserNavigationRequest,
+    location: str,
+) -> BrowserNavigationRequest:
+    """Canonicalize one untrusted HTTP redirect without accepting response-granted authority."""
+
+    if not isinstance(profile, BrowserProfile):
+        raise TypeError("profile must be BrowserProfile")
+    if not isinstance(current, BrowserNavigationRequest):
+        raise TypeError("current must be BrowserNavigationRequest")
+    if not isinstance(location, str):
+        raise TypeError("redirect location must be a string")
+
+    try:
+        configured = profile.require_target(current.target_id)
+    except KeyError:
+        raise ValueError("redirect root target is not configured") from None
+    if current.origin not in profile.allowed_origins:
+        raise ValueError("current navigation origin is not allowed")
+    if current.redirect_count == 0 and (
+        current.origin != configured.origin or current.request_target != configured.request_target
+    ):
+        raise ValueError("initial navigation request does not match its server-owned target")
+    if current.redirect_count >= profile.limits.max_redirects:
+        raise ValueError("browser redirect limit exceeded")
+
+    raw = location
+    if not raw or len(raw) > MAX_BROWSER_REDIRECT_LOCATION_LENGTH:
+        raise ValueError("browser redirect location size is outside supported bounds")
+    if any(ord(character) < 33 or ord(character) > 126 for character in raw):
+        raise ValueError("browser redirect location must use visible ASCII")
+    if "#" in raw or "\\" in raw:
+        raise ValueError("browser redirect location contains a forbidden delimiter")
+
+    raw_parts = urlsplit(raw)
+    raw_path = raw_parts.path
+    if any(segment in {".", ".."} for segment in raw_path.split("/")):
+        raise ValueError("browser redirect location contains dot segments")
+    lowered = raw.lower()
+    for encoded in ("%2f", "%5c", "%2e"):
+        if encoded in lowered:
+            raise ValueError("browser redirect location contains encoded path delimiters")
+
+    absolute = urljoin(current.absolute_url, raw)
+    parsed = urlsplit(absolute)
+    if parsed.fragment:
+        raise ValueError("browser redirect location cannot contain a fragment")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("browser redirect location cannot contain user information")
+    if parsed.hostname is None:
+        raise ValueError("browser redirect location requires a host")
+
+    scheme = parsed.scheme.lower()
+    if scheme == "https":
+        mode = BrowserDestinationMode.HOSTED_HTTPS
+    elif scheme == "http":
+        mode = BrowserDestinationMode.LOOPBACK_HTTP
+    else:
+        raise ValueError("browser redirect location uses an unsupported scheme")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("browser redirect location contains an invalid port") from None
+
+    origin = BrowserOrigin(mode, parsed.hostname, port)
+    if origin not in profile.allowed_origins:
+        raise ValueError("browser redirect origin is not in the exact profile allowlist")
+
+    path = parsed.path or "/"
+    request_target = path
+    if parsed.query:
+        request_target = f"{request_target}?{parsed.query}"
+    return BrowserNavigationRequest(
+        target_id=current.target_id,
+        origin=origin,
+        request_target=request_target,
+        redirect_count=current.redirect_count + 1,
+    )
 
 
 class BrowserProfileCatalog:

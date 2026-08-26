@@ -6,6 +6,7 @@ import pytest
 from phoenix_os.browser_automation.adapter import (
     BrowserAdapter,
     BrowserAdapterCommitResult,
+    BrowserNavigationCommitResult,
     BrowserPreparedEffect,
     BrowserPreparedEffectKind,
 )
@@ -85,6 +86,34 @@ def test_adapter_commit_result_requires_effect_started_and_exact_page_identity()
             prepared_token=UUID(int=12),
             page=page,
             effect_started=False,
+        )
+
+
+def test_navigation_commit_result_is_content_minimized_and_redirect_exclusive() -> None:
+    page = BrowserPageDescriptor(
+        session_id=BrowserSessionId(UUID(int=20)),
+        page_id=BrowserPageId(UUID(int=21)),
+        revision=BrowserPageRevision(2),
+    )
+    final = BrowserNavigationCommitResult(prepared_token=UUID(int=22), page=page)
+    redirect = BrowserNavigationCommitResult(
+        prepared_token=UUID(int=23),
+        redirect_location="/next",
+    )
+
+    assert final.page == page
+    assert final.redirect_location is None
+    assert redirect.page is None
+    assert redirect.redirect_location == "/next"
+    assert "/next" not in repr(redirect)
+
+    with pytest.raises(ValueError, match="exactly one"):
+        BrowserNavigationCommitResult(prepared_token=UUID(int=24))
+    with pytest.raises(ValueError, match="exactly one"):
+        BrowserNavigationCommitResult(
+            prepared_token=UUID(int=25),
+            page=page,
+            redirect_location="/next",
         )
 
 

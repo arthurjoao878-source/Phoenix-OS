@@ -8,8 +8,11 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from phoenix_os.browser_automation.adapter import (
     BrowserAdapterCommitResult,
+    BrowserNavigationCommitResult,
     BrowserPreparedEffect,
     BrowserPreparedEffectKind,
+    BrowserPreparedNavigation,
+    BrowserPreparedNavigationPlan,
 )
 from phoenix_os.browser_automation.contracts import (
     MAX_BROWSER_PAGE_REVISION,
@@ -32,7 +35,7 @@ from phoenix_os.browser_automation.errors import (
     BrowserAutomationStaleError,
     BrowserAutomationTargetNotFoundError,
 )
-from phoenix_os.browser_automation.profiles import BrowserProfile
+from phoenix_os.browser_automation.profiles import BrowserNavigationRequest, BrowserProfile
 
 _FAKE_ELEMENT_KEY_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
 
@@ -102,6 +105,7 @@ class _SessionState:
     title: str
     text: str
     elements: dict[str, _ElementState]
+    navigation_redirect_index: int
 
 
 @dataclass(slots=True)
@@ -109,6 +113,12 @@ class _PreparedState:
     public: BrowserPreparedEffect
     element_key: str
     fill_value: str | None
+
+
+@dataclass(slots=True)
+class _PreparedNavigationState:
+    public: BrowserPreparedNavigationPlan
+    request: BrowserNavigationRequest
 
 
 class DeterministicBrowserAdapter:
@@ -119,6 +129,7 @@ class DeterministicBrowserAdapter:
         *,
         adapter_id: BrowserAdapterId | str = "deterministic-browser",
         initial_page: DeterministicBrowserPage | None = None,
+        redirect_locations: tuple[str, ...] = (),
     ) -> None:
         self._adapter_id = (
             adapter_id if isinstance(adapter_id, BrowserAdapterId) else BrowserAdapterId(adapter_id)
@@ -126,9 +137,15 @@ class DeterministicBrowserAdapter:
         selected_page = DeterministicBrowserPage() if initial_page is None else initial_page
         if not isinstance(selected_page, DeterministicBrowserPage):
             raise TypeError("initial_page must be DeterministicBrowserPage or None")
+        if not isinstance(redirect_locations, tuple):
+            raise TypeError("redirect_locations must be a tuple")
+        if any(not isinstance(item, str) for item in redirect_locations):
+            raise TypeError("redirect_locations must contain strings")
         self._initial_page = selected_page
+        self._redirect_locations = redirect_locations
         self._sessions: dict[BrowserSessionId, _SessionState] = {}
         self._prepared: dict[UUID, _PreparedState] = {}
+        self._prepared_navigation: dict[UUID, _PreparedNavigationState] = {}
         self._prepare_sequence = 0
         self._closed = False
 
@@ -146,7 +163,7 @@ class DeterministicBrowserAdapter:
 
     @property
     def prepared_count(self) -> int:
-        return len(self._prepared)
+        return len(self._prepared) + len(self._prepared_navigation)
 
     async def open_session(
         self,
@@ -184,6 +201,7 @@ class DeterministicBrowserAdapter:
                 )
                 for item in self._initial_page.elements
             },
+            navigation_redirect_index=0,
         )
         self._sessions[session.session_id] = state
         return self._page_descriptor(state)
@@ -201,6 +219,13 @@ class DeterministicBrowserAdapter:
         )
         for token in stale_tokens:
             del self._prepared[token]
+        stale_navigation_tokens = tuple(
+            token
+            for token, prepared in self._prepared_navigation.items()
+            if prepared.public.session_id == session_id
+        )
+        for token in stale_navigation_tokens:
+            del self._prepared_navigation[token]
 
     async def snapshot(self, page: BrowserPageDescriptor) -> BrowserPageSnapshot:
         self._ensure_open()
@@ -227,6 +252,30 @@ class DeterministicBrowserAdapter:
             elements=elements,
             created_at=state.descriptor.created_at,
         )
+
+    async def prepare_navigation(
+        self,
+        page: BrowserPageDescriptor,
+        request: BrowserNavigationRequest,
+    ) -> BrowserPreparedNavigationPlan:
+        self._ensure_open()
+        if not isinstance(request, BrowserNavigationRequest):
+            raise TypeError("request must be BrowserNavigationRequest")
+        state = self._require_page(page)
+        try:
+            configured = state.profile.require_target(request.target_id)
+        except KeyError:
+            raise BrowserAutomationTargetNotFoundError() from None
+        if request.origin not in state.profile.allowed_origins:
+            raise BrowserAutomationStaleError()
+        if request.redirect_count > state.profile.limits.max_redirects:
+            raise BrowserAutomationStaleError()
+        if request.redirect_count == 0 and (
+            request.origin != configured.origin
+            or request.request_target != configured.request_target
+        ):
+            raise BrowserAutomationStaleError()
+        return self._record_navigation_plan(page, request)
 
     async def prepare_fill(
         self,
@@ -275,6 +324,66 @@ class DeterministicBrowserAdapter:
             BrowserPreparedEffectKind.CLICK,
             input_digest=None,
             fill_value=None,
+        )
+
+    async def commit_navigation(
+        self,
+        prepared: BrowserPreparedNavigation,
+    ) -> BrowserNavigationCommitResult:
+        self._ensure_open()
+        if not isinstance(prepared, BrowserPreparedNavigation):
+            raise TypeError("prepared must be BrowserPreparedNavigation")
+        record = self._prepared_navigation.pop(prepared.token, None)
+        if record is None or record.public != prepared.plan:
+            raise BrowserAutomationStaleError()
+        state = self._sessions.get(prepared.session_id)
+        if state is None:
+            raise BrowserAutomationStaleError()
+        page = self._page_descriptor(state)
+        if page.page_id != prepared.page_id or page.revision != prepared.revision:
+            raise BrowserAutomationStaleError()
+        try:
+            configured = state.profile.require_target(prepared.request.target_id)
+        except KeyError:
+            raise BrowserAutomationStaleError() from None
+        if record.request != prepared.request:
+            raise BrowserAutomationStaleError()
+        if prepared.request.origin not in state.profile.allowed_origins:
+            raise BrowserAutomationStaleError()
+        if prepared.request.redirect_count == 0 and (
+            prepared.request.origin != configured.origin
+            or prepared.request.request_target != configured.request_target
+        ):
+            raise BrowserAutomationStaleError()
+        if (
+            prepared.destination.profile_id != state.profile.profile_id
+            or prepared.destination.profile_generation != state.profile.generation
+            or prepared.destination.origin != prepared.request.origin
+        ):
+            raise BrowserAutomationStaleError()
+        if state.revision >= MAX_BROWSER_PAGE_REVISION:
+            raise BrowserAutomationAdapterError()
+
+        if state.navigation_redirect_index < len(self._redirect_locations):
+            location = self._redirect_locations[state.navigation_redirect_index]
+            state.navigation_redirect_index += 1
+            return BrowserNavigationCommitResult(
+                prepared_token=prepared.token,
+                redirect_location=location,
+                effect_started=True,
+            )
+
+        # This fake is intentionally network-free. Only the final document replacement
+        # advances the single visible page revision; redirect hops do not.
+        state.navigation_redirect_index = 0
+        state.title = ""
+        state.text = ""
+        state.elements.clear()
+        state.revision += 1
+        return BrowserNavigationCommitResult(
+            prepared_token=prepared.token,
+            page=self._page_descriptor(state),
+            effect_started=True,
         )
 
     async def commit_prepared(
@@ -327,12 +436,58 @@ class DeterministicBrowserAdapter:
             raise BrowserAutomationStaleError()
         del self._prepared[prepared.token]
 
+    async def discard_navigation(self, prepared: BrowserPreparedNavigationPlan) -> None:
+        self._ensure_open()
+        if not isinstance(prepared, BrowserPreparedNavigationPlan):
+            raise TypeError("prepared must be BrowserPreparedNavigationPlan")
+        record = self._prepared_navigation.get(prepared.token)
+        if record is None or record.public != prepared:
+            raise BrowserAutomationStaleError()
+        del self._prepared_navigation[prepared.token]
+
     async def aclose(self) -> None:
         if self._closed:
             return
         self._prepared.clear()
+        self._prepared_navigation.clear()
         self._sessions.clear()
         self._closed = True
+
+    def _record_navigation_plan(
+        self,
+        page: BrowserPageDescriptor,
+        request: BrowserNavigationRequest,
+    ) -> BrowserPreparedNavigationPlan:
+        token = uuid5(
+            NAMESPACE_URL,
+            "|".join(
+                (
+                    "phoenix-browser-navigation",
+                    str(self._adapter_id),
+                    str(page.session_id),
+                    str(page.page_id),
+                    str(page.revision),
+                    str(request.target_id),
+                    request.origin.canonical,
+                    request.request_target,
+                    str(request.redirect_count),
+                    str(self._prepare_sequence),
+                )
+            ),
+        )
+        self._prepare_sequence += 1
+        public = BrowserPreparedNavigationPlan(
+            token=token,
+            session_id=page.session_id,
+            page_id=page.page_id,
+            revision=page.revision,
+            request=request,
+        )
+        self._prepared_navigation[token] = _PreparedNavigationState(
+            public=public,
+            request=request,
+        )
+        return public
 
     def _record_prepared(
         self,

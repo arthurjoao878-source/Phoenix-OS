@@ -9,7 +9,13 @@ from uuid import UUID
 import pytest
 
 from phoenix_os.authority import AuthorityIntent
-from phoenix_os.browser_automation.adapter import BrowserAdapterCommitResult, BrowserPreparedEffect
+from phoenix_os.browser_automation.adapter import (
+    BrowserAdapterCommitResult,
+    BrowserNavigationCommitResult,
+    BrowserPreparedEffect,
+    BrowserPreparedNavigation,
+    BrowserPreparedNavigationPlan,
+)
 from phoenix_os.browser_automation.authorization import (
     BrowserAuthorizer,
     browser_element_click_intent,
@@ -49,8 +55,10 @@ from phoenix_os.browser_automation.fake import (
     DeterministicBrowserElement,
     DeterministicBrowserPage,
 )
+from phoenix_os.browser_automation.network import BrowserNetworkResolver
 from phoenix_os.browser_automation.profiles import (
     BrowserDestinationMode,
+    BrowserNavigationRequest,
     BrowserNavigationTarget,
     BrowserOrigin,
     BrowserProfile,
@@ -162,11 +170,11 @@ class RecordingAuthorizer:
         profile: BrowserProfile,
         session: BrowserSessionDescriptor,
         page: BrowserPageDescriptor,
-        target: BrowserNavigationTarget,
+        request: BrowserNavigationRequest,
         context: SecurityContext,
     ) -> AuthorityIntent:
-        await self._before("navigate", profile, session, page, target, context)
-        return browser_page_navigate_intent(profile, session, page, target)
+        await self._before("navigate", profile, session, page, request, context)
+        return browser_page_navigate_intent(profile, session, page, request)
 
     async def authorize_page_read(
         self,
@@ -209,15 +217,37 @@ class CountingAdapter(DeterministicBrowserAdapter):
         *,
         adapter_id: BrowserAdapterId | str = "deterministic-browser",
         initial_page: DeterministicBrowserPage | None = None,
+        redirect_locations: tuple[str, ...] = (),
     ) -> None:
-        super().__init__(adapter_id=adapter_id, initial_page=initial_page)
+        super().__init__(
+            adapter_id=adapter_id,
+            initial_page=initial_page,
+            redirect_locations=redirect_locations,
+        )
         self.snapshot_calls = 0
+        self.prepare_navigation_calls = 0
+        self.commit_navigation_calls = 0
         self.prepare_fill_calls = 0
         self.commit_calls = 0
 
     async def snapshot(self, page: BrowserPageDescriptor) -> BrowserPageSnapshot:
         self.snapshot_calls += 1
         return await super().snapshot(page)
+
+    async def prepare_navigation(
+        self,
+        page: BrowserPageDescriptor,
+        request: BrowserNavigationRequest,
+    ) -> BrowserPreparedNavigationPlan:
+        self.prepare_navigation_calls += 1
+        return await super().prepare_navigation(page, request)
+
+    async def commit_navigation(
+        self,
+        prepared: BrowserPreparedNavigation,
+    ) -> BrowserNavigationCommitResult:
+        self.commit_navigation_calls += 1
+        return await super().commit_navigation(prepared)
 
     async def prepare_fill(
         self,
@@ -234,6 +264,40 @@ class CountingAdapter(DeterministicBrowserAdapter):
     ) -> BrowserAdapterCommitResult:
         self.commit_calls += 1
         return await super().commit_prepared(prepared)
+
+
+class RaisingAfterNavigationCommitAdapter(CountingAdapter):
+    async def commit_navigation(
+        self,
+        prepared: BrowserPreparedNavigation,
+    ) -> BrowserNavigationCommitResult:
+        self.commit_navigation_calls += 1
+        await DeterministicBrowserAdapter.commit_navigation(self, prepared)
+        raise BrowserAutomationAdapterError()
+
+
+class StaticBrowserResolver:
+    def __init__(
+        self,
+        addresses: tuple[str, ...] | dict[str, tuple[str, ...]],
+    ) -> None:
+        self.addresses = addresses
+        self.calls: list[tuple[str, int, int]] = []
+
+    async def resolve(
+        self,
+        host: str,
+        port: int,
+        *,
+        max_addresses: int,
+    ) -> tuple[str, ...]:
+        self.calls.append((host, port, max_addresses))
+        if isinstance(self.addresses, dict):
+            try:
+                return self.addresses[host]
+            except KeyError:
+                raise OSError("resolver host not configured") from None
+        return self.addresses
 
 
 class RevokingSnapshotAdapter(CountingAdapter):
@@ -441,15 +505,18 @@ def _profile(
     max_concurrent_sessions: int = 8,
     max_snapshot_title_chars: int = 128,
     max_fill_text_chars: int = 128,
+    max_redirects: int = 5,
+    extra_origin: BrowserOrigin | None = None,
     session_ttl_seconds: float = 60.0,
     operation_timeout_seconds: float = 10.0,
 ) -> BrowserProfile:
     origin = BrowserOrigin(BrowserDestinationMode.HOSTED_HTTPS, "example.com")
+    allowed_origins = (origin,) if extra_origin is None else (origin, extra_origin)
     return BrowserProfile(
         profile_id=_PROFILE_ID,
         generation=generation,
         adapter_id=_ADAPTER_ID,
-        allowed_origins=(origin,),
+        allowed_origins=allowed_origins,
         initial_targets=(
             BrowserNavigationTarget(
                 target_id=BrowserNavigationTargetId("start"),
@@ -466,6 +533,7 @@ def _profile(
             max_element_value_chars=128,
             max_fill_text_chars=max_fill_text_chars,
             max_fill_text_bytes=4096,
+            max_redirects=max_redirects,
             session_ttl_seconds=session_ttl_seconds,
             operation_timeout_seconds=operation_timeout_seconds,
             max_concurrent_sessions=max_concurrent_sessions,
@@ -492,6 +560,7 @@ def _service(
     adapter: DeterministicBrowserAdapter | None = None,
     authorizer: RecordingAuthorizer | None = None,
     freshness: RecordingFreshness | None = None,
+    network_resolver: BrowserNetworkResolver | None = None,
     clock: MutableClock | None = None,
 ) -> tuple[
     BrowserAutomationService,
@@ -513,6 +582,7 @@ def _service(
         adapter=selected_adapter,
         authorizer=selected_authorizer,
         freshness=selected_freshness,
+        network_resolver=network_resolver,
         clock=selected_clock,
     )
     return (
@@ -643,6 +713,319 @@ async def test_service_rechecks_profile_specific_snapshot_limits() -> None:
         await service.read_page(opened.page, _context())
 
     assert adapter.session_count == 0
+
+
+@pytest.mark.asyncio
+async def test_navigation_is_server_owned_network_admitted_and_advances_one_revision() -> None:
+    resolver = StaticBrowserResolver(("8.8.8.8",))
+    adapter = CountingAdapter(initial_page=_page_seed())
+    service, _, _, authorizer, freshness, _ = _service(
+        adapter=adapter,
+        network_resolver=resolver,
+    )
+    opened = await service.open_session(_PROFILE_ID, _context())
+    authorizer.calls.clear()
+    freshness.calls = 0
+
+    result = await service.navigate(
+        opened.page,
+        BrowserNavigationTargetId("start"),
+        _context(),
+    )
+
+    assert resolver.calls == [("example.com", 443, 16)]
+    assert authorizer.calls == ["navigate"]
+    assert freshness.calls == 1
+    assert adapter.prepare_navigation_calls == 1
+    assert adapter.commit_navigation_calls == 1
+    assert result.effect_started is True
+    assert result.revision == BrowserPageRevision(2)
+
+    with pytest.raises(BrowserAutomationStaleError):
+        await service.read_page(opened.page, _context())
+
+    current_page = BrowserPageDescriptor(
+        session_id=opened.page.session_id,
+        page_id=opened.page.page_id,
+        revision=BrowserPageRevision(2),
+    )
+    snapshot = await service.read_page(current_page, _context())
+    assert snapshot.title == ""
+    assert snapshot.text == ""
+    assert snapshot.elements == ()
+
+
+@pytest.mark.asyncio
+async def test_navigation_follows_same_origin_redirect_with_fresh_admission_per_hop() -> None:
+    resolver = StaticBrowserResolver(("8.8.8.8",))
+    adapter = CountingAdapter(
+        initial_page=_page_seed(),
+        redirect_locations=("/next?step=1",),
+    )
+    service, _, _, authorizer, freshness, _ = _service(
+        adapter=adapter,
+        network_resolver=resolver,
+    )
+    opened = await service.open_session(_PROFILE_ID, _context())
+    authorizer.calls.clear()
+    freshness.calls = 0
+
+    result = await service.navigate(
+        opened.page,
+        BrowserNavigationTargetId("start"),
+        _context(),
+    )
+
+    assert resolver.calls == [
+        ("example.com", 443, 16),
+        ("example.com", 443, 16),
+    ]
+    assert authorizer.calls == ["navigate", "navigate"]
+    assert freshness.calls == 2
+    assert adapter.prepare_navigation_calls == 2
+    assert adapter.commit_navigation_calls == 2
+    assert result.revision == BrowserPageRevision(2)
+
+
+@pytest.mark.asyncio
+async def test_navigation_follows_cross_origin_redirect_only_when_exactly_allowed() -> None:
+    second = BrowserOrigin(BrowserDestinationMode.HOSTED_HTTPS, "cdn.example.com")
+    profile = _profile(extra_origin=second)
+    resolver = StaticBrowserResolver(
+        {
+            "example.com": ("8.8.8.8",),
+            "cdn.example.com": ("1.1.1.1",),
+        }
+    )
+    adapter = CountingAdapter(
+        initial_page=_page_seed(),
+        redirect_locations=("https://cdn.example.com/final",),
+    )
+    service, _, _, authorizer, _, _ = _service(
+        profile=profile,
+        adapter=adapter,
+        network_resolver=resolver,
+    )
+    opened = await service.open_session(_PROFILE_ID, _context())
+    authorizer.calls.clear()
+
+    result = await service.navigate(
+        opened.page,
+        BrowserNavigationTargetId("start"),
+        _context(),
+    )
+
+    assert resolver.calls == [
+        ("example.com", 443, 16),
+        ("cdn.example.com", 443, 16),
+    ]
+    assert authorizer.calls == ["navigate", "navigate"]
+    assert adapter.commit_navigation_calls == 2
+    assert result.revision == BrowserPageRevision(2)
+
+
+@pytest.mark.asyncio
+async def test_navigation_redirect_cannot_grant_an_unconfigured_origin() -> None:
+    resolver = StaticBrowserResolver(("8.8.8.8",))
+    adapter = CountingAdapter(
+        initial_page=_page_seed(),
+        redirect_locations=("https://evil.example.net/next",),
+    )
+    service, _, _, _, _, _ = _service(
+        adapter=adapter,
+        network_resolver=resolver,
+    )
+    opened = await service.open_session(_PROFILE_ID, _context())
+
+    with pytest.raises(BrowserAutomationIndeterminateEffectError):
+        await service.navigate(
+            opened.page,
+            BrowserNavigationTargetId("start"),
+            _context(),
+        )
+
+    assert resolver.calls == [("example.com", 443, 16)]
+    assert adapter.prepare_navigation_calls == 1
+    assert adapter.commit_navigation_calls == 1
+    assert not service._sessions
+
+
+@pytest.mark.asyncio
+async def test_navigation_redirect_dns_rejection_after_first_request_is_indeterminate() -> None:
+    second = BrowserOrigin(BrowserDestinationMode.HOSTED_HTTPS, "cdn.example.com")
+    profile = _profile(extra_origin=second)
+    resolver = StaticBrowserResolver(
+        {
+            "example.com": ("8.8.8.8",),
+            "cdn.example.com": ("10.0.0.1",),
+        }
+    )
+    adapter = CountingAdapter(
+        initial_page=_page_seed(),
+        redirect_locations=("https://cdn.example.com/final",),
+    )
+    service, _, _, _, _, _ = _service(
+        profile=profile,
+        adapter=adapter,
+        network_resolver=resolver,
+    )
+    opened = await service.open_session(_PROFILE_ID, _context())
+
+    with pytest.raises(BrowserAutomationIndeterminateEffectError):
+        await service.navigate(
+            opened.page,
+            BrowserNavigationTargetId("start"),
+            _context(),
+        )
+
+    assert resolver.calls == [
+        ("example.com", 443, 16),
+        ("cdn.example.com", 443, 16),
+    ]
+    assert adapter.prepare_navigation_calls == 2
+    assert adapter.commit_navigation_calls == 1
+    assert adapter.prepared_count == 0
+    assert not service._sessions
+
+
+@pytest.mark.asyncio
+async def test_navigation_redirect_limit_is_finite_and_never_retries_a_hop() -> None:
+    resolver = StaticBrowserResolver(("8.8.8.8",))
+    adapter = CountingAdapter(
+        initial_page=_page_seed(),
+        redirect_locations=("/one", "/two"),
+    )
+    service, _, _, _, _, _ = _service(
+        profile=_profile(max_redirects=1),
+        adapter=adapter,
+        network_resolver=resolver,
+    )
+    opened = await service.open_session(_PROFILE_ID, _context())
+
+    with pytest.raises(BrowserAutomationIndeterminateEffectError):
+        await service.navigate(
+            opened.page,
+            BrowserNavigationTargetId("start"),
+            _context(),
+        )
+
+    assert resolver.calls == [
+        ("example.com", 443, 16),
+        ("example.com", 443, 16),
+    ]
+    assert adapter.prepare_navigation_calls == 2
+    assert adapter.commit_navigation_calls == 2
+    assert not service._sessions
+
+
+@pytest.mark.asyncio
+async def test_navigation_unknown_target_fails_before_adapter_or_network() -> None:
+    resolver = StaticBrowserResolver(("8.8.8.8",))
+    adapter = CountingAdapter(initial_page=_page_seed())
+    service, _, _, _, _, _ = _service(
+        adapter=adapter,
+        network_resolver=resolver,
+    )
+    opened = await service.open_session(_PROFILE_ID, _context())
+
+    with pytest.raises(BrowserAutomationTargetNotFoundError):
+        await service.navigate(
+            opened.page,
+            BrowserNavigationTargetId("missing"),
+            _context(),
+        )
+
+    assert adapter.prepare_navigation_calls == 0
+    assert adapter.commit_navigation_calls == 0
+    assert resolver.calls == []
+
+
+@pytest.mark.asyncio
+async def test_navigation_unsafe_dns_answer_rejects_before_remote_commit() -> None:
+    resolver = StaticBrowserResolver(("10.0.0.1",))
+    adapter = CountingAdapter(initial_page=_page_seed())
+    service, _, _, _, _, _ = _service(
+        adapter=adapter,
+        network_resolver=resolver,
+    )
+    opened = await service.open_session(_PROFILE_ID, _context())
+
+    with pytest.raises(BrowserAutomationRejectedError):
+        await service.navigate(
+            opened.page,
+            BrowserNavigationTargetId("start"),
+            _context(),
+        )
+
+    assert adapter.prepare_navigation_calls == 1
+    assert adapter.commit_navigation_calls == 0
+    assert adapter.prepared_count == 0
+    unchanged = await service.read_page(opened.page, _context())
+    assert unchanged.text == "safe local content"
+
+
+@pytest.mark.asyncio
+async def test_navigation_authority_denial_discards_without_remote_commit() -> None:
+    resolver = StaticBrowserResolver(("8.8.8.8",))
+    adapter = CountingAdapter(initial_page=_page_seed())
+    authorizer = RecordingAuthorizer()
+    authorizer.deny.add("navigate")
+    service, _, _, _, _, _ = _service(
+        adapter=adapter,
+        authorizer=authorizer,
+        network_resolver=resolver,
+    )
+    opened = await service.open_session(_PROFILE_ID, _context())
+
+    with pytest.raises(BrowserAutomationRejectedError):
+        await service.navigate(
+            opened.page,
+            BrowserNavigationTargetId("start"),
+            _context(),
+        )
+
+    assert resolver.calls == [("example.com", 443, 16)]
+    assert adapter.commit_navigation_calls == 0
+    assert adapter.prepared_count == 0
+
+
+@pytest.mark.asyncio
+async def test_navigation_requires_explicit_reviewed_network_resolver() -> None:
+    adapter = CountingAdapter(initial_page=_page_seed())
+    service, _, _, _, _, _ = _service(adapter=adapter)
+    opened = await service.open_session(_PROFILE_ID, _context())
+
+    with pytest.raises(BrowserAutomationOperationDisabledError):
+        await service.navigate(
+            opened.page,
+            BrowserNavigationTargetId("start"),
+            _context(),
+        )
+
+    assert adapter.prepare_navigation_calls == 1
+    assert adapter.commit_navigation_calls == 0
+    assert adapter.prepared_count == 0
+
+
+@pytest.mark.asyncio
+async def test_navigation_failure_after_possible_request_is_indeterminate() -> None:
+    resolver = StaticBrowserResolver(("8.8.8.8",))
+    adapter = RaisingAfterNavigationCommitAdapter(initial_page=_page_seed())
+    service, _, _, _, _, _ = _service(
+        adapter=adapter,
+        network_resolver=resolver,
+    )
+    opened = await service.open_session(_PROFILE_ID, _context())
+
+    with pytest.raises(BrowserAutomationIndeterminateEffectError):
+        await service.navigate(
+            opened.page,
+            BrowserNavigationTargetId("start"),
+            _context(),
+        )
+
+    assert adapter.commit_navigation_calls == 1
+    assert not service._sessions
 
 
 @pytest.mark.asyncio
@@ -1260,11 +1643,11 @@ async def test_cancellation_after_effect_start_is_indeterminate_and_quarantines_
     assert not service._sessions
 
 
-def test_s4_service_has_no_navigation_click_execute_network_or_runtime_escape_hatch() -> None:
+def test_s5_service_exposes_only_controlled_navigation_without_generic_escape_hatch() -> None:
     service, _, _, _, _, _ = _service()
 
+    assert hasattr(service, "navigate")
     for name in (
-        "navigate",
         "navigate_page",
         "click",
         "click_element",

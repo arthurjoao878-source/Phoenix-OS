@@ -35,7 +35,11 @@ from phoenix_os.browser_automation.contracts import (
     BrowserPageDescriptor,
     BrowserSessionDescriptor,
 )
-from phoenix_os.browser_automation.profiles import BrowserNavigationTarget, BrowserProfile
+from phoenix_os.browser_automation.profiles import (
+    BrowserNavigationRequest,
+    BrowserNavigationTarget,
+    BrowserProfile,
+)
 from phoenix_os.policy import PhoenixPolicyError, PolicyEngine, PolicyRequest, SecurityContext
 
 
@@ -73,7 +77,7 @@ class BrowserAuthorizer(Protocol):
         profile: BrowserProfile,
         session: BrowserSessionDescriptor,
         page: BrowserPageDescriptor,
-        target: BrowserNavigationTarget,
+        request: BrowserNavigationRequest,
         context: SecurityContext,
     ) -> AuthorityIntent: ...
 
@@ -188,12 +192,12 @@ def browser_page_navigate_intent(
     profile: BrowserProfile,
     session: BrowserSessionDescriptor,
     page: BrowserPageDescriptor,
-    target: BrowserNavigationTarget,
+    navigation: BrowserNavigationTarget | BrowserNavigationRequest,
 ) -> AuthorityIntent:
-    """Build one exact page.navigate intent for one server-owned navigation target."""
+    """Build one exact page.navigate intent for one server-owned or derived request."""
 
     _require_page_binding(profile, session, page)
-    _require_target_binding(profile, target)
+    request = _coerce_navigation_request(profile, navigation)
     return _intent(
         action=BROWSER_PAGE_NAVIGATE_ACTION,
         resource=browser_page_resource(profile, session, page),
@@ -202,7 +206,7 @@ def browser_page_navigate_intent(
             profile,
             session=session,
             page=page,
-            target=target,
+            request=request,
         ),
         freshness=_freshness(profile, session=session, page=page),
     )
@@ -335,10 +339,10 @@ class PolicyEngineBrowserAuthorizer:
         profile: BrowserProfile,
         session: BrowserSessionDescriptor,
         page: BrowserPageDescriptor,
-        target: BrowserNavigationTarget,
+        request: BrowserNavigationRequest,
         context: SecurityContext,
     ) -> AuthorityIntent:
-        intent = browser_page_navigate_intent(profile, session, page, target)
+        intent = browser_page_navigate_intent(profile, session, page, request)
         return await self._enforce(
             intent,
             context,
@@ -348,7 +352,8 @@ class PolicyEngineBrowserAuthorizer:
                 "session_id": str(session.session_id),
                 "page_id": str(page.page_id),
                 "page_revision": str(page.revision),
-                "target_id": str(target.target_id),
+                "target_id": str(request.target_id),
+                "redirect_count": str(request.redirect_count),
             },
         )
 
@@ -494,18 +499,38 @@ def _require_page_binding(
         raise BrowserAuthorizationRejectedError()
 
 
-def _require_target_binding(
+def _coerce_navigation_request(
     profile: BrowserProfile,
-    target: BrowserNavigationTarget,
+    navigation: BrowserNavigationTarget | BrowserNavigationRequest,
+) -> BrowserNavigationRequest:
+    if isinstance(navigation, BrowserNavigationTarget):
+        request = BrowserNavigationRequest.from_target(navigation)
+    elif isinstance(navigation, BrowserNavigationRequest):
+        request = navigation
+    else:
+        raise TypeError("navigation must be BrowserNavigationTarget or BrowserNavigationRequest")
+    _require_navigation_request_binding(profile, request)
+    return request
+
+
+def _require_navigation_request_binding(
+    profile: BrowserProfile,
+    request: BrowserNavigationRequest,
 ) -> None:
     _require_profile(profile)
-    if not isinstance(target, BrowserNavigationTarget):
-        raise TypeError("target must be BrowserNavigationTarget")
+    if not isinstance(request, BrowserNavigationRequest):
+        raise TypeError("request must be BrowserNavigationRequest")
     try:
-        configured = profile.require_target(target.target_id)
+        configured = profile.require_target(request.target_id)
     except KeyError as exception:
         raise BrowserAuthorizationRejectedError() from exception
-    if configured != target:
+    if request.origin not in profile.allowed_origins:
+        raise BrowserAuthorizationRejectedError()
+    if request.redirect_count > profile.limits.max_redirects:
+        raise BrowserAuthorizationRejectedError()
+    if request.redirect_count == 0 and (
+        request.origin != configured.origin or request.request_target != configured.request_target
+    ):
         raise BrowserAuthorizationRejectedError()
 
 
@@ -570,7 +595,7 @@ def _parameter_digest(
     *,
     session: BrowserSessionDescriptor | None = None,
     page: BrowserPageDescriptor | None = None,
-    target: BrowserNavigationTarget | None = None,
+    request: BrowserNavigationRequest | None = None,
     prepared: BrowserPreparedEffect | None = None,
 ) -> str:
     digest = hashlib.sha256()
@@ -580,8 +605,8 @@ def _parameter_digest(
         _update_session(digest, session)
     if page is not None:
         _update_page(digest, page)
-    if target is not None:
-        _update_target(digest, target)
+    if request is not None:
+        _update_navigation_request(digest, request)
     if prepared is not None:
         _update_prepared(digest, prepared)
     return "sha256:" + digest.hexdigest()
@@ -670,10 +695,14 @@ def _update_page(digest: _Digest, page: BrowserPageDescriptor) -> None:
     _update_field(digest, "page.revision", str(page.revision))
 
 
-def _update_target(digest: _Digest, target: BrowserNavigationTarget) -> None:
-    _update_field(digest, "target.id", str(target.target_id))
-    _update_field(digest, "target.origin", target.origin.canonical)
-    _update_field(digest, "target.request_target", target.request_target)
+def _update_navigation_request(
+    digest: _Digest,
+    request: BrowserNavigationRequest,
+) -> None:
+    _update_field(digest, "navigation.target_id", str(request.target_id))
+    _update_field(digest, "navigation.origin", request.origin.canonical)
+    _update_field(digest, "navigation.request_target", request.request_target)
+    _update_field(digest, "navigation.redirect_count", str(request.redirect_count))
 
 
 def _update_prepared(digest: _Digest, prepared: BrowserPreparedEffect) -> None:
