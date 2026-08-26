@@ -21,6 +21,7 @@ from phoenix_os.browser_automation.contracts import (
 from phoenix_os.browser_automation.network import BrowserDestinationAdmission
 from phoenix_os.browser_automation.profiles import (
     MAX_BROWSER_REDIRECT_LOCATION_LENGTH,
+    BrowserClickRequest,
     BrowserNavigationRequest,
     BrowserProfile,
 )
@@ -46,6 +47,7 @@ class BrowserPreparedEffect:
     revision: BrowserPageRevision
     element_id: BrowserElementId
     input_digest: str | None = None
+    request: BrowserClickRequest | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.token, UUID):
@@ -64,11 +66,100 @@ class BrowserPreparedEffect:
                 raise TypeError("input_digest must be a string or None")
             if _SHA256_DIGEST_PATTERN.fullmatch(self.input_digest) is None:
                 raise ValueError("input_digest must be an exact SHA-256 digest")
-        if kind is BrowserPreparedEffectKind.FILL and self.input_digest is None:
-            raise ValueError("prepared fill effect requires an exact input digest")
+        request = self.request
+        if request is not None and not isinstance(request, BrowserClickRequest):
+            raise TypeError("request must be BrowserClickRequest or None")
+        if kind is BrowserPreparedEffectKind.FILL:
+            if self.input_digest is None:
+                raise ValueError("prepared fill effect requires an exact input digest")
+            if request is not None:
+                raise ValueError("prepared fill effect cannot contain a click request")
         if kind is BrowserPreparedEffectKind.CLICK and self.input_digest is not None:
             raise ValueError("prepared click effect cannot contain fill input material")
         object.__setattr__(self, "kind", kind)
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserPreparedClickRequest:
+    """Final zero-effect click-request readiness with exact admitted destination pins."""
+
+    effect: BrowserPreparedEffect
+    request: BrowserClickRequest
+    destination: BrowserDestinationAdmission
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.effect, BrowserPreparedEffect):
+            raise TypeError("effect must be BrowserPreparedEffect")
+        if self.effect.kind is not BrowserPreparedEffectKind.CLICK:
+            raise ValueError("prepared click request requires a click effect")
+        if self.effect.request is None:
+            raise ValueError("prepared click request requires a remote click plan")
+        if not isinstance(self.request, BrowserClickRequest):
+            raise TypeError("request must be BrowserClickRequest")
+        if not isinstance(self.destination, BrowserDestinationAdmission):
+            raise TypeError("destination must be BrowserDestinationAdmission")
+        if self.destination.origin != self.request.origin:
+            raise ValueError("click destination origin must match the exact request")
+        if self.request.redirect_count == 0 and self.request != self.effect.request:
+            raise ValueError("initial click request must match the prepared root request")
+
+    @property
+    def token(self) -> UUID:
+        return self.effect.token
+
+    @property
+    def session_id(self) -> BrowserSessionId:
+        return self.effect.session_id
+
+    @property
+    def page_id(self) -> BrowserPageId:
+        return self.effect.page_id
+
+    @property
+    def revision(self) -> BrowserPageRevision:
+        return self.effect.revision
+
+    @property
+    def element_id(self) -> BrowserElementId:
+        return self.effect.element_id
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserClickCommitResult:
+    """One started click-derived top-level request result without content disclosure."""
+
+    prepared_token: UUID
+    page: BrowserPageDescriptor | None = None
+    redirect_location: str | None = field(default=None, repr=False)
+    redirect_status: int | None = None
+    effect_started: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.prepared_token, UUID):
+            raise TypeError("prepared_token must be UUID")
+        if self.page is not None and not isinstance(self.page, BrowserPageDescriptor):
+            raise TypeError("page must be BrowserPageDescriptor or None")
+        if self.redirect_location is not None:
+            if not isinstance(self.redirect_location, str):
+                raise TypeError("redirect_location must be a string or None")
+            if (
+                not self.redirect_location
+                or len(self.redirect_location) > MAX_BROWSER_REDIRECT_LOCATION_LENGTH
+            ):
+                raise ValueError("redirect location size is outside supported bounds")
+        if (self.page is None) == (self.redirect_location is None):
+            raise ValueError("click request result must contain exactly one page or redirect")
+        if self.redirect_location is None:
+            if self.redirect_status is not None:
+                raise ValueError("final click result cannot contain redirect_status")
+        elif (
+            isinstance(self.redirect_status, bool)
+            or not isinstance(self.redirect_status, int)
+            or self.redirect_status not in {301, 302, 303, 307, 308}
+        ):
+            raise ValueError("redirect click result requires a supported redirect status")
+        if self.effect_started is not True:
+            raise ValueError("click request result must represent a request that started")
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +316,13 @@ class BrowserAdapter(Protocol):
         prepared: BrowserPreparedNavigation,
     ) -> BrowserNavigationCommitResult:
         """Use only admitted pins, preserve TLS host, ignore proxies, and never auto-follow."""
+        ...
+
+    async def commit_click_request(
+        self,
+        prepared: BrowserPreparedClickRequest,
+    ) -> BrowserClickCommitResult:
+        """Commit one exact admitted click-derived request without auto-following redirects."""
         ...
 
     async def commit_prepared(

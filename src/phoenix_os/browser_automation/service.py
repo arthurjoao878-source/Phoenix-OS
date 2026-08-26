@@ -1,11 +1,11 @@
-"""Canonical S4 browser sessions, page reads, and stale-safe local fill effects."""
+"""Canonical S6 browser sessions, click effects, navigation, and tool-scope mediation."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, TypeVar, cast, runtime_checkable
 from uuid import UUID, uuid4
@@ -14,7 +14,9 @@ from phoenix_os.authority import AuthorityFreshnessValidator, AuthorityIntent
 from phoenix_os.browser_automation.adapter import (
     BrowserAdapter,
     BrowserAdapterCommitResult,
+    BrowserClickCommitResult,
     BrowserNavigationCommitResult,
+    BrowserPreparedClickRequest,
     BrowserPreparedEffect,
     BrowserPreparedEffectKind,
     BrowserPreparedNavigation,
@@ -22,6 +24,7 @@ from phoenix_os.browser_automation.adapter import (
 )
 from phoenix_os.browser_automation.authorization import (
     BrowserAuthorizer,
+    browser_element_click_intent,
     browser_element_fill_intent,
     browser_page_navigate_intent,
     browser_page_read_intent,
@@ -31,6 +34,7 @@ from phoenix_os.browser_automation.authorization import (
 from phoenix_os.browser_automation.contracts import (
     MAX_BROWSER_PAGE_REVISION,
     BrowserAdapterId,
+    BrowserAgentScope,
     BrowserElementId,
     BrowserFillInput,
     BrowserNavigationTargetId,
@@ -62,14 +66,17 @@ from phoenix_os.browser_automation.network import (
     resolve_and_admit_browser_destination,
 )
 from phoenix_os.browser_automation.profiles import (
+    BrowserClickRequest,
     BrowserNavigationRequest,
     BrowserNavigationTarget,
     BrowserProfile,
+    derive_browser_click_redirect_request,
     derive_browser_redirect_request,
 )
 from phoenix_os.policy import PrincipalType, SecurityContext
 
 _T = TypeVar("_T")
+BrowserFinalAdmissionValidator = Callable[[], Awaitable[None]]
 
 _CANCELLATION_GRACE_SECONDS = 0.05
 _CLEANUP_CAP_SECONDS = 1.0
@@ -157,12 +164,13 @@ class _BrowserSessionState:
     profile: BrowserProfile
     descriptor: BrowserSessionDescriptor
     subject: _BrowserSubjectBinding
+    agent_scope: BrowserAgentScope | None
     page: BrowserPageDescriptor | None
     lock: asyncio.Lock
 
 
 class BrowserAutomationService:
-    """Apply exact current browser authority around controlled S5 browser operations."""
+    """Apply exact current browser and optional tool authority around S6 operations."""
 
     def __init__(
         self,
@@ -212,16 +220,23 @@ class BrowserAutomationService:
         *,
         cancellation: BrowserAutomationCancellationToken | None = None,
         deadline: datetime | None = None,
+        agent_scope: BrowserAgentScope | None = None,
+        final_admission: BrowserFinalAdmissionValidator | None = None,
+        expected_profile: BrowserProfile | None = None,
     ) -> BrowserSessionOpenResult:
         """Open one local ephemeral browser session after exact session-open authority."""
 
         if not isinstance(profile_id, BrowserProfileId):
             raise TypeError("profile_id must be BrowserProfileId")
         subject = _BrowserSubjectBinding.from_context(context)
+        self._validate_agent_scope(agent_scope)
+        self._validate_final_admission(final_admission)
+        if expected_profile is not None and not isinstance(expected_profile, BrowserProfile):
+            raise TypeError("expected_profile must be BrowserProfile or None")
         self._require_service_active()
         token = self._token(cancellation)
         self._validate_requested_deadline(deadline)
-        profile = self._require_open_profile(profile_id)
+        profile = self._require_open_profile(profile_id, expected_profile=expected_profile)
         operation_deadline = self._operation_deadline(profile, deadline)
         self._require_pre_effect(token, operation_deadline)
         await self._reap_stale_sessions(
@@ -242,6 +257,7 @@ class BrowserAutomationService:
             profile=profile,
             descriptor=descriptor,
             subject=subject,
+            agent_scope=agent_scope,
             page=None,
             lock=asyncio.Lock(),
         )
@@ -255,6 +271,12 @@ class BrowserAutomationService:
                 self._require_pre_effect(token, effective)
                 subject.require_context(context)
                 self._require_current_profile_sync(state)
+                self._require_agent_scope(state, agent_scope)
+                await self._run_final_admission(final_admission, token, effective)
+                self._require_pre_effect(token, effective)
+                subject.require_context(context)
+                self._require_current_profile_sync(state)
+                self._require_agent_scope(state, agent_scope)
 
                 try:
                     page = await self._await_pre_effect(
@@ -291,6 +313,8 @@ class BrowserAutomationService:
         *,
         cancellation: BrowserAutomationCancellationToken | None = None,
         deadline: datetime | None = None,
+        agent_scope: BrowserAgentScope | None = None,
+        final_admission: BrowserFinalAdmissionValidator | None = None,
     ) -> BrowserOperationResult:
         """Close one exact current session after independent browser.session.close authority."""
 
@@ -301,6 +325,9 @@ class BrowserAutomationService:
         token = self._token(cancellation)
         self._validate_requested_deadline(deadline)
         state = await self._lookup_state(session_id)
+        self._validate_agent_scope(agent_scope)
+        self._validate_final_admission(final_admission)
+        self._require_agent_scope(state, agent_scope)
         operation_deadline = self._operation_deadline(state.profile, deadline)
         async with state.lock:
             page = self._require_ready_page(state)
@@ -317,6 +344,12 @@ class BrowserAutomationService:
             self._require_pre_effect(token, effective)
             state.subject.require_context(context)
             self._require_current_profile_sync(state)
+            self._require_agent_scope(state, agent_scope)
+            await self._run_final_admission(final_admission, token, effective)
+            self._require_pre_effect(token, effective)
+            state.subject.require_context(context)
+            self._require_current_profile_sync(state)
+            self._require_agent_scope(state, agent_scope)
 
             close_error: BrowserAutomationError | None = None
             try:
@@ -364,6 +397,8 @@ class BrowserAutomationService:
         *,
         cancellation: BrowserAutomationCancellationToken | None = None,
         deadline: datetime | None = None,
+        agent_scope: BrowserAgentScope | None = None,
+        final_admission: BrowserFinalAdmissionValidator | None = None,
     ) -> BrowserPageSnapshot:
         """Return one bounded snapshot only after pre-read and pre-disclosure exact authority."""
 
@@ -374,6 +409,9 @@ class BrowserAutomationService:
         token = self._token(cancellation)
         self._validate_requested_deadline(deadline)
         state = await self._lookup_state(page.session_id)
+        self._validate_agent_scope(agent_scope)
+        self._validate_final_admission(final_admission)
+        self._require_agent_scope(state, agent_scope)
         operation_deadline = self._operation_deadline(state.profile, deadline)
         async with state.lock:
             await self._require_live_current_state(
@@ -415,6 +453,13 @@ class BrowserAutomationService:
             state.subject.require_context(context)
             self._require_current_profile_sync(state)
             self._require_current_page_sync(state, page)
+            self._require_agent_scope(state, agent_scope)
+            await self._run_final_admission(final_admission, token, effective)
+            self._require_pre_effect(token, effective)
+            state.subject.require_context(context)
+            self._require_current_profile_sync(state)
+            self._require_current_page_sync(state, page)
+            self._require_agent_scope(state, agent_scope)
             return snapshot
 
     async def navigate(
@@ -425,6 +470,8 @@ class BrowserAutomationService:
         *,
         cancellation: BrowserAutomationCancellationToken | None = None,
         deadline: datetime | None = None,
+        agent_scope: BrowserAgentScope | None = None,
+        final_admission: BrowserFinalAdmissionValidator | None = None,
     ) -> BrowserOperationResult:
         """Follow one finite exact-authorized top-level navigation chain without retries."""
 
@@ -437,6 +484,9 @@ class BrowserAutomationService:
         token = self._token(cancellation)
         self._validate_requested_deadline(deadline)
         state = await self._lookup_state(page.session_id)
+        self._validate_agent_scope(agent_scope)
+        self._validate_final_admission(final_admission)
+        self._require_agent_scope(state, agent_scope)
         operation_deadline = self._operation_deadline(state.profile, deadline)
 
         async with state.lock:
@@ -525,6 +575,13 @@ class BrowserAutomationService:
                     state.subject.require_context(context)
                     self._require_current_profile_sync(state)
                     self._require_current_page_sync(state, page)
+                    self._require_agent_scope(state, agent_scope)
+                    await self._run_final_admission(final_admission, token, effective)
+                    self._require_pre_effect(token, effective)
+                    state.subject.require_context(context)
+                    self._require_current_profile_sync(state)
+                    self._require_current_page_sync(state, page)
+                    self._require_agent_scope(state, agent_scope)
 
                     prepared = BrowserPreparedNavigation(
                         plan=plan,
@@ -629,6 +686,8 @@ class BrowserAutomationService:
         *,
         cancellation: BrowserAutomationCancellationToken | None = None,
         deadline: datetime | None = None,
+        agent_scope: BrowserAgentScope | None = None,
+        final_admission: BrowserFinalAdmissionValidator | None = None,
     ) -> BrowserOperationResult:
         """Prepare zero-effect fill, then admit and commit exactly one current local effect."""
 
@@ -643,6 +702,9 @@ class BrowserAutomationService:
         token = self._token(cancellation)
         self._validate_requested_deadline(deadline)
         state = await self._lookup_state(page.session_id)
+        self._validate_agent_scope(agent_scope)
+        self._validate_final_admission(final_admission)
+        self._require_agent_scope(state, agent_scope)
         operation_deadline = self._operation_deadline(state.profile, deadline)
 
         async with state.lock:
@@ -704,6 +766,13 @@ class BrowserAutomationService:
                 state.subject.require_context(context)
                 self._require_current_profile_sync(state)
                 self._require_current_page_sync(state, page)
+                self._require_agent_scope(state, agent_scope)
+                await self._run_final_admission(final_admission, token, effective)
+                self._require_pre_effect(token, effective)
+                state.subject.require_context(context)
+                self._require_current_profile_sync(state)
+                self._require_current_page_sync(state, page)
+                self._require_agent_scope(state, agent_scope)
 
                 operation_id = uuid4()
                 result_created_at = self._now()
@@ -751,6 +820,309 @@ class BrowserAutomationService:
                 if prepared is not None:
                     await self._discard_best_effort(
                         prepared, cancellation=token, deadline=effective
+                    )
+                raise
+
+    async def click_element(
+        self,
+        page: BrowserPageDescriptor,
+        element_id: BrowserElementId,
+        context: SecurityContext,
+        *,
+        cancellation: BrowserAutomationCancellationToken | None = None,
+        deadline: datetime | None = None,
+        agent_scope: BrowserAgentScope | None = None,
+        final_admission: BrowserFinalAdmissionValidator | None = None,
+    ) -> BrowserOperationResult:
+        """Commit one stale-safe local or admitted remote click without retries."""
+
+        if not isinstance(page, BrowserPageDescriptor):
+            raise TypeError("page must be BrowserPageDescriptor")
+        if not isinstance(element_id, BrowserElementId):
+            raise TypeError("element_id must be BrowserElementId")
+        _BrowserSubjectBinding.from_context(context)
+        self._require_service_active()
+        token = self._token(cancellation)
+        self._validate_requested_deadline(deadline)
+        state = await self._lookup_state(page.session_id)
+        self._validate_agent_scope(agent_scope)
+        self._validate_final_admission(final_admission)
+        self._require_agent_scope(state, agent_scope)
+        operation_deadline = self._operation_deadline(state.profile, deadline)
+
+        async with state.lock:
+            await self._require_live_current_state(
+                state,
+                context,
+                expected_page=page,
+                cancellation=token,
+                deadline=operation_deadline,
+            )
+            effective = self._bound_deadline_to_session(state, operation_deadline)
+            self._require_pre_effect(token, effective)
+            if page.revision.value >= MAX_BROWSER_PAGE_REVISION:
+                raise BrowserAutomationLimitExceededError()
+
+            prepared: BrowserPreparedEffect | None = None
+            remote_started = False
+            try:
+                try:
+                    prepared = await self._call_prepare_click(
+                        page,
+                        element_id,
+                        token,
+                        effective,
+                    )
+                    self._validate_prepared_click(
+                        state.profile,
+                        page,
+                        element_id,
+                        prepared,
+                    )
+                except (BrowserAutomationAdapterError, BrowserAutomationStaleError):
+                    if prepared is not None:
+                        await self._discard_best_effort(
+                            prepared,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        prepared = None
+                    await self._invalidate_state(
+                        state,
+                        cancellation=token,
+                        deadline=effective,
+                    )
+                    raise
+
+                if prepared is None:  # pragma: no cover - exact preparation invariant
+                    raise BrowserAutomationAdapterError()
+
+                operation_id = uuid4()
+                result_created_at = self._now()
+                root_request = prepared.request
+
+                if root_request is None:
+                    await self._require_live_current_state(
+                        state,
+                        context,
+                        expected_page=page,
+                        cancellation=token,
+                        deadline=effective,
+                    )
+                    self._require_pre_effect(token, effective)
+                    await self._validate_freshness(context, token, effective)
+                    await self._authorize_element_click(
+                        state,
+                        page,
+                        prepared,
+                        context,
+                        token,
+                        effective,
+                    )
+                    self._require_pre_effect(token, effective)
+                    state.subject.require_context(context)
+                    self._require_current_profile_sync(state)
+                    self._require_current_page_sync(state, page)
+                    self._require_agent_scope(state, agent_scope)
+                    await self._run_final_admission(final_admission, token, effective)
+                    self._require_pre_effect(token, effective)
+                    state.subject.require_context(context)
+                    self._require_current_profile_sync(state)
+                    self._require_current_page_sync(state, page)
+                    self._require_agent_scope(state, agent_scope)
+                    try:
+                        committed = await self._await_commit(
+                            self._adapter.commit_prepared(prepared),
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                    except asyncio.CancelledError:
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError() from None
+                    except BrowserAutomationIndeterminateEffectError:
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise
+                    except Exception:
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError() from None
+
+                    if not self._valid_commit_result(page, prepared, committed):
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError()
+                    prepared = None
+                    state.page = committed.page
+                    return BrowserOperationResult(
+                        operation_id=operation_id,
+                        outcome=BrowserOperationOutcome.SUCCEEDED,
+                        session_id=committed.page.session_id,
+                        page_id=committed.page.page_id,
+                        revision=committed.page.revision,
+                        effect_started=True,
+                        created_at=result_created_at,
+                    )
+
+                request = root_request
+                while True:
+                    destination = await self._resolve_click_destination(
+                        state.profile,
+                        request,
+                        token,
+                        effective,
+                    )
+                    await self._require_live_current_state(
+                        state,
+                        context,
+                        expected_page=page,
+                        cancellation=token,
+                        deadline=effective,
+                    )
+                    self._require_pre_effect(token, effective)
+
+                    authority_prepared = (
+                        prepared if request == root_request else replace(prepared, request=request)
+                    )
+                    await self._validate_freshness(context, token, effective)
+                    await self._authorize_element_click(
+                        state,
+                        page,
+                        authority_prepared,
+                        context,
+                        token,
+                        effective,
+                    )
+                    self._require_pre_effect(token, effective)
+                    state.subject.require_context(context)
+                    self._require_current_profile_sync(state)
+                    self._require_current_page_sync(state, page)
+                    self._require_agent_scope(state, agent_scope)
+                    await self._run_final_admission(final_admission, token, effective)
+                    self._require_pre_effect(token, effective)
+                    state.subject.require_context(context)
+                    self._require_current_profile_sync(state)
+                    self._require_current_page_sync(state, page)
+                    self._require_agent_scope(state, agent_scope)
+
+                    final_click = BrowserPreparedClickRequest(
+                        effect=prepared,
+                        request=request,
+                        destination=destination,
+                    )
+                    try:
+                        committed_click = await self._await_commit(
+                            self._adapter.commit_click_request(final_click),
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                    except asyncio.CancelledError:
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError() from None
+                    except BrowserAutomationIndeterminateEffectError:
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise
+                    except Exception:
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError() from None
+
+                    remote_started = True
+                    if not self._valid_click_hop_result(
+                        page,
+                        final_click,
+                        committed_click,
+                    ):
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError()
+
+                    if committed_click.redirect_location is not None:
+                        redirect_status = committed_click.redirect_status
+                        if redirect_status is None:
+                            await self._poison_after_possible_effect(
+                                state,
+                                cancellation=token,
+                                deadline=effective,
+                            )
+                            raise BrowserAutomationIndeterminateEffectError()
+                        try:
+                            request = derive_browser_click_redirect_request(
+                                state.profile,
+                                request,
+                                committed_click.redirect_location,
+                                redirect_status,
+                            )
+                        except Exception:
+                            await self._poison_after_possible_effect(
+                                state,
+                                cancellation=token,
+                                deadline=effective,
+                            )
+                            raise BrowserAutomationIndeterminateEffectError() from None
+                        continue
+
+                    next_page = committed_click.page
+                    if next_page is None:  # pragma: no cover - result invariant
+                        await self._poison_after_possible_effect(
+                            state,
+                            cancellation=token,
+                            deadline=effective,
+                        )
+                        raise BrowserAutomationIndeterminateEffectError()
+                    prepared = None
+                    state.page = next_page
+                    return BrowserOperationResult(
+                        operation_id=operation_id,
+                        outcome=BrowserOperationOutcome.SUCCEEDED,
+                        session_id=next_page.session_id,
+                        page_id=next_page.page_id,
+                        revision=next_page.revision,
+                        effect_started=True,
+                        created_at=result_created_at,
+                    )
+            except BrowserAutomationIndeterminateEffectError:
+                raise
+            except BaseException:
+                if remote_started:
+                    await self._poison_after_possible_effect(
+                        state,
+                        cancellation=token,
+                        deadline=effective,
+                    )
+                    raise BrowserAutomationIndeterminateEffectError() from None
+                if prepared is not None:
+                    await self._discard_best_effort(
+                        prepared,
+                        cancellation=token,
+                        deadline=effective,
                     )
                 raise
 
@@ -944,7 +1316,12 @@ class BrowserAutomationService:
             raise BrowserAutomationStaleError()
         return page
 
-    def _require_open_profile(self, profile_id: BrowserProfileId) -> BrowserProfile:
+    def _require_open_profile(
+        self,
+        profile_id: BrowserProfileId,
+        *,
+        expected_profile: BrowserProfile | None = None,
+    ) -> BrowserProfile:
         self._require_service_active()
         try:
             profile = self._profiles.require_profile(profile_id)
@@ -954,6 +1331,8 @@ class BrowserAutomationService:
             raise BrowserAutomationConfigurationError()
         if profile.adapter_id != self._adapter_id:
             raise BrowserAutomationOperationDisabledError()
+        if expected_profile is not None and profile != expected_profile:
+            raise BrowserAutomationStaleError()
         return profile
 
     async def _validate_freshness(
@@ -1109,6 +1488,37 @@ class BrowserAutomationService:
             deadline,
         )
 
+    async def _authorize_element_click(
+        self,
+        state: _BrowserSessionState,
+        page: BrowserPageDescriptor,
+        prepared: BrowserPreparedEffect,
+        context: SecurityContext,
+        cancellation: BrowserAutomationCancellationToken,
+        deadline: _EffectiveDeadline,
+    ) -> AuthorityIntent:
+        try:
+            expected = browser_element_click_intent(
+                state.profile,
+                state.descriptor,
+                page,
+                prepared,
+            )
+        except Exception:
+            raise BrowserAutomationRejectedError() from None
+        return await self._authorize_exact(
+            self._authorizer.authorize_element_click(
+                state.profile,
+                state.descriptor,
+                page,
+                prepared,
+                context,
+            ),
+            expected,
+            cancellation,
+            deadline,
+        )
+
     async def _authorize_exact(
         self,
         awaitable: Awaitable[AuthorityIntent],
@@ -1240,6 +1650,64 @@ class BrowserAutomationService:
             raise BrowserAutomationAdapterError()
         return result
 
+    async def _call_prepare_click(
+        self,
+        page: BrowserPageDescriptor,
+        element_id: BrowserElementId,
+        cancellation: BrowserAutomationCancellationToken,
+        deadline: _EffectiveDeadline,
+    ) -> BrowserPreparedEffect:
+        try:
+            result = await self._await_pre_effect(
+                self._adapter.prepare_click(page, element_id),
+                cancellation=cancellation,
+                deadline=deadline,
+            )
+        except asyncio.CancelledError:
+            raise
+        except BrowserAutomationError:
+            raise
+        except Exception:
+            raise BrowserAutomationAdapterError() from None
+        if not isinstance(result, BrowserPreparedEffect):
+            raise BrowserAutomationAdapterError()
+        return result
+
+    async def _resolve_click_destination(
+        self,
+        profile: BrowserProfile,
+        request: BrowserClickRequest,
+        cancellation: BrowserAutomationCancellationToken,
+        deadline: _EffectiveDeadline,
+    ) -> BrowserDestinationAdmission:
+        resolver = self._network_resolver
+        if resolver is None:
+            raise BrowserAutomationOperationDisabledError()
+        try:
+            result = await self._await_pre_effect(
+                resolve_and_admit_browser_destination(
+                    profile,
+                    request.origin,
+                    resolver=resolver,
+                ),
+                cancellation=cancellation,
+                deadline=deadline,
+            )
+        except asyncio.CancelledError:
+            raise
+        except BrowserAutomationError:
+            raise
+        except Exception:
+            raise BrowserAutomationAdapterError() from None
+        if (
+            not isinstance(result, BrowserDestinationAdmission)
+            or result.profile_id != profile.profile_id
+            or result.profile_generation != profile.generation
+            or result.origin != request.origin
+        ):
+            raise BrowserAutomationAdapterError()
+        return result
+
     async def _discard_navigation_best_effort(
         self,
         prepared: BrowserPreparedNavigationPlan,
@@ -1306,6 +1774,55 @@ class BrowserAutomationService:
             or prepared.input_digest != value.digest
         ):
             raise BrowserAutomationAdapterError()
+
+    @staticmethod
+    def _validate_prepared_click(
+        profile: BrowserProfile,
+        page: BrowserPageDescriptor,
+        element_id: BrowserElementId,
+        prepared: BrowserPreparedEffect,
+    ) -> None:
+        if (
+            prepared.kind is not BrowserPreparedEffectKind.CLICK
+            or prepared.session_id != page.session_id
+            or prepared.page_id != page.page_id
+            or prepared.revision != page.revision
+            or prepared.element_id != element_id
+            or prepared.input_digest is not None
+        ):
+            raise BrowserAutomationAdapterError()
+        request = prepared.request
+        if request is not None and (
+            request.redirect_count != 0 or request.origin not in profile.allowed_origins
+        ):
+            raise BrowserAutomationAdapterError()
+
+    @staticmethod
+    def _valid_click_hop_result(
+        page: BrowserPageDescriptor,
+        prepared: BrowserPreparedClickRequest,
+        committed: object,
+    ) -> bool:
+        if not isinstance(committed, BrowserClickCommitResult):
+            return False
+        if committed.prepared_token != prepared.token or committed.effect_started is not True:
+            return False
+        if committed.redirect_location is not None:
+            return committed.page is None and committed.redirect_status in {
+                301,
+                302,
+                303,
+                307,
+                308,
+            }
+        next_page = committed.page
+        if next_page is None:
+            return False
+        return (
+            next_page.session_id == page.session_id
+            and next_page.page_id == page.page_id
+            and next_page.revision.value == page.revision.value + 1
+        )
 
     @staticmethod
     def _valid_navigation_hop_result(
@@ -1388,6 +1905,53 @@ class BrowserAutomationService:
             raise BrowserAutomationLimitExceededError()
         if len(value.value.encode("utf-8")) > profile.limits.max_fill_text_bytes:
             raise BrowserAutomationLimitExceededError()
+
+    @staticmethod
+    def _validate_agent_scope(agent_scope: BrowserAgentScope | None) -> None:
+        if agent_scope is not None and not isinstance(agent_scope, BrowserAgentScope):
+            raise TypeError("agent_scope must be BrowserAgentScope or None")
+
+    @staticmethod
+    def _validate_final_admission(
+        final_admission: BrowserFinalAdmissionValidator | None,
+    ) -> None:
+        if final_admission is not None and not callable(final_admission):
+            raise TypeError("final_admission must be callable or None")
+
+    @staticmethod
+    def _require_agent_scope(
+        state: _BrowserSessionState,
+        agent_scope: BrowserAgentScope | None,
+    ) -> None:
+        if state.agent_scope != agent_scope:
+            raise BrowserAutomationRejectedError()
+
+    async def _run_final_admission(
+        self,
+        final_admission: BrowserFinalAdmissionValidator | None,
+        cancellation: BrowserAutomationCancellationToken,
+        deadline: _EffectiveDeadline,
+    ) -> None:
+        if final_admission is None:
+            return
+        try:
+            result = await self._await_pre_effect(
+                cast(Awaitable[object], final_admission()),
+                cancellation=cancellation,
+                deadline=deadline,
+            )
+        except asyncio.CancelledError:
+            raise
+        except (
+            BrowserAutomationCancelledError,
+            BrowserAutomationOperationDisabledError,
+            BrowserAutomationTimeoutError,
+        ):
+            raise
+        except Exception:
+            raise BrowserAutomationRejectedError() from None
+        if result is not None:
+            raise BrowserAutomationRejectedError()
 
     async def _await_pre_effect(
         self,

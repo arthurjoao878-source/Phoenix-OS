@@ -41,6 +41,7 @@ MAX_BROWSER_CONCURRENT_SESSIONS = 128
 
 _HOST_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _PERCENT_ESCAPE_PATTERN = re.compile(r"%[0-9A-Fa-f]{2}")
+_SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class BrowserDestinationMode(StrEnum):
@@ -264,6 +265,51 @@ class BrowserNavigationRequest:
             request_target=target.request_target,
             redirect_count=0,
         )
+
+    @property
+    def absolute_url(self) -> str:
+        return f"{self.origin.canonical}{self.request_target}"
+
+
+class BrowserRequestMethod(StrEnum):
+    """Finite top-level request methods permitted for click-derived effects."""
+
+    GET = "GET"
+    POST = "POST"
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserClickRequest:
+    """Exact top-level request derived from one prepared click effect."""
+
+    origin: BrowserOrigin
+    request_target: str
+    method: BrowserRequestMethod = BrowserRequestMethod.GET
+    body_digest: str | None = None
+    redirect_count: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.origin, BrowserOrigin):
+            raise TypeError("origin must be BrowserOrigin")
+        method = BrowserRequestMethod(self.method)
+        redirect_count = _non_negative_int(
+            self.redirect_count,
+            label="browser click redirect count",
+            maximum=MAX_BROWSER_REDIRECTS,
+        )
+        body_digest = self.body_digest
+        if body_digest is not None:
+            if not isinstance(body_digest, str):
+                raise TypeError("body_digest must be a string or None")
+            if _SHA256_DIGEST_PATTERN.fullmatch(body_digest) is None:
+                raise ValueError("body_digest must be an exact SHA-256 digest")
+        if method is BrowserRequestMethod.GET and body_digest is not None:
+            raise ValueError("GET browser click request cannot carry a body digest")
+        if method is BrowserRequestMethod.POST and body_digest is None:
+            raise ValueError("POST browser click request requires an exact body digest")
+        object.__setattr__(self, "request_target", _normalize_request_target(self.request_target))
+        object.__setattr__(self, "method", method)
+        object.__setattr__(self, "redirect_count", redirect_count)
 
     @property
     def absolute_url(self) -> str:
@@ -541,6 +587,94 @@ def derive_browser_redirect_request(
         target_id=current.target_id,
         origin=origin,
         request_target=request_target,
+        redirect_count=current.redirect_count + 1,
+    )
+
+
+def derive_browser_click_redirect_request(
+    profile: BrowserProfile,
+    current: BrowserClickRequest,
+    location: str,
+    status_code: int,
+) -> BrowserClickRequest:
+    """Derive one exact click redirect request and fail closed on ambiguous method changes."""
+
+    if not isinstance(profile, BrowserProfile):
+        raise TypeError("profile must be BrowserProfile")
+    if not isinstance(current, BrowserClickRequest):
+        raise TypeError("current must be BrowserClickRequest")
+    if not isinstance(location, str):
+        raise TypeError("redirect location must be a string")
+    if isinstance(status_code, bool) or not isinstance(status_code, int):
+        raise TypeError("redirect status_code must be an integer")
+    if status_code not in {301, 302, 303, 307, 308}:
+        raise ValueError("unsupported browser redirect status")
+    if current.origin not in profile.allowed_origins:
+        raise ValueError("current click origin is not allowed")
+    if current.redirect_count >= profile.limits.max_redirects:
+        raise ValueError("browser redirect limit exceeded")
+
+    raw = location
+    if not raw or len(raw) > MAX_BROWSER_REDIRECT_LOCATION_LENGTH:
+        raise ValueError("browser redirect location size is outside supported bounds")
+    if any(ord(character) < 33 or ord(character) > 126 for character in raw):
+        raise ValueError("browser redirect location must use visible ASCII")
+    if "#" in raw or "\\" in raw:
+        raise ValueError("browser redirect location contains a forbidden delimiter")
+
+    raw_parts = urlsplit(raw)
+    raw_path = raw_parts.path
+    if any(segment in {".", ".."} for segment in raw_path.split("/")):
+        raise ValueError("browser redirect location contains dot segments")
+    lowered = raw.lower()
+    for encoded in ("%2f", "%5c", "%2e"):
+        if encoded in lowered:
+            raise ValueError("browser redirect location contains encoded path delimiters")
+
+    absolute = urljoin(current.absolute_url, raw)
+    parsed = urlsplit(absolute)
+    if parsed.fragment:
+        raise ValueError("browser redirect location cannot contain a fragment")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("browser redirect location cannot contain user information")
+    if parsed.hostname is None:
+        raise ValueError("browser redirect location requires a host")
+
+    scheme = parsed.scheme.lower()
+    if scheme == "https":
+        mode = BrowserDestinationMode.HOSTED_HTTPS
+    elif scheme == "http":
+        mode = BrowserDestinationMode.LOOPBACK_HTTP
+    else:
+        raise ValueError("browser redirect location uses an unsupported scheme")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("browser redirect location contains an invalid port") from None
+
+    origin = BrowserOrigin(mode, parsed.hostname, port)
+    if origin not in profile.allowed_origins:
+        raise ValueError("browser redirect origin is not in the exact profile allowlist")
+    path = parsed.path or "/"
+    request_target = path if not parsed.query else f"{path}?{parsed.query}"
+
+    if current.method is BrowserRequestMethod.GET:
+        method = BrowserRequestMethod.GET
+        body_digest = None
+    elif status_code == 303:
+        method = BrowserRequestMethod.GET
+        body_digest = None
+    elif status_code in {307, 308}:
+        method = BrowserRequestMethod.POST
+        body_digest = current.body_digest
+    else:
+        raise ValueError("ambiguous POST redirect method transition is not supported")
+
+    return BrowserClickRequest(
+        origin=origin,
+        request_target=request_target,
+        method=method,
+        body_digest=body_digest,
         redirect_count=current.redirect_count + 1,
     )
 

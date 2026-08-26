@@ -41,6 +41,7 @@ def test_prepared_effect_is_content_minimized_exact_revision_data() -> None:
         "revision",
         "element_id",
         "input_digest",
+        "request",
     }
     for forbidden in (
         "url",

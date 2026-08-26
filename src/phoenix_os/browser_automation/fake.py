@@ -8,7 +8,9 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from phoenix_os.browser_automation.adapter import (
     BrowserAdapterCommitResult,
+    BrowserClickCommitResult,
     BrowserNavigationCommitResult,
+    BrowserPreparedClickRequest,
     BrowserPreparedEffect,
     BrowserPreparedEffectKind,
     BrowserPreparedNavigation,
@@ -35,7 +37,12 @@ from phoenix_os.browser_automation.errors import (
     BrowserAutomationStaleError,
     BrowserAutomationTargetNotFoundError,
 )
-from phoenix_os.browser_automation.profiles import BrowserNavigationRequest, BrowserProfile
+from phoenix_os.browser_automation.profiles import (
+    BrowserClickRequest,
+    BrowserNavigationRequest,
+    BrowserProfile,
+    derive_browser_click_redirect_request,
+)
 
 _FAKE_ELEMENT_KEY_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
 
@@ -49,6 +56,7 @@ class DeterministicBrowserElement:
     name: str = ""
     value: str | None = None
     actions: tuple[BrowserElementAction, ...] = ()
+    click_request: BrowserClickRequest | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str):
@@ -66,6 +74,11 @@ class DeterministicBrowserElement:
         object.__setattr__(self, "key", key)
         object.__setattr__(self, "kind", descriptor.kind)
         object.__setattr__(self, "name", descriptor.name)
+        if self.click_request is not None:
+            if not isinstance(self.click_request, BrowserClickRequest):
+                raise TypeError("click_request must be BrowserClickRequest or None")
+            if BrowserElementAction.CLICK not in descriptor.actions:
+                raise ValueError("click_request requires CLICK in the reviewed element actions")
         object.__setattr__(self, "value", descriptor.value)
         object.__setattr__(self, "actions", descriptor.actions)
 
@@ -95,6 +108,7 @@ class _ElementState:
     name: str
     value: str | None
     actions: tuple[BrowserElementAction, ...]
+    click_request: BrowserClickRequest | None
 
 
 @dataclass(slots=True)
@@ -113,6 +127,8 @@ class _PreparedState:
     public: BrowserPreparedEffect
     element_key: str
     fill_value: str | None
+    expected_request: BrowserClickRequest | None
+    redirect_index: int = 0
 
 
 @dataclass(slots=True)
@@ -130,6 +146,7 @@ class DeterministicBrowserAdapter:
         adapter_id: BrowserAdapterId | str = "deterministic-browser",
         initial_page: DeterministicBrowserPage | None = None,
         redirect_locations: tuple[str, ...] = (),
+        click_redirects: tuple[tuple[int, str], ...] = (),
     ) -> None:
         self._adapter_id = (
             adapter_id if isinstance(adapter_id, BrowserAdapterId) else BrowserAdapterId(adapter_id)
@@ -141,8 +158,21 @@ class DeterministicBrowserAdapter:
             raise TypeError("redirect_locations must be a tuple")
         if any(not isinstance(item, str) for item in redirect_locations):
             raise TypeError("redirect_locations must contain strings")
+        if not isinstance(click_redirects, tuple):
+            raise TypeError("click_redirects must be a tuple")
+        for item in click_redirects:
+            if (
+                not isinstance(item, tuple)
+                or len(item) != 2
+                or isinstance(item[0], bool)
+                or not isinstance(item[0], int)
+                or item[0] not in {301, 302, 303, 307, 308}
+                or not isinstance(item[1], str)
+            ):
+                raise TypeError("click_redirects must contain supported (status, location) pairs")
         self._initial_page = selected_page
         self._redirect_locations = redirect_locations
+        self._click_redirects = click_redirects
         self._sessions: dict[BrowserSessionId, _SessionState] = {}
         self._prepared: dict[UUID, _PreparedState] = {}
         self._prepared_navigation: dict[UUID, _PreparedNavigationState] = {}
@@ -198,6 +228,7 @@ class DeterministicBrowserAdapter:
                     name=item.name,
                     value=item.value,
                     actions=item.actions,
+                    click_request=item.click_request,
                 )
                 for item in self._initial_page.elements
             },
@@ -324,6 +355,7 @@ class DeterministicBrowserAdapter:
             BrowserPreparedEffectKind.CLICK,
             input_digest=None,
             fill_value=None,
+            click_request=element.click_request,
         )
 
     async def commit_navigation(
@@ -386,6 +418,69 @@ class DeterministicBrowserAdapter:
             effect_started=True,
         )
 
+    async def commit_click_request(
+        self,
+        prepared: BrowserPreparedClickRequest,
+    ) -> BrowserClickCommitResult:
+        self._ensure_open()
+        if not isinstance(prepared, BrowserPreparedClickRequest):
+            raise TypeError("prepared must be BrowserPreparedClickRequest")
+        record = self._prepared.get(prepared.token)
+        if record is None or record.public != prepared.effect:
+            raise BrowserAutomationStaleError()
+        if record.public.request is None or record.expected_request != prepared.request:
+            raise BrowserAutomationStaleError()
+        state = self._sessions.get(prepared.session_id)
+        if state is None:
+            raise BrowserAutomationStaleError()
+        page = self._page_descriptor(state)
+        if (
+            page.page_id != prepared.page_id
+            or page.revision != prepared.revision
+            or self._element_id(state, prepared.revision, record.element_key) != prepared.element_id
+        ):
+            raise BrowserAutomationStaleError()
+        if (
+            prepared.request.origin not in state.profile.allowed_origins
+            or prepared.request.redirect_count > state.profile.limits.max_redirects
+            or prepared.destination.profile_id != state.profile.profile_id
+            or prepared.destination.profile_generation != state.profile.generation
+            or prepared.destination.origin != prepared.request.origin
+        ):
+            raise BrowserAutomationStaleError()
+        if state.revision >= MAX_BROWSER_PAGE_REVISION:
+            raise BrowserAutomationAdapterError()
+
+        if record.redirect_index < len(self._click_redirects):
+            status, location = self._click_redirects[record.redirect_index]
+            try:
+                record.expected_request = derive_browser_click_redirect_request(
+                    state.profile,
+                    prepared.request,
+                    location,
+                    status,
+                )
+            except Exception:
+                raise BrowserAutomationAdapterError() from None
+            record.redirect_index += 1
+            return BrowserClickCommitResult(
+                prepared_token=prepared.token,
+                redirect_location=location,
+                redirect_status=status,
+                effect_started=True,
+            )
+
+        del self._prepared[prepared.token]
+        state.title = ""
+        state.text = ""
+        state.elements.clear()
+        state.revision += 1
+        return BrowserClickCommitResult(
+            prepared_token=prepared.token,
+            page=self._page_descriptor(state),
+            effect_started=True,
+        )
+
     async def commit_prepared(
         self,
         prepared: BrowserPreparedEffect,
@@ -393,7 +488,7 @@ class DeterministicBrowserAdapter:
         self._ensure_open()
         if not isinstance(prepared, BrowserPreparedEffect):
             raise TypeError("prepared must be BrowserPreparedEffect")
-        record = self._prepared.pop(prepared.token, None)
+        record = self._prepared.get(prepared.token)
         if record is None or record.public != prepared:
             raise BrowserAutomationStaleError()
         state = self._sessions.get(prepared.session_id)
@@ -416,9 +511,13 @@ class DeterministicBrowserAdapter:
             if record.fill_value is None:
                 raise BrowserAutomationAdapterError()
             element.value = record.fill_value
-        elif prepared.kind is not BrowserPreparedEffectKind.CLICK:
+        elif prepared.kind is BrowserPreparedEffectKind.CLICK:
+            if record.public.request is not None:
+                raise BrowserAutomationOperationDisabledError()
+        else:
             raise BrowserAutomationAdapterError()
 
+        del self._prepared[prepared.token]
         state.revision += 1
         next_page = self._page_descriptor(state)
         return BrowserAdapterCommitResult(
@@ -498,6 +597,7 @@ class DeterministicBrowserAdapter:
         *,
         input_digest: str | None,
         fill_value: str | None,
+        click_request: BrowserClickRequest | None = None,
     ) -> BrowserPreparedEffect:
         token = uuid5(
             NAMESPACE_URL,
@@ -523,11 +623,13 @@ class DeterministicBrowserAdapter:
             revision=page.revision,
             element_id=self._element_id(state, page.revision, element.key),
             input_digest=input_digest,
+            request=click_request,
         )
         self._prepared[token] = _PreparedState(
             public=public,
             element_key=element.key,
             fill_value=fill_value,
+            expected_request=click_request,
         )
         return public
 
