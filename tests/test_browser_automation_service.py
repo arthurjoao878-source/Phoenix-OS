@@ -1648,13 +1648,15 @@ def test_s6_service_surface_allows_only_controlled_click_and_navigation() -> Non
 
     assert hasattr(service, "navigate")
     assert hasattr(service, "click_element")
+    assert hasattr(service, "close")
+    assert hasattr(service, "snapshot")
+    assert hasattr(service, "_bind_runtime_lifecycle")
     for name in (
         "navigate_page",
         "click",
         "execute",
         "fetch",
         "request",
-        "_bind_runtime_lifecycle",
         "snapshot_service",
     ):
         assert not hasattr(service, name)

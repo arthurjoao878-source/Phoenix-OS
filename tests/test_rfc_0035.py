@@ -40,3 +40,28 @@ def test_rfc0035_freeze_forbids_scope_expansion_without_re_review() -> None:
     assert "exact stale-safe session/page/revision/element identity remains mandatory" in text
     assert "requires architecture" in text
     assert "re-review before code proceeds" in text
+
+
+def test_rfc0035_slice7_requires_runtime_observability_administration_hardening() -> None:
+    text = _RFC.read_text(encoding="utf-8")
+
+    assert (
+        "### S7 — Runtime lifecycle, observability, administration, and release hardening" in text
+    )
+    assert "Add optional Runtime ownership, bounded shutdown, content-free observations" in text
+    assert "separately authorized" in text
+    assert (
+        "Runtime lifecycle state controls availability only and does not grant browser authority."
+        in text
+    )
+
+
+def test_rfc0035_s7_release_hardening_is_wired_without_s8_metadata() -> None:
+    text = _RFC.read_text(encoding="utf-8")
+
+    assert "ADR-0064 through ADR-0067" in text
+    assert "python scripts/check_browser_automation_release.py" in text
+    assert "`browser.health.read`" in text
+    assert "isolated offline installed smoke behavior" in text
+    assert "S7 does not update package version" in text
+    assert "Those remain S8-only finalization work" in text

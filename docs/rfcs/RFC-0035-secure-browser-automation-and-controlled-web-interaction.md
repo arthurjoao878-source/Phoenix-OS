@@ -702,6 +702,32 @@ Add optional Runtime ownership, bounded shutdown, content-free observations, sep
 redacted health/inspection, migration guidance, ADRs, threat-model review, complete targeted tests,
 and a dedicated package/release gate.
 
+S7 implements lifecycle availability separately from security quarantine. Standalone browser services
+remain available until closed; Runtime-owned services are available only while the owning Runtime is
+`RUNNING`. Normal shutdown rejects new work, drains already admitted operations within finite
+server-owned bounds, closes ephemeral sessions, and closes owned adapter resources without closing
+borrowed policy, freshness, resolver, Event Bus, audit, or observability dependencies.
+
+Routine observations are best-effort and content-free. They are scheduled outside the protected
+final-admission-to-commit window and contain only a server-generated operation ID, finite operation
+kind/outcome, effect-start state, and bounded duration. Read-only health requires the independent
+`browser.health.read` permission and never enumerates page content, profile/session/page/element
+identity, destinations, cookies, authority objects, or policy decisions.
+
+S7 release hardening is recorded by ADR-0064 through ADR-0067, the v0.34.0-to-v0.35.0 migration
+guide, and the RFC-0035 threat-model review. The dedicated package boundary is:
+
+```text
+python scripts/check_browser_automation_release.py
+```
+
+That gate requires the exact reviewed browser module set, complete browser regressions, required
+hardening documents, safe wheel/sdist contents, matching package metadata, rebuilt-sdist validation,
+and isolated offline installed smoke behavior with no real browser or network effect.
+
+S7 does not update package version, CHANGELOG, v0.35.0 release notes, tags, publication metadata, or
+remote release state. Those remain S8-only finalization work after the S1-S7 gates are green.
+
 ### S8 — v0.35.0 release finalization
 
 Update version/release metadata only after S1-S7 pass targeted security review, global gates, package

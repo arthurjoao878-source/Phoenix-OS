@@ -339,3 +339,12 @@ class BrowserAdapter(Protocol):
     async def discard_navigation(self, prepared: BrowserPreparedNavigationPlan) -> None:
         """Discard zero-effect navigation readiness without emitting request bytes."""
         ...
+
+
+@runtime_checkable
+class BrowserAdapterLifecycle(Protocol):
+    """Optional bounded adapter-owned shutdown surface for Runtime ownership."""
+
+    async def aclose(self) -> None:
+        """Release all adapter-owned ephemeral browser state without remote effects."""
+        ...
