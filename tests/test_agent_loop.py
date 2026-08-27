@@ -749,3 +749,106 @@ async def test_final_admission_tool_reauthorizes_after_adapter_wait_boundary() -
     assert len(tool_auth.requests) == 3
     assert tool_auth.requests[0] is tool_auth.requests[1]
     assert tool_auth.requests[1] is tool_auth.requests[2]
+
+
+class _SequencedEffectTool:
+    adapter_id = "sequenced-effect"
+    tool_id = ToolId("write")
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        self.events.append("tool-start")
+        try:
+            await asyncio.sleep(0)
+            self.events.append("tool-end")
+            return ToolInvocationResult(
+                run_id=request.run_id,
+                step_id=request.step_id,
+                call_id=request.call_id,
+                tool_id=request.tool_id,
+                status=ToolResultStatus.SUCCEEDED,
+                output={"value": "written"},
+                started_at=request.created_at,
+                completed_at=request.created_at,
+            )
+        finally:
+            self.in_flight -= 1
+
+
+class _SequencingModelAuthorizer(_ModelAuthorizer):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self._events = events
+
+    async def authorize(self, request: InferenceRequest, context: SecurityContext) -> None:
+        self._events.append("model")
+        await super().authorize(request, context)
+
+
+@pytest.mark.asyncio
+async def test_effectful_tool_steps_never_overlap_and_return_to_model_between_steps() -> None:
+    events: list[str] = []
+    registry = ToolRegistry()
+    adapter = _SequencedEffectTool(events)
+    registry.register_tool(
+        _descriptor(
+            tool_id="write",
+            effect=ToolEffect.REVERSIBLE_WRITE,
+            adapter_id=adapter.adapter_id,
+        ),
+        resolver=StaticToolResourceResolver("static-resource", "record:fixed"),
+        adapter=adapter,
+    )
+    approval_service = InMemoryToolApprovalService(clock=lambda: _NOW)
+    approval_resolver = _ImmediateApprovalResolver(
+        approval_service,
+        _context("service:approver"),
+    )
+    model_authorizer = _SequencingModelAuthorizer(events)
+    loop = AgentLoop(
+        run_authorizer=_RunAuthorizer(),
+        model_authorizer=model_authorizer,
+        tool_authorizer=_ToolAuthorizer(),
+        model_adapter=DeterministicModelTurnAdapter(
+            (
+                DeterministicToolTurn(ToolId("write"), {"value": "first"}),
+                DeterministicToolTurn(ToolId("write"), {"value": "second"}),
+                DeterministicFinalTurn("complete"),
+            )
+        ),
+        registry=registry,
+        executor=BoundedAgentExecutor(clock=lambda: _NOW),
+        approval_service=approval_service,
+        approval_resolver=approval_resolver,
+        clock=lambda: _NOW,
+    )
+
+    result = await loop.run(_request(), _context())
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert result.model_turns == 3
+    assert result.tool_calls == 2
+    assert adapter.max_in_flight == 1
+    assert len(approval_resolver.challenges) == 2
+
+    starts = [index for index, event in enumerate(events) if event == "tool-start"]
+    ends = [index for index, event in enumerate(events) if event == "tool-end"]
+    assert len(starts) == len(ends) == 2
+    assert starts[0] < ends[0] < starts[1] < ends[1]
+    assert "model" in events[ends[0] + 1 : starts[1]]
+
+
+def test_loop_exposes_exact_registry_identity_for_server_composition() -> None:
+    registry = ToolRegistry()
+    loop, _run_auth, _model_auth, _tool_auth = _loop(
+        (DeterministicFinalTurn("done"),),
+        registry=registry,
+    )
+
+    assert loop.registry is registry

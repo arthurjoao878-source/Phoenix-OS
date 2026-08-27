@@ -238,6 +238,10 @@ class AgentLoop:
         self._artifact_context = artifact_context
         self._clock = clock
 
+    @property
+    def registry(self) -> ToolRegistry:
+        return self._registry
+
     async def run(
         self,
         request: AgentRunRequest,

@@ -14,8 +14,12 @@ from phoenix_os.agent import (
     AgentRunStatus,
 )
 from phoenix_os.agent.authorization import AgentRunAuthorityBinding
-from phoenix_os.agent.configuration import AgentServiceConfiguration
+from phoenix_os.agent.configuration import (
+    AgentServiceConfiguration,
+    AgentToolConfiguration,
+)
 from phoenix_os.agent.contracts import AgentRunRequest
+from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.service import AgentServiceState
 from phoenix_os.agent.state import AgentCancellationToken
 from phoenix_os.inference import ModelId, ModelProviderId
@@ -24,6 +28,7 @@ from phoenix_os.integrated_agent import (
     IntegratedAgentAdmission,
     IntegratedAgentConfigurationError,
     IntegratedAgentRuntime,
+    IntegratedAgentToolComposition,
     IntegratedDataFlowDisposition,
     IntegratedDataFlowPolicy,
     IntegratedDataFlowRoute,
@@ -35,8 +40,10 @@ from phoenix_os.integrated_agent import (
     IntegratedExecutionProfileId,
     IntegratedExecutionProfileSelection,
     IntegratedLocalTransformBinding,
+    IntegratedPlanner,
     IntegratedTaskId,
     IntegratedTaskRequest,
+    integrated_plan_update_registration,
 )
 from phoenix_os.policy import PrincipalType, SecurityContext
 from phoenix_os.runtime import RuntimeContext
@@ -222,3 +229,74 @@ def test_runtime_rejects_mismatched_agent_service_configuration() -> None:
 
     with pytest.raises(IntegratedAgentConfigurationError):
         IntegratedAgentRuntime(_RecordingAgentService(other), admission)
+
+
+class _ToolRecordingAgentService(_RecordingAgentService):
+    def __init__(
+        self,
+        configuration: AgentServiceConfiguration,
+        registry: ToolRegistry,
+    ) -> None:
+        super().__init__(configuration)
+        self._registry = registry
+
+    @property
+    def registry(self) -> ToolRegistry:
+        return self._registry
+
+
+def _tool_configuration(planner: IntegratedPlanner) -> AgentServiceConfiguration:
+    return AgentServiceConfiguration(
+        agent_id=AgentId("research-agent"),
+        provider_id=ModelProviderId("local"),
+        model_id=ModelId("chat"),
+        tools=(AgentToolConfiguration(planner.descriptor),),
+    )
+
+
+def test_runtime_requires_exact_sealed_composition_for_visible_tools() -> None:
+    profile = _profile()
+    planner = IntegratedPlanner(profile)
+    configuration = _tool_configuration(planner)
+    admission = IntegratedAgentAdmission(
+        IntegratedExecutionProfileCatalog((profile,)),
+        IntegratedExecutionProfileSelection(
+            profile_id=profile.profile_id,
+            generation=profile.generation,
+        ),
+        configuration,
+    )
+    service = _ToolRecordingAgentService(configuration, ToolRegistry())
+
+    with pytest.raises(IntegratedAgentConfigurationError):
+        IntegratedAgentRuntime(service, admission, planner=planner)
+
+
+def test_runtime_accepts_exact_reviewed_composition_and_registry() -> None:
+    profile = _profile()
+    planner = IntegratedPlanner(profile)
+    configuration = _tool_configuration(planner)
+    admission = IntegratedAgentAdmission(
+        IntegratedExecutionProfileCatalog((profile,)),
+        IntegratedExecutionProfileSelection(
+            profile_id=profile.profile_id,
+            generation=profile.generation,
+        ),
+        configuration,
+    )
+    binding = profile.require_tool_binding(INTEGRATED_PLAN_UPDATE_TOOL_ID)
+    assert isinstance(binding, IntegratedLocalTransformBinding)
+    registration = integrated_plan_update_registration(binding, planner)
+    composition = IntegratedAgentToolComposition(profile, (registration,))
+    registry = composition.build_registry()
+    service = _ToolRecordingAgentService(configuration, registry)
+
+    runtime = IntegratedAgentRuntime(
+        service,
+        admission,
+        planner=planner,
+        composition=composition,
+    )
+
+    assert runtime.composition is composition
+    assert registry.sealed is True
