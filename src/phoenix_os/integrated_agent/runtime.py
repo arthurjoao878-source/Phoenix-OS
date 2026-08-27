@@ -12,6 +12,7 @@ from phoenix_os.agent.state import AgentCancellationToken
 from phoenix_os.integrated_agent.admission import IntegratedAgentAdmission
 from phoenix_os.integrated_agent.contracts import IntegratedTaskRequest
 from phoenix_os.integrated_agent.errors import IntegratedAgentConfigurationError
+from phoenix_os.integrated_agent.planning import IntegratedPlanner
 from phoenix_os.policy import SecurityContext
 from phoenix_os.runtime import RuntimeContext
 
@@ -47,6 +48,8 @@ class IntegratedAgentRuntime:
         self,
         service: IntegratedAgentServiceDelegate,
         admission: IntegratedAgentAdmission,
+        *,
+        planner: IntegratedPlanner | None = None,
     ) -> None:
         if not isinstance(service, IntegratedAgentServiceDelegate):
             raise TypeError("service must implement IntegratedAgentServiceDelegate")
@@ -54,9 +57,25 @@ class IntegratedAgentRuntime:
             raise TypeError("admission must be IntegratedAgentAdmission")
         if service.configuration != admission.service_configuration:
             raise IntegratedAgentConfigurationError()
+        if planner is not None and not isinstance(planner, IntegratedPlanner):
+            raise TypeError("planner must be IntegratedPlanner or None")
+        if planner is not None:
+            if planner.profile != admission.profile:
+                raise IntegratedAgentConfigurationError()
+            configured_descriptor = next(
+                (
+                    descriptor
+                    for descriptor in service.configuration.descriptors
+                    if descriptor.tool_id == planner.descriptor.tool_id
+                ),
+                None,
+            )
+            if configured_descriptor != planner.descriptor:
+                raise IntegratedAgentConfigurationError()
 
         self._service = service
         self._admission = admission
+        self._planner = planner
 
     @property
     def service(self) -> IntegratedAgentServiceDelegate:
@@ -65,6 +84,10 @@ class IntegratedAgentRuntime:
     @property
     def admission(self) -> IntegratedAgentAdmission:
         return self._admission
+
+    @property
+    def planner(self) -> IntegratedPlanner | None:
+        return self._planner
 
     @property
     def state(self) -> AgentServiceState:
@@ -78,6 +101,8 @@ class IntegratedAgentRuntime:
     async def stop(self, context: RuntimeContext) -> None:
         if not isinstance(context, RuntimeContext):
             raise TypeError("context must be RuntimeContext")
+        if self._planner is not None:
+            self._planner.close()
         await self._admission.close()
         await self._service.stop(context)
 
@@ -99,7 +124,11 @@ class IntegratedAgentRuntime:
             raise TypeError("cancellation must be AgentCancellationToken")
 
         lease = await self._admission.admit(task, request)
+        planner_started = False
         try:
+            if self._planner is not None:
+                self._planner.begin_run(lease.binding)
+                planner_started = True
             return await self._service.run(
                 lease.request,
                 context,
@@ -107,4 +136,8 @@ class IntegratedAgentRuntime:
                 _authority_binding=lease.binding.authority,
             )
         finally:
-            await lease.release()
+            try:
+                if planner_started and self._planner is not None:
+                    self._planner.release_run(lease.binding.run_id)
+            finally:
+                await lease.release()

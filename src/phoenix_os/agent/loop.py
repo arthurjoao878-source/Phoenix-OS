@@ -79,6 +79,7 @@ from phoenix_os.agent.tools import (
     FinalAdmissionContextualToolAdapter,
     ToolDescriptor,
     ToolFinalAdmissionValidator,
+    ToolResourceResolutionContext,
 )
 from phoenix_os.agent.workspace_context import (
     AgentArtifactContextProvider,
@@ -450,6 +451,11 @@ class AgentLoop:
                     resolution = self._registry.admit_tool_call(
                         proposal.tool_id,
                         proposal.arguments,
+                        resolution_context=ToolResourceResolutionContext(
+                            agent_id=request.agent_id,
+                            run_id=request.run_id,
+                            step_id=turn.step_id,
+                        ),
                     )
                     _require_structured_limits(
                         resolution.arguments,

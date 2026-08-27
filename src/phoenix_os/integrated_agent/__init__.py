@@ -84,6 +84,7 @@ from phoenix_os.integrated_agent.errors import (
     IntegratedAgentStaleError,
     IntegratedAgentValidationError,
 )
+from phoenix_os.integrated_agent.planning import IntegratedPlanner
 from phoenix_os.integrated_agent.profiles import (
     INTEGRATED_PLAN_UPDATE_TOOL_ID,
     INTEGRATED_PLAN_UPDATE_TRANSFORM_ID,
@@ -168,6 +169,7 @@ __all__ = [
     "IntegratedFailureClass",
     "IntegratedLocalTransformBinding",
     "IntegratedOrchestrationPhase",
+    "IntegratedPlanner",
     "IntegratedResultAudience",
     "IntegratedTaskDigest",
     "IntegratedTaskId",
