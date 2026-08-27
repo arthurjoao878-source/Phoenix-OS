@@ -25,6 +25,7 @@ from phoenix_os.agent.tools import (
     ToolAdapter,
     ToolDescriptor,
     ToolResolution,
+    ToolResourceResolutionContext,
     ToolResourceResolver,
     resolve_server_resource,
 )
@@ -168,13 +169,24 @@ class ToolRegistry:
         self,
         tool_id: ToolId | str,
         arguments: Mapping[str, AgentJsonInput],
+        *,
+        resolution_context: ToolResourceResolutionContext | None = None,
     ) -> ToolResolution:
+        if resolution_context is not None and not isinstance(
+            resolution_context,
+            ToolResourceResolutionContext,
+        ):
+            raise TypeError("resolution_context must be ToolResourceResolutionContext or None")
         registered = self._resolve_active(tool_id)
         validated = validate_tool_input(registered.descriptor.input_schema, arguments)
         encoded = canonical_agent_json_bytes(validated)
         if len(encoded) > registered.descriptor.max_input_bytes:
             raise AgentLimitExceededError()
-        resource = resolve_server_resource(registered.resolver, validated)
+        resource = resolve_server_resource(
+            registered.resolver,
+            validated,
+            context=resolution_context,
+        )
         return ToolResolution(
             descriptor=registered.descriptor,
             arguments=validated,

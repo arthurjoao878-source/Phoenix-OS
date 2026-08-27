@@ -16,8 +16,11 @@ from phoenix_os.agent.contracts import (
     MAX_AGENT_RESOURCE_LENGTH,
     MAX_AGENT_RESULT_BYTES,
     MAX_AGENT_TOOL_CALL_TIMEOUT,
+    AgentId,
     AgentJsonValue,
     AgentMetadata,
+    AgentRunId,
+    AgentStepId,
     ToolAvailability,
     ToolEffect,
     ToolId,
@@ -241,6 +244,23 @@ class ToolResolution:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ToolResourceResolutionContext:
+    """Phoenix-owned identities available only during trusted resource resolution."""
+
+    agent_id: AgentId
+    run_id: AgentRunId
+    step_id: AgentStepId
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.agent_id, AgentId):
+            raise TypeError("agent_id must be AgentId")
+        if not isinstance(self.run_id, AgentRunId):
+            raise TypeError("run_id must be AgentRunId")
+        if not isinstance(self.step_id, AgentStepId):
+            raise TypeError("step_id must be AgentStepId")
+
+
 @runtime_checkable
 class ToolResourceResolver(Protocol):
     """Trusted resolver that derives policy resources after schema validation."""
@@ -249,6 +269,17 @@ class ToolResourceResolver(Protocol):
     def resolver_id(self) -> str: ...
 
     def resolve_resource(self, arguments: Mapping[str, AgentJsonValue]) -> str: ...
+
+
+@runtime_checkable
+class ContextualToolResourceResolver(ToolResourceResolver, Protocol):
+    """Resolver that also requires current Phoenix-owned run identities."""
+
+    def resolve_resource_with_context(
+        self,
+        arguments: Mapping[str, AgentJsonValue],
+        context: ToolResourceResolutionContext,
+    ) -> str: ...
 
 
 @runtime_checkable
@@ -314,12 +345,20 @@ class StaticToolResourceResolver:
 def resolve_server_resource(
     resolver: ToolResourceResolver,
     arguments: Mapping[str, AgentJsonValue],
+    *,
+    context: ToolResourceResolutionContext | None = None,
 ) -> str:
     """Resolve and normalize one resource without leaking resolver failures."""
 
     if not isinstance(resolver, ToolResourceResolver):
         raise TypeError("resolver must implement ToolResourceResolver")
+    if context is not None and not isinstance(context, ToolResourceResolutionContext):
+        raise TypeError("context must be ToolResourceResolutionContext or None")
     try:
+        if isinstance(resolver, ContextualToolResourceResolver):
+            if context is None:
+                raise ToolExecutionError()
+            return _normalize_resource(resolver.resolve_resource_with_context(arguments, context))
         return _normalize_resource(resolver.resolve_resource(arguments))
     except ToolExecutionError:
         raise
