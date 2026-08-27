@@ -558,6 +558,7 @@ async def test_workspace_administration_timeout_is_finite_with_suppressed_cancel
     class _SlowStore(_ScanStore):
         def __init__(self, value: WorkspaceAdministrationScan) -> None:
             super().__init__(value)
+            self.started = asyncio.Event()
             self.cancelled = asyncio.Event()
             self.release = asyncio.Event()
 
@@ -569,6 +570,7 @@ async def test_workspace_administration_timeout_is_finite_with_suppressed_cancel
         ) -> WorkspaceAdministrationScan:
             del scope, max_records
             self.calls += 1
+            self.started.set()
             try:
                 await asyncio.Future()
             except asyncio.CancelledError:
@@ -583,16 +585,18 @@ async def test_workspace_administration_timeout_is_finite_with_suppressed_cancel
         runtime=_RuntimeGate(limits=WorkspaceLimits()),
         store=store,
         authorizer=authorizer,
-        operation_timeout=timedelta(milliseconds=1),
+        operation_timeout=timedelta(milliseconds=100),
     )
 
-    with pytest.raises(AgentTimeoutError):
-        await asyncio.wait_for(
-            administration.snapshot(_scope(), _context()),
-            timeout=0.2,
-        )
+    snapshot = asyncio.create_task(
+        administration.snapshot(_scope(), _context()),
+    )
+    await asyncio.wait_for(store.started.wait(), timeout=1.0)
 
-    await asyncio.wait_for(store.cancelled.wait(), timeout=0.2)
+    with pytest.raises(AgentTimeoutError):
+        await asyncio.wait_for(snapshot, timeout=1.0)
+
+    await asyncio.wait_for(store.cancelled.wait(), timeout=1.0)
     assert authorizer.admin_calls == 1
     assert store.calls == 1
 
