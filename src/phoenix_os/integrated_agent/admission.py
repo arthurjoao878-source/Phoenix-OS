@@ -170,6 +170,8 @@ class IntegratedAgentAdmission:
         profile = _resolve_selected_profile(catalog, selection)
         if profile.agent_id != service_configuration.agent_id:
             raise IntegratedAgentConfigurationError()
+        if not frozenset(service_configuration.tool_ids).issubset(frozenset(profile.tool_ids)):
+            raise IntegratedAgentConfigurationError()
 
         self._catalog = catalog
         self._selection = selection

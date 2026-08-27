@@ -219,3 +219,28 @@ def test_registry_tool_lifecycle_is_revisioned_and_closed_world() -> None:
     assert enabled.enabled is True
     assert enabled.revision == 3
     assert registry.resolve_descriptor("lifecycle").availability is ToolAvailability.ACTIVE
+
+
+def test_registry_seal_preserves_exact_reads_and_rejects_surface_mutation() -> None:
+    registry = ToolRegistry()
+    descriptor = _descriptor("sealed")
+    adapter = _register(registry, descriptor)
+    resolver = registry.resolve_resolver("sealed")
+
+    registry.seal()
+
+    assert registry.sealed is True
+    assert registry.resolve_descriptor("sealed") == descriptor
+    assert registry.resolve_adapter("sealed") is adapter
+    assert registry.resolve_resolver("sealed") is resolver
+
+    with pytest.raises(AgentAdministrationConflictError):
+        _register(registry, _descriptor("extra"))
+
+    state = registry.describe("sealed")
+    with pytest.raises(AgentAdministrationConflictError):
+        registry.set_enabled(
+            "sealed",
+            enabled=False,
+            expected_revision=state.revision,
+        )

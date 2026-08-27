@@ -80,11 +80,16 @@ class ToolRegistry:
         self._tools: dict[ToolId, _RegisteredTool] = {}
         self._sequence = 0
         self._closed = False
+        self._sealed = False
         self._lock = RLock()
 
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def sealed(self) -> bool:
+        return self._sealed
 
     def register_tool(
         self,
@@ -94,9 +99,11 @@ class ToolRegistry:
         adapter: ToolAdapter,
     ) -> ToolRegistration:
         self._ensure_open()
+        self._ensure_mutable()
         _validate_registration(descriptor, resolver, adapter)
         with self._lock:
             self._ensure_open()
+            self._ensure_mutable()
             if descriptor.tool_id in self._tools:
                 raise ToolAlreadyRegisteredError()
             registration = ToolRegistration(id=uuid4(), tool_id=descriptor.tool_id)
@@ -115,6 +122,9 @@ class ToolRegistry:
 
     def resolve_adapter(self, tool_id: ToolId | str) -> ToolAdapter:
         return self._resolve_active(tool_id).adapter
+
+    def resolve_resolver(self, tool_id: ToolId | str) -> ToolResourceResolver:
+        return self._resolve_active(tool_id).resolver
 
     def describe(self, tool_id: ToolId | str) -> ToolLifecycleState:
         """Return reviewed descriptor and lifecycle revision even when disabled."""
@@ -149,8 +159,10 @@ class ToolRegistry:
         normalized = tool_id if isinstance(tool_id, ToolId) else ToolId(tool_id)
         _validate_lifecycle_inputs(enabled, expected_revision)
         self._ensure_open()
+        self._ensure_mutable()
         with self._lock:
             self._ensure_open()
+            self._ensure_mutable()
             registered = self._tools.get(normalized)
             if registered is None:
                 raise ToolNotFoundError()
@@ -204,6 +216,13 @@ class ToolRegistry:
                 if item.descriptor.availability is ToolAvailability.ACTIVE
             )
 
+    def seal(self) -> None:
+        # Permanently freeze registration/lifecycle mutation while preserving reads.
+        self._ensure_open()
+        with self._lock:
+            self._ensure_open()
+            self._sealed = True
+
     def close(self) -> None:
         with self._lock:
             self._tools.clear()
@@ -221,6 +240,10 @@ class ToolRegistry:
             ):
                 raise ToolNotFoundError()
             return registered
+
+    def _ensure_mutable(self) -> None:
+        if self._sealed:
+            raise AgentAdministrationConflictError()
 
     def _ensure_open(self) -> None:
         if self._closed:

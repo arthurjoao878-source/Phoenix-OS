@@ -38,6 +38,7 @@ from phoenix_os.integrated_agent import (
     IntegratedAgentAdmission,
     IntegratedAgentConfigurationError,
     IntegratedAgentRuntime,
+    IntegratedAgentToolComposition,
     IntegratedBudgetExtension,
     IntegratedDataFlowDisposition,
     IntegratedDataFlowPolicy,
@@ -53,6 +54,7 @@ from phoenix_os.integrated_agent import (
     IntegratedPlanner,
     IntegratedTaskId,
     IntegratedTaskRequest,
+    integrated_plan_update_registration,
 )
 from phoenix_os.policy import PrincipalType, SecurityContext
 from phoenix_os.runtime import RuntimeContext
@@ -419,16 +421,25 @@ async def test_plan_update_uses_existing_tool_invoke_cycle_without_new_model_out
 
 class _RecordingService:
     def __init__(
-        self, configuration: AgentServiceConfiguration, planner: IntegratedPlanner
+        self,
+        configuration: AgentServiceConfiguration,
+        planner: IntegratedPlanner,
+        *,
+        registry: ToolRegistry | None = None,
     ) -> None:
         self._configuration = configuration
         self._planner = planner
+        self._registry = ToolRegistry() if registry is None else registry
         self._state = AgentServiceState.CREATED
         self.seen_revisions: list[int | None] = []
 
     @property
     def configuration(self) -> AgentServiceConfiguration:
         return self._configuration
+
+    @property
+    def registry(self) -> ToolRegistry:
+        return self._registry
 
     @property
     def state(self) -> AgentServiceState:
@@ -469,8 +480,21 @@ async def test_runtime_owns_planner_state_only_for_active_integrated_run() -> No
     planner = IntegratedPlanner(profile)
     configuration = _configuration(planner)
     admission = _admission(profile, configuration)
-    service = _RecordingService(configuration, planner)
-    runtime = IntegratedAgentRuntime(service, admission, planner=planner)
+    binding = profile.require_tool_binding(INTEGRATED_PLAN_UPDATE_TOOL_ID)
+    assert isinstance(binding, IntegratedLocalTransformBinding)
+    registration = integrated_plan_update_registration(binding, planner)
+    composition = IntegratedAgentToolComposition(profile, (registration,))
+    service = _RecordingService(
+        configuration,
+        planner,
+        registry=composition.build_registry(),
+    )
+    runtime = IntegratedAgentRuntime(
+        service,
+        admission,
+        planner=planner,
+        composition=composition,
+    )
     request = _request()
 
     result = await runtime.run(_task(), request, _security_context())
