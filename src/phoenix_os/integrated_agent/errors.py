@@ -28,6 +28,27 @@ class IntegratedAgentError(Exception):
     code = IntegratedAgentErrorCode.INTERNAL_FAILURE
 
 
+class IntegratedAgentRejectedError(IntegratedAgentError):
+    code = IntegratedAgentErrorCode.REJECTED
+
+    def __init__(self, message: str = "integrated agent request was rejected") -> None:
+        super().__init__(message)
+
+
+class IntegratedAgentValidationError(IntegratedAgentError):
+    code = IntegratedAgentErrorCode.VALIDATION_FAILED
+
+    def __init__(self, message: str = "integrated agent request validation failed") -> None:
+        super().__init__(message)
+
+
+class IntegratedAgentStaleError(IntegratedAgentError):
+    code = IntegratedAgentErrorCode.STALE
+
+    def __init__(self, message: str = "integrated agent state is stale") -> None:
+        super().__init__(message)
+
+
 class IntegratedAgentCodecError(IntegratedAgentError):
     code = IntegratedAgentErrorCode.CODEC_INVALID
 

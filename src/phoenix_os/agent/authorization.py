@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from phoenix_os.agent.contracts import (
@@ -17,12 +18,97 @@ from phoenix_os.agent.contracts import (
 )
 from phoenix_os.agent.errors import AgentAuthorizationRejectedError
 from phoenix_os.agent.tools import ToolDescriptor
+from phoenix_os.authority.contracts import AuthorityFreshnessBinding, AuthorityIntent
 from phoenix_os.inference import InferenceAuthorizationRejectedError, InferenceRequest
 from phoenix_os.policy import PhoenixPolicyError, PolicyEngine, PolicyRequest, SecurityContext
 
 AGENT_RUN_ACTION = "agent.run"
 TOOL_INVOKE_ACTION = "tool.invoke"
 _ARGUMENT_DIGEST_PREFIX = "sha256:"
+_MAX_AGENT_RUN_AUTHORITY_ATTRIBUTES = 16
+_MAX_AGENT_RUN_AUTHORITY_ATTRIBUTE_KEY = 128
+_MAX_AGENT_RUN_AUTHORITY_ATTRIBUTE_VALUE = 2_048
+_BASE_AGENT_RUN_AUTHORITY_ATTRIBUTES = frozenset(
+    {
+        "agent_id",
+        "run_id",
+        "provider_id",
+        "model_id",
+        "authority_parameter_digest",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunAuthorityBinding:
+    """Trusted server-resolved material bound to one exact ``agent.run``."""
+
+    parameter_digest: str
+    freshness_bindings: tuple[AuthorityFreshnessBinding, ...] = ()
+    attributes: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        probe = AuthorityIntent(
+            action=AGENT_RUN_ACTION,
+            canonical_resource="agent:authority-binding",
+            parameter_digest=self.parameter_digest,
+            freshness_bindings=tuple(self.freshness_bindings),
+        )
+        object.__setattr__(self, "parameter_digest", probe.parameter_digest)
+        object.__setattr__(self, "freshness_bindings", probe.freshness_bindings)
+
+        supplied = tuple(self.attributes)
+        if len(supplied) > _MAX_AGENT_RUN_AUTHORITY_ATTRIBUTES:
+            raise ValueError("too many agent run authority attributes")
+        normalized: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for item in supplied:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise TypeError("agent run authority attributes must be key/value pairs")
+            key, value = item
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError("agent run authority attributes must contain strings")
+            normalized_key = key.strip().lower()
+            normalized_value = value.strip()
+            if (
+                not normalized_key
+                or len(normalized_key) > _MAX_AGENT_RUN_AUTHORITY_ATTRIBUTE_KEY
+                or any(
+                    character not in "abcdefghijklmnopqrstuvwxyz0123456789_.-"
+                    for character in normalized_key
+                )
+            ):
+                raise ValueError("invalid agent run authority attribute key")
+            if (
+                not normalized_value
+                or len(normalized_value) > _MAX_AGENT_RUN_AUTHORITY_ATTRIBUTE_VALUE
+            ):
+                raise ValueError("invalid agent run authority attribute value")
+            if normalized_key in _BASE_AGENT_RUN_AUTHORITY_ATTRIBUTES:
+                raise ValueError("agent run authority attribute collides with a canonical field")
+            if normalized_key in seen:
+                raise ValueError("duplicate agent run authority attribute")
+            seen.add(normalized_key)
+            normalized.append((normalized_key, normalized_value))
+        object.__setattr__(self, "attributes", tuple(sorted(normalized)))
+
+
+def normalized_agent_run_authority_intent(
+    request: AgentRunRequest,
+    binding: AgentRunAuthorityBinding,
+) -> AuthorityIntent:
+    """Return the exact normalized ``agent.run`` intent for trusted bound material."""
+
+    if not isinstance(request, AgentRunRequest):
+        raise TypeError("request must be AgentRunRequest")
+    if not isinstance(binding, AgentRunAuthorityBinding):
+        raise TypeError("binding must be AgentRunAuthorityBinding")
+    return AuthorityIntent(
+        action=AGENT_RUN_ACTION,
+        canonical_resource=agent_run_resource(request.agent_id),
+        parameter_digest=binding.parameter_digest,
+        freshness_bindings=binding.freshness_bindings,
+    )
 
 
 def agent_run_resource(agent_id: AgentId) -> str:
@@ -57,6 +143,18 @@ class AgentRunAuthorizer(Protocol):
 
 
 @runtime_checkable
+class BoundAgentRunAuthorizer(Protocol):
+    """Authorize one exact ``agent.run`` with trusted server-resolved bound material."""
+
+    async def authorize_bound(
+        self,
+        request: AgentRunRequest,
+        context: SecurityContext,
+        binding: AgentRunAuthorityBinding,
+    ) -> None: ...
+
+
+@runtime_checkable
 class AgentModelTurnAuthorizer(Protocol):
     """Authorize one RFC-0026 inference request for one model turn."""
 
@@ -84,21 +182,51 @@ class PolicyEngineAgentRunAuthorizer:
         self._policy = policy
 
     async def authorize(self, request: AgentRunRequest, context: SecurityContext) -> None:
+        await self._authorize(request, context, binding=None)
+
+    async def authorize_bound(
+        self,
+        request: AgentRunRequest,
+        context: SecurityContext,
+        binding: AgentRunAuthorityBinding,
+    ) -> None:
+        if not isinstance(binding, AgentRunAuthorityBinding):
+            raise TypeError("binding must be AgentRunAuthorityBinding")
+        await self._authorize(request, context, binding=binding)
+
+    async def _authorize(
+        self,
+        request: AgentRunRequest,
+        context: SecurityContext,
+        *,
+        binding: AgentRunAuthorityBinding | None,
+    ) -> None:
         if not isinstance(request, AgentRunRequest):
             raise TypeError("request must be AgentRunRequest")
         _require_authenticated_context(context)
+
+        attributes = {
+            "agent_id": str(request.agent_id),
+            "run_id": str(request.run_id),
+            "provider_id": str(request.provider_id),
+            "model_id": str(request.model_id),
+        }
+        action = AGENT_RUN_ACTION
+        resource = agent_run_resource(request.agent_id)
+        if binding is not None:
+            intent = normalized_agent_run_authority_intent(request, binding)
+            action = intent.action
+            resource = intent.canonical_resource
+            attributes["authority_parameter_digest"] = intent.parameter_digest
+            attributes.update(binding.attributes)
+
         try:
             await self._policy.enforce(
                 PolicyRequest(
-                    action=AGENT_RUN_ACTION,
-                    resource=agent_run_resource(request.agent_id),
+                    action=action,
+                    resource=resource,
                     context=context,
-                    attributes={
-                        "agent_id": str(request.agent_id),
-                        "run_id": str(request.run_id),
-                        "provider_id": str(request.provider_id),
-                        "model_id": str(request.model_id),
-                    },
+                    attributes=attributes,
                 )
             )
         except PhoenixPolicyError as exception:

@@ -28,6 +28,11 @@ from phoenix_os.agent import (
     tool_effect_requires_approval,
     tool_invocation_resource,
 )
+from phoenix_os.agent.authorization import (
+    AgentRunAuthorityBinding,
+    normalized_agent_run_authority_intent,
+)
+from phoenix_os.authority.contracts import AuthorityFreshnessBinding
 from phoenix_os.inference import (
     InferenceAuthorizationRejectedError,
     InferenceMessage,
@@ -367,3 +372,80 @@ async def test_unauthenticated_requests_fail_before_policy_evaluation() -> None:
         )
 
     assert (await policy.snapshot()).evaluations == 0
+
+
+@pytest.mark.asyncio
+async def test_bound_agent_run_uses_normalized_intent_and_caller_metadata_cannot_forge_it() -> None:
+    digest = "sha256:" + ("7" * 64)
+    binding = AgentRunAuthorityBinding(
+        parameter_digest=digest,
+        freshness_bindings=(
+            AuthorityFreshnessBinding(
+                kind="integrated.profile",
+                identity="integrated-research:7",
+            ),
+            AuthorityFreshnessBinding(
+                kind="integrated.task",
+                identity="task-123:" + digest,
+            ),
+        ),
+        attributes=(
+            ("integrated_task_digest", digest),
+            ("integrated_profile_id", "integrated-research"),
+            ("integrated_profile_generation", "7"),
+        ),
+    )
+    request = _run_request()
+    intent = normalized_agent_run_authority_intent(request, binding)
+
+    assert intent.action == "agent.run"
+    assert intent.canonical_resource == "agent:assistant"
+    assert intent.parameter_digest == digest
+    assert {item.kind for item in intent.freshness_bindings} == {
+        "integrated.profile",
+        "integrated.task",
+    }
+
+    policy = PolicyEngine(
+        (
+            PolicyRule(
+                rule_id="allow.bound.agent.run",
+                effect=PolicyEffect.ALLOW,
+                actions=frozenset({"agent.run"}),
+                resources=frozenset({"agent:assistant"}),
+                principals=frozenset({"service:assistant"}),
+                authenticated=True,
+                attribute_equals={
+                    "authority_parameter_digest": digest,
+                    "integrated_task_digest": digest,
+                    "integrated_profile_id": "integrated-research",
+                    "integrated_profile_generation": "7",
+                },
+            ),
+        )
+    )
+    authorizer = PolicyEngineAgentRunAuthorizer(policy)
+    await authorizer.authorize_bound(request, _context(), binding)
+
+    forged = AgentRunRequest(
+        agent_id=request.agent_id,
+        provider_id=request.provider_id,
+        model_id=request.model_id,
+        messages=request.messages,
+        limits=request.limits,
+        metadata={
+            "authority_parameter_digest": digest,
+            "integrated_task_digest": digest,
+            "integrated_profile_id": "integrated-research",
+            "integrated_profile_generation": "7",
+        },
+        run_id=request.run_id,
+        created_at=request.created_at,
+        deadline=request.deadline,
+    )
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await authorizer.authorize(forged, _context())
+
+    snapshot = await policy.snapshot()
+    assert snapshot.allowed == 1
+    assert snapshot.denied == 1

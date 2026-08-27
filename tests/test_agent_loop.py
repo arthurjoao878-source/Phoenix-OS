@@ -42,6 +42,7 @@ from phoenix_os.agent import (
 from phoenix_os.agent.admission import AgentAdmissionController
 from phoenix_os.agent.authorization import (
     AGENT_RUN_ACTION,
+    AgentRunAuthorityBinding,
     DelegatingAgentModelTurnAuthorizer,
     PolicyEngineAgentRunAuthorizer,
     agent_run_resource,
@@ -126,6 +127,21 @@ class _RunAuthorizer:
     async def authorize(self, request: AgentRunRequest, context: SecurityContext) -> None:
         assert context.authenticated
         self.requests.append(request)
+
+
+class _BoundRunAuthorizer(_RunAuthorizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bound_requests: list[tuple[AgentRunRequest, AgentRunAuthorityBinding]] = []
+
+    async def authorize_bound(
+        self,
+        request: AgentRunRequest,
+        context: SecurityContext,
+        binding: AgentRunAuthorityBinding,
+    ) -> None:
+        assert context.authenticated
+        self.bound_requests.append((request, binding))
 
 
 class _ModelAuthorizer:
@@ -216,12 +232,13 @@ def _loop(
     registry: ToolRegistry | None = None,
     approval_service: InMemoryToolApprovalService | None = None,
     approval_resolver: _ImmediateApprovalResolver | None = None,
+    run_authorizer: _RunAuthorizer | None = None,
 ) -> tuple[AgentLoop, _RunAuthorizer, _ModelAuthorizer, _ToolAuthorizer]:
-    run_authorizer = _RunAuthorizer()
+    resolved_run_authorizer = run_authorizer or _RunAuthorizer()
     model_authorizer = _ModelAuthorizer()
     tool_authorizer = _ToolAuthorizer()
     loop = AgentLoop(
-        run_authorizer=run_authorizer,
+        run_authorizer=resolved_run_authorizer,
         model_authorizer=model_authorizer,
         tool_authorizer=tool_authorizer,
         model_adapter=DeterministicModelTurnAdapter(turns),
@@ -231,7 +248,7 @@ def _loop(
         approval_resolver=approval_resolver,
         clock=lambda: _NOW,
     )
-    return loop, run_authorizer, model_authorizer, tool_authorizer
+    return loop, resolved_run_authorizer, model_authorizer, tool_authorizer
 
 
 @pytest.mark.asyncio
@@ -248,6 +265,57 @@ async def test_final_only_run_reauthorizes_fresh_admission_and_completes() -> No
     assert run_auth.requests[0] is run_auth.requests[1]
     assert len(model_auth.requests) == 2
     assert model_auth.requests[0] is model_auth.requests[1]
+    assert tool_auth.requests == []
+
+
+@pytest.mark.asyncio
+async def test_bound_run_uses_same_binding_for_initial_and_fresh_authorization() -> None:
+    bound = _BoundRunAuthorizer()
+    loop, run_auth, model_auth, tool_auth = _loop(
+        (DeterministicFinalTurn("done"),),
+        run_authorizer=bound,
+    )
+    binding = AgentRunAuthorityBinding(
+        parameter_digest="sha256:" + ("9" * 64),
+        attributes=(("integrated_profile_id", "integrated-research"),),
+    )
+    request = _request()
+
+    result = await loop.run(
+        request,
+        _context(),
+        _authority_binding=binding,
+    )
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert run_auth is bound
+    assert bound.requests == []
+    assert len(bound.bound_requests) == 2
+    assert bound.bound_requests[0][0] is request
+    assert bound.bound_requests[1][0] is request
+    assert bound.bound_requests[0][1] is binding
+    assert bound.bound_requests[1][1] is binding
+    assert len(model_auth.requests) == 2
+    assert tool_auth.requests == []
+
+
+@pytest.mark.asyncio
+async def test_bound_run_fails_closed_when_run_authorizer_has_no_bound_surface() -> None:
+    loop, run_auth, model_auth, tool_auth = _loop((DeterministicFinalTurn("not reached"),))
+    binding = AgentRunAuthorityBinding(
+        parameter_digest="sha256:" + ("8" * 64),
+    )
+
+    result = await loop.run(
+        _request(),
+        _context(),
+        _authority_binding=binding,
+    )
+
+    assert result.status is AgentRunStatus.FAILED
+    assert result.error_code == "authorization_rejected"
+    assert run_auth.requests == []
+    assert model_auth.requests == []
     assert tool_auth.requests == []
 
 

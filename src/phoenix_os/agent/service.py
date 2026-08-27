@@ -13,7 +13,11 @@ from typing import cast
 
 from phoenix_os.agent.admission import AgentAdmissionController
 from phoenix_os.agent.approval import ToolApprovalService
-from phoenix_os.agent.authorization import AGENT_RUN_ACTION, agent_run_resource
+from phoenix_os.agent.authorization import (
+    AGENT_RUN_ACTION,
+    AgentRunAuthorityBinding,
+    agent_run_resource,
+)
 from phoenix_os.agent.configuration import AgentServiceConfiguration
 from phoenix_os.agent.contracts import (
     AgentRunId,
@@ -319,6 +323,7 @@ class AgentService:
         context: SecurityContext,
         *,
         cancellation: AgentCancellationToken | None = None,
+        _authority_binding: AgentRunAuthorityBinding | None = None,
     ) -> AgentRunResult:
         if not isinstance(request, AgentRunRequest):
             raise TypeError("request must be AgentRunRequest")
@@ -327,6 +332,11 @@ class AgentService:
         token = cancellation or AgentCancellationToken()
         if not isinstance(token, AgentCancellationToken):
             raise TypeError("cancellation must be AgentCancellationToken")
+        if _authority_binding is not None and not isinstance(
+            _authority_binding,
+            AgentRunAuthorityBinding,
+        ):
+            raise TypeError("_authority_binding must be AgentRunAuthorityBinding")
 
         started_at, started_clock = await self._begin(request, context, token)
         try:
@@ -346,6 +356,7 @@ class AgentService:
                     request,
                     context,
                     cancellation=token,
+                    _authority_binding=_authority_binding,
                 )
         except asyncio.CancelledError:
             token.cancel()
