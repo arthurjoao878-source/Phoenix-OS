@@ -17,7 +17,9 @@ from phoenix_os.agent.approval import (
 )
 from phoenix_os.agent.authorization import (
     AgentModelTurnAuthorizer,
+    AgentRunAuthorityBinding,
     AgentRunAuthorizer,
+    BoundAgentRunAuthorizer,
     ToolAuthorizer,
     canonical_tool_argument_digest,
 )
@@ -241,6 +243,7 @@ class AgentLoop:
         context: SecurityContext,
         *,
         cancellation: AgentCancellationToken | None = None,
+        _authority_binding: AgentRunAuthorityBinding | None = None,
     ) -> AgentRunResult:
         """Execute one in-memory run to exactly one safe terminal result."""
 
@@ -251,6 +254,11 @@ class AgentLoop:
         token = cancellation or AgentCancellationToken()
         if not isinstance(token, AgentCancellationToken):
             raise TypeError("cancellation must be AgentCancellationToken")
+        if _authority_binding is not None and not isinstance(
+            _authority_binding,
+            AgentRunAuthorityBinding,
+        ):
+            raise TypeError("_authority_binding must be AgentRunAuthorityBinding")
         run_lease: AgentAdmissionLease | None = None
 
         state = AgentRunStateMachine(
@@ -264,7 +272,7 @@ class AgentLoop:
         try:
             token.raise_if_cancelled()
             await self._authorize_observed(
-                self._run_authorizer.authorize(request, context),
+                self._authorize_run(request, context, _authority_binding),
                 AgentOperationObservation(
                     operation=AgentOperation.RUN_AUTHORIZATION,
                     outcome=AgentOperationOutcome.SUCCEEDED,
@@ -290,7 +298,7 @@ class AgentLoop:
 
             token.raise_if_cancelled()
             try:
-                await self._authorize_fresh_run_admission(request, context)
+                await self._authorize_fresh_run_admission(request, context, _authority_binding)
             except BaseException as exception:
                 await self._observe_exception(
                     AgentOperation.RUN_AUTHORIZATION,
@@ -687,6 +695,20 @@ class AgentLoop:
             if run_lease is not None:
                 await run_lease.release()
 
+    async def _authorize_run(
+        self,
+        request: AgentRunRequest,
+        context: SecurityContext,
+        authority_binding: AgentRunAuthorityBinding | None,
+    ) -> None:
+        if authority_binding is None:
+            await self._run_authorizer.authorize(request, context)
+            return
+        authorizer = self._run_authorizer
+        if not isinstance(authorizer, BoundAgentRunAuthorizer):
+            raise AgentAuthorizationRejectedError()
+        await authorizer.authorize_bound(request, context, authority_binding)
+
     async def _validate_authority_freshness(
         self,
         context: SecurityContext,
@@ -705,9 +727,10 @@ class AgentLoop:
         self,
         request: AgentRunRequest,
         context: SecurityContext,
+        authority_binding: AgentRunAuthorityBinding | None,
     ) -> None:
         await self._validate_authority_freshness(context)
-        await self._run_authorizer.authorize(request, context)
+        await self._authorize_run(request, context, authority_binding)
 
     async def _authorize_fresh_model_admission(
         self,

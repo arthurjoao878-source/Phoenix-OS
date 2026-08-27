@@ -31,6 +31,7 @@ from phoenix_os.agent import (
     agent_run_resource,
     create_agent_runtime_stack,
 )
+from phoenix_os.agent.authorization import AgentRunAuthorityBinding
 from phoenix_os.audit import AuditLedger, AuditQuery, InMemoryAuditStore
 from phoenix_os.events import Event, EventBus
 from phoenix_os.inference import ModelId, ModelProviderId, inference_model_resource
@@ -182,6 +183,72 @@ async def test_agent_service_lifecycle_health_and_content_free_signals() -> None
     stopped = await stack.service.snapshot()
     assert stopped.state is AgentServiceState.STOPPED
     assert stopped.accepting is False
+
+
+@pytest.mark.asyncio
+async def test_agent_service_propagates_bound_agent_run_authority_to_loop() -> None:
+    configuration = _configuration()
+    parameter_digest = "sha256:" + ("6" * 64)
+    binding = AgentRunAuthorityBinding(
+        parameter_digest=parameter_digest,
+        attributes=(
+            ("integrated_profile_generation", "7"),
+            ("integrated_profile_id", "integrated-research"),
+            ("integrated_task_digest", "sha256:" + ("5" * 64)),
+        ),
+    )
+    policy = PolicyEngine(
+        (
+            PolicyRule(
+                rule_id="allow.bound.agent.run",
+                effect=PolicyEffect.ALLOW,
+                actions=frozenset({"agent.run"}),
+                resources=frozenset({agent_run_resource(configuration.agent_id)}),
+                principals=frozenset({"service:assistant"}),
+                authenticated=True,
+                attribute_equals={
+                    "authority_parameter_digest": parameter_digest,
+                    "integrated_profile_generation": "7",
+                    "integrated_profile_id": "integrated-research",
+                    "integrated_task_digest": "sha256:" + ("5" * 64),
+                },
+            ),
+            PolicyRule(
+                rule_id="allow.bound.agent.model",
+                effect=PolicyEffect.ALLOW,
+                actions=frozenset({"model.infer"}),
+                resources=frozenset(
+                    {
+                        inference_model_resource(
+                            configuration.provider_id,
+                            configuration.model_id,
+                        )
+                    }
+                ),
+                principals=frozenset({"service:assistant"}),
+                authenticated=True,
+            ),
+        )
+    )
+    stack = create_agent_runtime_stack(
+        configuration=configuration,
+        model_adapter=DeterministicModelTurnAdapter((DeterministicFinalTurn("done"),)),
+        tool_resolvers=(),
+        tool_adapters=(),
+        policy=policy,
+        events=EventBus(),
+    )
+    await stack.service.start(_runtime_context())
+
+    result = await stack.service.run(
+        _request(configuration),
+        _context(),
+        _authority_binding=binding,
+    )
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert result.final_output == "done"
+    await stack.service.stop(_runtime_context())
 
 
 @pytest.mark.asyncio

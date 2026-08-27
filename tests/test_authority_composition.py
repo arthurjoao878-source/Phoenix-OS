@@ -50,6 +50,7 @@ from phoenix_os.agent import (
     memory_record_resource,
 )
 from phoenix_os.agent.admission import AgentAdmissionController
+from phoenix_os.agent.authorization import AgentRunAuthorityBinding
 from phoenix_os.agent.configuration import AgentServiceConfiguration, AgentToolConfiguration
 from phoenix_os.agent.contracts import AgentRunId, AgentRunResult, AgentStepId
 from phoenix_os.agent.coordination import AgentDelegationCoordinator
@@ -818,10 +819,16 @@ class _RecordingChildAgentService(AgentService):
         context: SecurityContext,
         *,
         cancellation: AgentCancellationToken | None = None,
+        _authority_binding: AgentRunAuthorityBinding | None = None,
     ) -> AgentRunResult:
         self.run_requests.append(request)
         self.run_contexts.append(context)
-        return await super().run(request, context, cancellation=cancellation)
+        return await super().run(
+            request,
+            context,
+            cancellation=cancellation,
+            _authority_binding=_authority_binding,
+        )
 
 
 class _MemoryWriteCompositionAdapter:

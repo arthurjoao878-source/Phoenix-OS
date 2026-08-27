@@ -1,5 +1,12 @@
-"""Secure integrated-agent planning and configuration contracts for RFC-0036 S1."""
+"""Secure integrated-agent contracts and finite admission/runtime composition for RFC-0036."""
 
+from phoenix_os.integrated_agent.admission import (
+    IntegratedAgentAdmission,
+    IntegratedAgentAdmissionLease,
+    IntegratedAgentRunBinding,
+    IntegratedExecutionProfileSelection,
+    most_restrictive_agent_limits,
+)
 from phoenix_os.integrated_agent.codec import (
     MAX_INTEGRATED_PLAN_DOCUMENT_BYTES,
     MAX_INTEGRATED_POLICY_DOCUMENT_BYTES,
@@ -73,6 +80,9 @@ from phoenix_os.integrated_agent.errors import (
     IntegratedAgentError,
     IntegratedAgentErrorCode,
     IntegratedAgentProvenanceOverflowError,
+    IntegratedAgentRejectedError,
+    IntegratedAgentStaleError,
+    IntegratedAgentValidationError,
 )
 from phoenix_os.integrated_agent.profiles import (
     INTEGRATED_PLAN_UPDATE_TOOL_ID,
@@ -89,6 +99,10 @@ from phoenix_os.integrated_agent.profiles import (
     IntegratedLocalTransformBinding,
     IntegratedToolBinding,
     IntegratedToolBindingKind,
+)
+from phoenix_os.integrated_agent.runtime import (
+    IntegratedAgentRuntime,
+    IntegratedAgentServiceDelegate,
 )
 
 __all__ = [
@@ -118,12 +132,20 @@ __all__ = [
     "MAX_INTEGRATED_TASK_OBJECTIVE_BYTES",
     "MAX_INTEGRATED_TASK_OBJECTIVE_CHARS",
     "MAX_INTEGRATED_TOOL_BINDINGS",
+    "IntegratedAgentAdmission",
+    "IntegratedAgentAdmissionLease",
     "IntegratedAgentCodecError",
     "IntegratedAgentConfiguration",
     "IntegratedAgentConfigurationError",
     "IntegratedAgentError",
     "IntegratedAgentErrorCode",
     "IntegratedAgentProvenanceOverflowError",
+    "IntegratedAgentRejectedError",
+    "IntegratedAgentRunBinding",
+    "IntegratedAgentRuntime",
+    "IntegratedAgentServiceDelegate",
+    "IntegratedAgentStaleError",
+    "IntegratedAgentValidationError",
     "IntegratedBudgetExtension",
     "IntegratedBudgetUsage",
     "IntegratedCapabilityProfileBinding",
@@ -142,6 +164,7 @@ __all__ = [
     "IntegratedExecutionProfileCatalog",
     "IntegratedExecutionProfileGeneration",
     "IntegratedExecutionProfileId",
+    "IntegratedExecutionProfileSelection",
     "IntegratedFailureClass",
     "IntegratedLocalTransformBinding",
     "IntegratedOrchestrationPhase",
@@ -172,4 +195,5 @@ __all__ = [
     "encode_normalized_plan",
     "encode_plan_proposal",
     "integrated_agent_configuration_json",
+    "most_restrictive_agent_limits",
 ]
