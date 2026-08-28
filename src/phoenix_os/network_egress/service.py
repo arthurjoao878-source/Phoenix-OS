@@ -54,7 +54,7 @@ MAX_NETWORK_OBSERVER_RECORD_SECONDS = 0.25
 
 _T = TypeVar("_T")
 
-type NetworkEgressFinalAdmissionValidator = Callable[[], Awaitable[None]]
+type NetworkEgressFinalAdmissionValidator = Callable[[], Awaitable[object | None]]
 
 
 class NetworkEgressFailureKind(StrEnum):

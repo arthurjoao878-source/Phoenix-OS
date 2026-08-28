@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
@@ -42,9 +42,65 @@ from phoenix_os.agent.memory_contracts import (
     MemoryWriteRequest,
 )
 from phoenix_os.agent.memory_store import MemoryStore
+from phoenix_os.agent.tools import (
+    ToolFinalAdmissionContext,
+    ToolFinalAdmissionGrant,
+    ToolFinalAdmissionValidator,
+)
 from phoenix_os.policy import SecurityContext
 
 type Clock = Callable[[], datetime]
+type MemoryFinalAdmissionValidator = ToolFinalAdmissionValidator
+
+
+async def _run_memory_final_admission(
+    final_admission: MemoryFinalAdmissionValidator | None,
+    *,
+    source_provenance_attributes: tuple[Mapping[str, str], ...] = (),
+) -> ToolFinalAdmissionGrant | None:
+    if final_admission is None:
+        return None
+    if source_provenance_attributes:
+        grant = await final_admission(
+            ToolFinalAdmissionContext(
+                source_provenance_attributes=source_provenance_attributes,
+            )
+        )
+    else:
+        grant = await final_admission()
+    if grant is not None and not isinstance(grant, ToolFinalAdmissionGrant):
+        raise TypeError("final admission must return ToolFinalAdmissionGrant or None")
+    return grant
+
+
+def _memory_provenance_attributes(
+    record: MemoryRecord,
+) -> Mapping[str, str]:
+    if not isinstance(record, MemoryRecord) or record.provenance is None:
+        raise AgentCodecError("memory record provenance is unavailable")
+    return record.provenance.attributes
+
+
+def _memory_request_with_grant(
+    request: MemoryWriteRequest,
+    grant: ToolFinalAdmissionGrant | None,
+) -> MemoryWriteRequest:
+    if grant is None:
+        return request
+    if not isinstance(grant, ToolFinalAdmissionGrant):
+        raise TypeError("final admission must return ToolFinalAdmissionGrant or None")
+    if not grant.provenance_attributes:
+        return request
+
+    attributes = dict(request.provenance.attributes)
+    if set(attributes).intersection(grant.provenance_attributes):
+        raise AgentCodecError("final admission provenance attributes collide")
+    attributes.update(grant.provenance_attributes)
+    try:
+        provenance = replace(request.provenance, attributes=attributes)
+        return replace(request, provenance=provenance)
+    except (TypeError, ValueError) as exception:
+        raise AgentCodecError("final admission provenance attributes are invalid") from exception
 
 
 def _utc_now() -> datetime:
@@ -169,6 +225,8 @@ class AgentMemoryService:
         self,
         request: MemorySearchRequest,
         context: SecurityContext,
+        *,
+        final_admission: MemoryFinalAdmissionValidator | None = None,
     ) -> MemorySearchResult:
         if not isinstance(request, MemorySearchRequest):
             raise TypeError("request must be MemorySearchRequest")
@@ -221,11 +279,18 @@ class AgentMemoryService:
             if len(hits) >= max_results:
                 break
 
-        return MemorySearchResult(
+        result = MemorySearchResult(
             scope=request.scope,
             hits=tuple(hits),
             created_at=self._now(),
         )
+        await _run_memory_final_admission(
+            final_admission,
+            source_provenance_attributes=tuple(
+                _memory_provenance_attributes(hit.record) for hit in result.hits
+            ),
+        )
+        return result
 
     def assemble_context(
         self,
@@ -265,10 +330,13 @@ class AgentMemoryService:
         self,
         request: MemoryReadRequest,
         context: SecurityContext,
+        *,
+        final_admission: MemoryFinalAdmissionValidator | None = None,
     ) -> MemoryRecord | None:
         await self._authorizer.authorize_read(request, context)
         initial = await self._store.read(request)
         if initial is None:
+            await _run_memory_final_admission(final_admission)
             return None
 
         bound_request = replace(
@@ -281,22 +349,34 @@ class AgentMemoryService:
         admitted = await self._store.read(bound_request)
         if admitted is None or admitted != initial:
             raise AgentStateConflictError()
+        await _run_memory_final_admission(
+            final_admission,
+            source_provenance_attributes=(_memory_provenance_attributes(admitted),),
+        )
         return admitted
 
     async def write(
         self,
         request: MemoryWriteRequest,
         context: SecurityContext,
+        *,
+        final_admission: MemoryFinalAdmissionValidator | None = None,
     ) -> MemoryRecord:
         await self._authorizer.authorize_write(request, context)
-        return await self._store.write(request)
+        grant = None if final_admission is None else await final_admission()
+        admitted_request = _memory_request_with_grant(request, grant)
+        return await self._store.write(admitted_request)
 
     async def delete(
         self,
         request: MemoryDeleteRequest,
         context: SecurityContext,
+        *,
+        final_admission: MemoryFinalAdmissionValidator | None = None,
     ) -> None:
         await self._authorizer.authorize_delete(request, context)
+        if final_admission is not None:
+            await final_admission()
         await self._store.delete(request)
 
     def _require_search_limits(self, request: MemorySearchRequest) -> None:

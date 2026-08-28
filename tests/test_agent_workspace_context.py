@@ -645,7 +645,10 @@ class _MalformedWorkspaceService(AgentWorkspaceService):
         self,
         request: ArtifactReadRequest,
         context: SecurityContext,
+        *,
+        final_admission: object | None = None,
     ) -> ArtifactReadResult | None:
+        del final_admission
         return cast(ArtifactReadResult, object())
 
 
@@ -834,7 +837,10 @@ async def test_artifact_expiring_during_multi_item_assembly_fails_state_conflict
             self,
             request: ArtifactReadRequest,
             context: SecurityContext,
+            *,
+            final_admission: object | None = None,
         ) -> ArtifactReadResult | None:
+            del final_admission
             self._calls += 1
             if self._calls == 2:
                 clock.advance(timedelta(seconds=2))

@@ -89,6 +89,7 @@ from phoenix_os.host_automation import (
     host_window_focus_tool_resolver,
     host_window_resource,
 )
+from phoenix_os.host_automation.service import HostFinalAdmissionValidator
 from phoenix_os.policy import (
     PolicyEffect,
     PolicyEngine,
@@ -236,16 +237,34 @@ class _MismatchedControlResultService(HostAutomationService):
         self,
         request: HostApplicationLaunchRequest,
         context: SecurityContext,
+        *,
+        final_admission: HostFinalAdmissionValidator | None = None,
     ) -> HostApplicationLaunchResult:
-        result = await super().launch_application(request, context)
+        if final_admission is None:
+            result = await super().launch_application(request, context)
+        else:
+            result = await super().launch_application(
+                request,
+                context,
+                final_admission=final_admission,
+            )
         return replace(result, request_id=uuid4())
 
     async def focus_window(
         self,
         request: HostWindowFocusRequest,
         context: SecurityContext,
+        *,
+        final_admission: HostFinalAdmissionValidator | None = None,
     ) -> HostWindowFocusResult:
-        result = await super().focus_window(request, context)
+        if final_admission is None:
+            result = await super().focus_window(request, context)
+        else:
+            result = await super().focus_window(
+                request,
+                context,
+                final_admission=final_admission,
+            )
         return replace(result, request_id=uuid4())
 
     async def close_application(
@@ -254,8 +273,21 @@ class _MismatchedControlResultService(HostAutomationService):
         context: SecurityContext,
         *,
         approval: HostAutomationApprovalEvidence | None = None,
+        final_admission: HostFinalAdmissionValidator | None = None,
     ) -> HostApplicationCloseResult:
-        result = await super().close_application(request, context, approval=approval)
+        if final_admission is None:
+            result = await super().close_application(
+                request,
+                context,
+                approval=approval,
+            )
+        else:
+            result = await super().close_application(
+                request,
+                context,
+                approval=approval,
+                final_admission=final_admission,
+            )
         return replace(result, request_id=uuid4())
 
     async def read_clipboard(
@@ -270,8 +302,17 @@ class _MismatchedControlResultService(HostAutomationService):
         self,
         request: HostClipboardWriteRequest,
         context: SecurityContext,
+        *,
+        final_admission: HostFinalAdmissionValidator | None = None,
     ) -> HostClipboardWriteResult:
-        result = await super().write_clipboard(request, context)
+        if final_admission is None:
+            result = await super().write_clipboard(request, context)
+        else:
+            result = await super().write_clipboard(
+                request,
+                context,
+                final_admission=final_admission,
+            )
         return replace(result, request_id=uuid4())
 
 
@@ -282,9 +323,18 @@ class _IndeterminateLaunchService(HostAutomationService):
         self,
         request: HostApplicationLaunchRequest,
         context: SecurityContext,
+        *,
+        final_admission: HostFinalAdmissionValidator | None = None,
     ) -> HostApplicationLaunchResult:
         self.launch_calls += 1
-        await super().launch_application(request, context)
+        if final_admission is None:
+            await super().launch_application(request, context)
+        else:
+            await super().launch_application(
+                request,
+                context,
+                final_admission=final_admission,
+            )
         raise HostAutomationIndeterminateEffectError()
 
 

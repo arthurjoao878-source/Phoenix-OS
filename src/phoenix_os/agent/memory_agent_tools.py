@@ -61,6 +61,7 @@ from phoenix_os.agent.schemas import (
 )
 from phoenix_os.agent.tools import (
     ToolDescriptor,
+    ToolFinalAdmissionValidator,
     ToolResourceResolutionContext,
 )
 from phoenix_os.policy import SecurityContext
@@ -229,19 +230,66 @@ class MemoryToolAdapter:
         request: ToolInvocationRequest,
         context: SecurityContext,
     ) -> ToolInvocationResult:
+        return await self._invoke_with_context(
+            request,
+            context,
+            final_admission=None,
+        )
+
+    async def invoke_with_context_and_final_admission(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+        final_admission: ToolFinalAdmissionValidator,
+    ) -> ToolInvocationResult:
+        if not callable(final_admission):
+            raise TypeError("final_admission must be callable")
+        return await self._invoke_with_context(
+            request,
+            context,
+            final_admission=final_admission,
+        )
+
+    async def _invoke_with_context(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
+    ) -> ToolInvocationResult:
         if not isinstance(request, ToolInvocationRequest):
             raise TypeError("request must be ToolInvocationRequest")
         if not isinstance(context, SecurityContext):
             raise TypeError("context must be SecurityContext")
         scope = self._validated_scope(request, context)
         if self._binding.action == MEMORY_SEARCH_ACTION:
-            output = await self._search(request, scope, context)
+            output = await self._search(
+                request,
+                scope,
+                context,
+                final_admission=final_admission,
+            )
         elif self._binding.action == MEMORY_READ_ACTION:
-            output = await self._read(request, scope, context)
+            output = await self._read(
+                request,
+                scope,
+                context,
+                final_admission=final_admission,
+            )
         elif self._binding.action == MEMORY_WRITE_ACTION:
-            output = await self._write(request, scope, context)
+            output = await self._write(
+                request,
+                scope,
+                context,
+                final_admission=final_admission,
+            )
         elif self._binding.action == MEMORY_DELETE_ACTION:
-            output = await self._delete(request, scope, context)
+            output = await self._delete(
+                request,
+                scope,
+                context,
+                final_admission=final_admission,
+            )
         else:
             raise ToolExecutionError()
         return _success(request, output)
@@ -271,6 +319,8 @@ class MemoryToolAdapter:
         request: ToolInvocationRequest,
         scope: MemoryScope,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
     ) -> Mapping[str, AgentJsonInput]:
         query = _required_text(request.arguments, "query")
         if len(query.encode("utf-8")) > self._service.limits.max_query_bytes:
@@ -295,16 +345,21 @@ class MemoryToolAdapter:
             or max_bytes > MAX_MEMORY_AGENT_TOOL_SEARCH_BYTES
         ):
             raise ToolExecutionError()
-        result = await self._service.search(
-            MemorySearchRequest(
-                scope=scope,
-                query=query,
-                max_results=max_results,
-                max_bytes=max_bytes,
-                created_at=request.created_at,
-            ),
-            context,
+        search_request = MemorySearchRequest(
+            scope=scope,
+            query=query,
+            max_results=max_results,
+            max_bytes=max_bytes,
+            created_at=request.created_at,
         )
+        if final_admission is None:
+            result = await self._service.search(search_request, context)
+        else:
+            result = await self._service.search(
+                search_request,
+                context,
+                final_admission=final_admission,
+            )
         if result.scope != scope:
             raise ToolExecutionError()
         return {"records": [_record_output(hit.record) for hit in result.hits]}
@@ -314,19 +369,26 @@ class MemoryToolAdapter:
         request: ToolInvocationRequest,
         scope: MemoryScope,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
     ) -> Mapping[str, AgentJsonInput]:
         memory_id = _memory_id_argument(request.arguments)
         expected_version, expected_incarnation = _optional_record_binding(request.arguments)
-        record = await self._service.read(
-            MemoryReadRequest(
-                scope=scope,
-                memory_id=memory_id,
-                expected_version=expected_version,
-                expected_incarnation=expected_incarnation,
-                created_at=request.created_at,
-            ),
-            context,
+        read_request = MemoryReadRequest(
+            scope=scope,
+            memory_id=memory_id,
+            expected_version=expected_version,
+            expected_incarnation=expected_incarnation,
+            created_at=request.created_at,
         )
+        if final_admission is None:
+            record = await self._service.read(read_request, context)
+        else:
+            record = await self._service.read(
+                read_request,
+                context,
+                final_admission=final_admission,
+            )
         if record is None:
             return {"found": False}
         if record.scope != scope or record.memory_id != memory_id:
@@ -338,6 +400,8 @@ class MemoryToolAdapter:
         request: ToolInvocationRequest,
         scope: MemoryScope,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
     ) -> Mapping[str, AgentJsonInput]:
         memory_id = _memory_id_argument(request.arguments)
         content = _required_text(request.arguments, "content")
@@ -348,28 +412,33 @@ class MemoryToolAdapter:
             raise ToolExecutionError()
         expected_version, expected_incarnation = _optional_record_binding(request.arguments)
         digest = memory_content_digest(content)
-        record = await self._service.write(
-            MemoryWriteRequest(
-                scope=scope,
-                memory_id=memory_id,
-                content=content,
-                provenance=MemoryProvenance(
-                    origin=MemoryOriginKind.AGENT_REQUEST,
-                    content_digest=digest,
-                    source_run_id=request.run_id,
-                    source_agent_id=request.agent_id,
-                    source_principal_id=(
-                        scope.scope_id if scope.kind is MemoryScopeKind.PRINCIPAL else None
-                    ),
-                    attributes={"tool_id": str(request.tool_id)},
-                    created_at=request.created_at,
+        write_request = MemoryWriteRequest(
+            scope=scope,
+            memory_id=memory_id,
+            content=content,
+            provenance=MemoryProvenance(
+                origin=MemoryOriginKind.AGENT_REQUEST,
+                content_digest=digest,
+                source_run_id=request.run_id,
+                source_agent_id=request.agent_id,
+                source_principal_id=(
+                    scope.scope_id if scope.kind is MemoryScopeKind.PRINCIPAL else None
                 ),
-                expected_version=expected_version,
-                expected_incarnation=expected_incarnation,
+                attributes={"tool_id": str(request.tool_id)},
                 created_at=request.created_at,
             ),
-            context,
+            expected_version=expected_version,
+            expected_incarnation=expected_incarnation,
+            created_at=request.created_at,
         )
+        if final_admission is None:
+            record = await self._service.write(write_request, context)
+        else:
+            record = await self._service.write(
+                write_request,
+                context,
+                final_admission=final_admission,
+            )
         if (
             record.scope != scope
             or record.memory_id != memory_id
@@ -384,20 +453,27 @@ class MemoryToolAdapter:
         request: ToolInvocationRequest,
         scope: MemoryScope,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
     ) -> Mapping[str, AgentJsonInput]:
         memory_id = _memory_id_argument(request.arguments)
         version = _required_positive_int(request.arguments, "expected_version")
         incarnation = _required_uuid(request.arguments, "expected_incarnation")
-        await self._service.delete(
-            MemoryDeleteRequest(
-                scope=scope,
-                memory_id=memory_id,
-                expected_version=MemoryRecordVersion(version),
-                expected_incarnation=MemoryRecordIncarnation(incarnation),
-                created_at=request.created_at,
-            ),
-            context,
+        delete_request = MemoryDeleteRequest(
+            scope=scope,
+            memory_id=memory_id,
+            expected_version=MemoryRecordVersion(version),
+            expected_incarnation=MemoryRecordIncarnation(incarnation),
+            created_at=request.created_at,
         )
+        if final_admission is None:
+            await self._service.delete(delete_request, context)
+        else:
+            await self._service.delete(
+                delete_request,
+                context,
+                final_admission=final_admission,
+            )
         return {"deleted": True}
 
 

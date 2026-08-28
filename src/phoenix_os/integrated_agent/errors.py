@@ -68,3 +68,38 @@ class IntegratedAgentProvenanceOverflowError(IntegratedAgentError):
 
     def __init__(self) -> None:
         super().__init__("integrated agent provenance exceeds configured bounds")
+
+
+class IntegratedAgentDataFlowDeniedError(IntegratedAgentError):
+    code = IntegratedAgentErrorCode.DATA_FLOW_DENIED
+
+    def __init__(self) -> None:
+        super().__init__("integrated agent data flow was denied")
+
+
+class IntegratedAgentBudgetExhaustedError(IntegratedAgentError):
+    code = IntegratedAgentErrorCode.LIMIT_EXCEEDED
+
+    def __init__(self) -> None:
+        super().__init__("integrated agent budget is exhausted")
+
+
+class IntegratedAgentDeadlineExceededError(IntegratedAgentError):
+    code = IntegratedAgentErrorCode.TIMEOUT
+
+    def __init__(self) -> None:
+        super().__init__("integrated agent deadline was exceeded")
+
+
+class IntegratedAgentCancelledError(IntegratedAgentError):
+    code = IntegratedAgentErrorCode.CANCELLED
+
+    def __init__(self) -> None:
+        super().__init__("integrated agent execution was cancelled")
+
+
+class IntegratedAgentIndeterminateEffectError(IntegratedAgentError):
+    code = IntegratedAgentErrorCode.INDETERMINATE_EFFECT
+
+    def __init__(self) -> None:
+        super().__init__("integrated agent effect is indeterminate")

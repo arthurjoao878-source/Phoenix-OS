@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from phoenix_os.agent.contracts import (
@@ -24,7 +25,11 @@ from phoenix_os.agent.schemas import (
     ToolSchema,
     ToolSchemaType,
 )
-from phoenix_os.agent.tools import StaticToolResourceResolver, ToolDescriptor
+from phoenix_os.agent.tools import (
+    StaticToolResourceResolver,
+    ToolDescriptor,
+    ToolFinalAdmissionValidator,
+)
 from phoenix_os.host_automation.authorization import (
     HOST_APPLICATION_CLOSE_ACTION,
     HOST_APPLICATION_LAUNCH_ACTION,
@@ -81,6 +86,14 @@ MAX_HOST_CLIPBOARD_TOOL_INPUT_BYTES = MAX_AGENT_ARGUMENT_BYTES
 MAX_HOST_CONTROL_TOOL_OUTPUT_BYTES = MAX_AGENT_RESULT_BYTES
 
 _UUID_TEXT_LENGTH = 36
+
+
+@runtime_checkable
+class HostEpochBoundToolAdapter(Protocol):
+    # Reviewed host tool exposing current epoch only as control metadata.
+
+    @property
+    def host_epoch(self) -> HostEpoch: ...
 
 
 def host_application_launch_tool_descriptor(limits: HostAutomationLimits) -> ToolDescriptor:
@@ -322,6 +335,8 @@ class HostApplicationLaunchToolAdapter(_ContextRequiredHostToolAdapter):
         self,
         request: ToolInvocationRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ToolInvocationResult:
         _require_context(context)
         _require_tool_request(request, self.tool_id)
@@ -332,10 +347,29 @@ class HostApplicationLaunchToolAdapter(_ContextRequiredHostToolAdapter):
             host_id=self._host_id,
             application_id=application_id,
         )
-        result = await self._service.launch_application(host_request, context)
+        if final_admission is None:
+            result = await self._service.launch_application(host_request, context)
+        else:
+            result = await self._service.launch_application(
+                host_request,
+                context,
+                final_admission=final_admission,
+            )
         return _successful_result(
             request,
             _launch_output(result, request=host_request),
+        )
+
+    async def invoke_with_context_and_final_admission(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+        final_admission: ToolFinalAdmissionValidator,
+    ) -> ToolInvocationResult:
+        return await self.invoke_with_context(
+            request,
+            context,
+            final_admission=final_admission,
         )
 
 
@@ -363,6 +397,8 @@ class HostWindowFocusToolAdapter(_ContextRequiredHostToolAdapter):
         self,
         request: ToolInvocationRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ToolInvocationResult:
         _require_context(context)
         _require_tool_request(request, self.tool_id)
@@ -379,10 +415,29 @@ class HostWindowFocusToolAdapter(_ContextRequiredHostToolAdapter):
             process_id=process_id,
             application_id=application_id,
         )
-        result = await self._service.focus_window(host_request, context)
+        if final_admission is None:
+            result = await self._service.focus_window(host_request, context)
+        else:
+            result = await self._service.focus_window(
+                host_request,
+                context,
+                final_admission=final_admission,
+            )
         return _successful_result(
             request,
             _focus_output(result, request=host_request),
+        )
+
+    async def invoke_with_context_and_final_admission(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+        final_admission: ToolFinalAdmissionValidator,
+    ) -> ToolInvocationResult:
+        return await self.invoke_with_context(
+            request,
+            context,
+            final_admission=final_admission,
         )
 
 
@@ -410,6 +465,8 @@ class HostApplicationCloseToolAdapter(_ContextRequiredHostToolAdapter):
         self,
         request: ToolInvocationRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ToolInvocationResult:
         _require_context(context)
         _require_tool_request(request, self.tool_id)
@@ -425,10 +482,29 @@ class HostApplicationCloseToolAdapter(_ContextRequiredHostToolAdapter):
             application_id=application_id,
             process_id=process_id,
         )
-        result = await self._service.close_application(host_request, context)
+        if final_admission is None:
+            result = await self._service.close_application(host_request, context)
+        else:
+            result = await self._service.close_application(
+                host_request,
+                context,
+                final_admission=final_admission,
+            )
         return _successful_result(
             request,
             _close_output(result, request=host_request),
+        )
+
+    async def invoke_with_context_and_final_admission(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+        final_admission: ToolFinalAdmissionValidator,
+    ) -> ToolInvocationResult:
+        return await self.invoke_with_context(
+            request,
+            context,
+            final_admission=final_admission,
         )
 
 
@@ -451,20 +527,45 @@ class HostClipboardWriteToolAdapter(_ContextRequiredHostToolAdapter):
         self._limits = limits
         self._resource = host_clipboard_resource(host_id)
 
+    @property
+    def host_epoch(self) -> HostEpoch:
+        return self._service.host_epoch
+
     async def invoke_with_context(
         self,
         request: ToolInvocationRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ToolInvocationResult:
         _require_context(context)
         _require_tool_request(request, self.tool_id)
         _require_resolved_resource(request, self._resource)
         text = _clipboard_write_arguments(request.arguments, self._limits)
         host_request = HostClipboardWriteRequest(host_id=self._host_id, text=text)
-        result = await self._service.write_clipboard(host_request, context)
+        if final_admission is None:
+            result = await self._service.write_clipboard(host_request, context)
+        else:
+            result = await self._service.write_clipboard(
+                host_request,
+                context,
+                final_admission=final_admission,
+            )
         return _successful_result(
             request,
             _clipboard_write_output(result, request=host_request, limits=self._limits),
+        )
+
+    async def invoke_with_context_and_final_admission(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+        final_admission: ToolFinalAdmissionValidator,
+    ) -> ToolInvocationResult:
+        return await self.invoke_with_context(
+            request,
+            context,
+            final_admission=final_admission,
         )
 
 
@@ -486,6 +587,10 @@ class HostClipboardReadToolAdapter(_ContextRequiredHostToolAdapter):
         self._host_id = host_id
         self._limits = limits
         self._resource = host_clipboard_resource(host_id)
+
+    @property
+    def host_epoch(self) -> HostEpoch:
+        return self._service.host_epoch
 
     async def invoke_with_context(
         self,

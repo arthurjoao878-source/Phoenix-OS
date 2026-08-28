@@ -230,6 +230,7 @@ class BrowserToolAdapter:
             raise TypeError("context must be SecurityContext")
         if not callable(final_admission):
             raise TypeError("final_admission must be callable")
+
         if (
             request.tool_id != self.tool_id
             or request.agent_id != self._binding.agent_id

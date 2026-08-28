@@ -90,7 +90,7 @@ from phoenix_os.policy import PrincipalType, SecurityContext
 _T = TypeVar("_T")
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
-BrowserFinalAdmissionValidator = Callable[[], Awaitable[None]]
+BrowserFinalAdmissionValidator = Callable[[], Awaitable[object | None]]
 
 _CANCELLATION_GRACE_SECONDS = 0.05
 _CLEANUP_CAP_SECONDS = 1.0
@@ -2248,7 +2248,7 @@ class BrowserAutomationService:
             return
         try:
             result = await self._await_pre_effect(
-                cast(Awaitable[object], final_admission()),
+                final_admission(),
                 cancellation=cancellation,
                 deadline=deadline,
             )

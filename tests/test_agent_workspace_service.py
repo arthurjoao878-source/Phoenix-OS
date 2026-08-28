@@ -47,6 +47,7 @@ from phoenix_os.agent import (
     principal_workspace_scope,
     workspace_scope_resource,
 )
+from phoenix_os.agent.tools import ToolFinalAdmissionContext
 from phoenix_os.policy import (
     PolicyEffect,
     PolicyEngine,
@@ -1087,3 +1088,178 @@ async def test_unavailable_adapter_and_closed_service_fail_closed() -> None:
     )
     with pytest.raises(AgentServiceUnavailableError):
         await no_adapter.import_artifact(_import_request(), _context())
+
+
+@pytest.mark.asyncio
+async def test_workspace_write_final_admission_receives_exact_mutation_bytes_pre_commit() -> None:
+    service, store, _adapter, authorizer = _service(allowed={"write"})
+    request = _direct_write(b"1234567")
+    seen: list[ToolFinalAdmissionContext | None] = []
+
+    async def final_admission(
+        details: ToolFinalAdmissionContext | None = None,
+    ) -> None:
+        assert authorizer.calls == ["write"]
+        assert store.write_calls == 0
+        seen.append(details)
+
+    record = await service.write(
+        request,
+        _context(),
+        final_admission=final_admission,
+    )
+
+    assert record.byte_length == 7
+    assert store.write_calls == 1
+    assert seen == [ToolFinalAdmissionContext(mutation_bytes=7)]
+
+
+@pytest.mark.asyncio
+async def test_workspace_import_revalidates_before_transfer_and_exact_mutation() -> None:
+    service, store, adapter, authorizer = _service(allowed={"import"})
+    seen: list[ToolFinalAdmissionContext | None] = []
+
+    async def final_admission(
+        details: ToolFinalAdmissionContext | None = None,
+    ) -> None:
+        if not seen:
+            assert authorizer.calls == ["import"]
+            assert adapter.import_calls == []
+            assert store.write_calls == 0
+            assert details is None
+        else:
+            assert authorizer.calls == ["import", "import"]
+            assert len(adapter.import_calls) == 1
+            assert store.write_calls == 0
+            assert details == ToolFinalAdmissionContext(mutation_bytes=len(b"imported bytes"))
+        seen.append(details)
+
+    receipt = await service.import_artifact(
+        _import_request(),
+        _context(),
+        final_admission=final_admission,
+    )
+
+    assert receipt.byte_length == len(b"imported bytes")
+    assert store.write_calls == 1
+    assert seen == [
+        None,
+        ToolFinalAdmissionContext(mutation_bytes=len(b"imported bytes")),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_workspace_write_persists_final_admission_lineage_attributes() -> None:
+    from phoenix_os.agent.tools import ToolFinalAdmissionGrant
+
+    service, store, _adapter, _authorizer = _service(allowed={"write"})
+    request = _direct_write(b"persisted lineage")
+
+    async def final_admission(
+        details: ToolFinalAdmissionContext | None = None,
+    ) -> ToolFinalAdmissionGrant:
+        assert details == ToolFinalAdmissionContext(mutation_bytes=len(request.content))
+        return ToolFinalAdmissionGrant(
+            provenance_attributes={
+                "rfc0036.provenance.00": "opaque-lineage",
+            }
+        )
+
+    record = await service.write(
+        request,
+        _context(),
+        final_admission=final_admission,
+    )
+
+    assert store.write_calls == 1
+    assert record.provenance is not None
+    assert record.provenance.attributes["rfc0036.provenance.00"] == "opaque-lineage"
+
+
+@pytest.mark.asyncio
+async def test_workspace_read_reports_persisted_lineage_at_final_admission() -> None:
+    from phoenix_os.agent.tools import (
+        ToolFinalAdmissionGrant,
+    )
+
+    service, _store, _adapter, _authorizer = _service(allowed={"write", "read"})
+    request = _direct_write(b"workspace persisted lineage")
+
+    async def write_admission(
+        details: ToolFinalAdmissionContext | None = None,
+    ) -> ToolFinalAdmissionGrant:
+        assert details is not None
+        return ToolFinalAdmissionGrant(
+            provenance_attributes={
+                "rfc0036.provenance.00": "opaque-lineage",
+            }
+        )
+
+    written = await service.write(
+        request,
+        _context(),
+        final_admission=write_admission,
+    )
+    assert written.provenance is not None
+
+    captured: ToolFinalAdmissionContext | None = None
+
+    async def read_admission(
+        details: ToolFinalAdmissionContext | None = None,
+    ) -> None:
+        nonlocal captured
+        captured = details
+
+    loaded = await service.read(
+        ArtifactReadRequest(
+            scope=written.scope,
+            artifact_id=written.artifact_id,
+            expected_version=written.version,
+            created_at=_NOW,
+        ),
+        _context(),
+        final_admission=read_admission,
+    )
+
+    assert loaded is not None
+    assert captured is not None
+    assert captured.source_provenance_attributes == (written.provenance.attributes,)
+
+
+@pytest.mark.asyncio
+async def test_workspace_export_final_admission_binds_exact_source_before_adapter() -> None:
+    from dataclasses import replace as dataclass_replace
+
+    service, _store, adapter, _authorizer = _service(allowed={"write", "export"})
+    request = _direct_write(b"reviewed persisted export")
+    request = dataclass_replace(
+        request,
+        provenance=dataclass_replace(
+            request.provenance,
+            attributes={"hidden-control": "lineage"},
+        ),
+    )
+    written = await service.write(request, _context())
+    assert written.provenance is not None
+
+    captured: ToolFinalAdmissionContext | None = None
+
+    async def deny_final_admission(
+        details: ToolFinalAdmissionContext | None = None,
+    ) -> None:
+        nonlocal captured
+        captured = details
+        raise AgentAuthorizationRejectedError()
+
+    with pytest.raises(AgentAuthorizationRejectedError):
+        await service.export_artifact(
+            _export_request(written.version),
+            _context(),
+            final_admission=deny_final_admission,
+        )
+
+    assert adapter.export_calls == []
+    assert captured is not None
+    assert captured.source_provenance_attributes == (written.provenance.attributes,)
+    assert captured.source_record_version == written.version.value
+    assert captured.source_content_digest == str(written.content_digest)

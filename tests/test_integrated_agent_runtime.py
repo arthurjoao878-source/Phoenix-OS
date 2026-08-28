@@ -27,6 +27,7 @@ from phoenix_os.integrated_agent import (
     INTEGRATED_PLAN_UPDATE_TOOL_ID,
     IntegratedAgentAdmission,
     IntegratedAgentConfigurationError,
+    IntegratedAgentExecutionGuard,
     IntegratedAgentRuntime,
     IntegratedAgentToolComposition,
     IntegratedDataFlowDisposition,
@@ -300,3 +301,26 @@ def test_runtime_accepts_exact_reviewed_composition_and_registry() -> None:
 
     assert runtime.composition is composition
     assert registry.sealed is True
+
+
+def test_runtime_rejects_planner_not_bound_to_execution_guard_provenance() -> None:
+    profile = _profile()
+    guard = IntegratedAgentExecutionGuard(profile)
+    planner = IntegratedPlanner(profile)
+    configuration = _configuration()
+    admission = IntegratedAgentAdmission(
+        IntegratedExecutionProfileCatalog((profile,)),
+        IntegratedExecutionProfileSelection(
+            profile_id=profile.profile_id,
+            generation=profile.generation,
+        ),
+        configuration,
+    )
+
+    with pytest.raises(IntegratedAgentConfigurationError):
+        IntegratedAgentRuntime(
+            _RecordingAgentService(configuration),
+            admission,
+            planner=planner,
+            execution_guard=guard,
+        )
