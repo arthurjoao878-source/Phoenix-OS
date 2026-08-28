@@ -55,6 +55,7 @@ from phoenix_os.host_automation.observer import (
 from phoenix_os.policy import SecurityContext
 
 _T = TypeVar("_T")
+type HostFinalAdmissionValidator = Callable[..., Awaitable[object | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +158,10 @@ class HostAutomationService:
     def host_id(self) -> HostId:
         return self._adapter.host_id
 
+    @property
+    def host_epoch(self) -> HostEpoch:
+        return self._adapter.host_epoch
+
     async def snapshot(self) -> HostAutomationServiceSnapshot:
         """Return content-free health without probing desktop state."""
 
@@ -241,6 +246,8 @@ class HostAutomationService:
         self,
         request: HostApplicationLaunchRequest,
         context: SecurityContext,
+        *,
+        final_admission: HostFinalAdmissionValidator | None = None,
     ) -> HostApplicationLaunchResult:
         started = self._started_observation(
             HostAutomationOperation.APPLICATION_LAUNCH,
@@ -252,6 +259,8 @@ class HostAutomationService:
             async with self._operation_scope():
                 await self._authorizer.authorize_application_launch(request, context)
                 self._ensure_open()
+                if final_admission is not None:
+                    await final_admission()
                 result = await self._call_effectful_adapter(
                     self._adapter.launch_application(request)
                 )
@@ -275,6 +284,8 @@ class HostAutomationService:
         self,
         request: HostWindowFocusRequest,
         context: SecurityContext,
+        *,
+        final_admission: HostFinalAdmissionValidator | None = None,
     ) -> HostWindowFocusResult:
         started = self._started_observation(
             HostAutomationOperation.WINDOW_FOCUS,
@@ -286,6 +297,8 @@ class HostAutomationService:
             async with self._operation_scope():
                 await self._authorizer.authorize_window_focus(request, context)
                 self._ensure_open()
+                if final_admission is not None:
+                    await final_admission()
                 result = await self._call_effectful_adapter(self._adapter.focus_window(request))
         except Exception as exception:
             await self._record(
@@ -321,6 +334,7 @@ class HostAutomationService:
         context: SecurityContext,
         *,
         approval: HostAutomationApprovalEvidence | None = None,
+        final_admission: HostFinalAdmissionValidator | None = None,
     ) -> HostApplicationCloseResult:
         started = self._started_observation(
             HostAutomationOperation.APPLICATION_CLOSE,
@@ -344,6 +358,8 @@ class HostAutomationService:
                     )
 
                 self._ensure_open()
+                if final_admission is not None:
+                    await final_admission()
                 result = await self._call_effectful_adapter(
                     self._adapter.close_application(request)
                 )
@@ -399,6 +415,8 @@ class HostAutomationService:
         self,
         request: HostClipboardWriteRequest,
         context: SecurityContext,
+        *,
+        final_admission: HostFinalAdmissionValidator | None = None,
     ) -> HostClipboardWriteResult:
         started = self._started_observation(
             HostAutomationOperation.CLIPBOARD_WRITE,
@@ -410,6 +428,8 @@ class HostAutomationService:
             async with self._operation_scope():
                 await self._authorizer.authorize_clipboard_write(request, context)
                 self._ensure_open()
+                if final_admission is not None:
+                    await final_admission()
                 result = await self._call_effectful_adapter(self._adapter.write_clipboard(request))
         except Exception as exception:
             await self._record(

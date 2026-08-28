@@ -77,7 +77,10 @@ from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.state import AgentCancellationToken, AgentRunStateMachine
 from phoenix_os.agent.tools import (
     FinalAdmissionContextualToolAdapter,
+    ToolAdapter,
     ToolDescriptor,
+    ToolFinalAdmissionContext,
+    ToolFinalAdmissionGrant,
     ToolFinalAdmissionValidator,
     ToolResourceResolutionContext,
 )
@@ -155,6 +158,61 @@ class ToolApprovalResolver(Protocol):
     async def resolve(self, challenge: ToolApprovalChallenge) -> ToolApprovalEvidence: ...
 
 
+@runtime_checkable
+class AgentExecutionInterceptor(Protocol):
+    """Optional server-owned run interceptor around existing RFC-0027 boundaries."""
+
+    async def before_model_turn(
+        self,
+        turn: AgentModelTurnRequest,
+        context: SecurityContext,
+        cancellation: AgentCancellationToken,
+    ) -> None: ...
+
+    async def before_tool_authorization(
+        self,
+        invocation: ToolInvocationRequest,
+        descriptor: ToolDescriptor,
+        context: SecurityContext,
+        cancellation: AgentCancellationToken,
+    ) -> None: ...
+
+    async def before_tool_invocation(
+        self,
+        invocation: ToolInvocationRequest,
+        descriptor: ToolDescriptor,
+        context: SecurityContext,
+        cancellation: AgentCancellationToken,
+    ) -> None: ...
+
+    async def final_tool_admission(
+        self,
+        invocation: ToolInvocationRequest,
+        descriptor: ToolDescriptor,
+        context: SecurityContext,
+        cancellation: AgentCancellationToken,
+        details: ToolFinalAdmissionContext | None = None,
+    ) -> ToolFinalAdmissionGrant | None: ...
+
+    async def after_tool_result(
+        self,
+        invocation: ToolInvocationRequest,
+        descriptor: ToolDescriptor,
+        result: ToolInvocationResult,
+        context: SecurityContext,
+        cancellation: AgentCancellationToken,
+        adapter: ToolAdapter | None = None,
+    ) -> None: ...
+
+    async def before_final_output(
+        self,
+        turn: AgentModelTurnRequest,
+        final_output: str,
+        context: SecurityContext,
+        cancellation: AgentCancellationToken,
+    ) -> None: ...
+
+
 class AgentLoop:
     """Run one bounded serial model/tool cycle without autonomous retry."""
 
@@ -175,6 +233,7 @@ class AgentLoop:
         observer: AgentObserver | None = None,
         memory_context: AgentMemoryContextProvider | None = None,
         artifact_context: AgentArtifactContextProvider | None = None,
+        execution_interceptor: AgentExecutionInterceptor | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(run_authorizer, AgentRunAuthorizer):
@@ -219,6 +278,10 @@ class AgentLoop:
             artifact_context, AgentArtifactContextProvider
         ):
             raise TypeError("artifact_context must implement AgentArtifactContextProvider")
+        if execution_interceptor is not None and not isinstance(
+            execution_interceptor, AgentExecutionInterceptor
+        ):
+            raise TypeError("execution_interceptor must implement AgentExecutionInterceptor")
         if not callable(clock):
             raise TypeError("clock must be callable")
 
@@ -236,11 +299,24 @@ class AgentLoop:
         self._observer = resolved_observer
         self._memory_context = memory_context
         self._artifact_context = artifact_context
+        self._execution_interceptor = execution_interceptor
         self._clock = clock
 
     @property
     def registry(self) -> ToolRegistry:
         return self._registry
+
+    @property
+    def execution_interceptor(self) -> AgentExecutionInterceptor | None:
+        return self._execution_interceptor
+
+    @property
+    def memory_context_provider(self) -> AgentMemoryContextProvider | None:
+        return self._memory_context
+
+    @property
+    def artifact_context_provider(self) -> AgentArtifactContextProvider | None:
+        return self._artifact_context
 
     async def run(
         self,
@@ -353,6 +429,12 @@ class AgentLoop:
                         request.limits.model_turn_timeout,
                     ),
                 )
+                if self._execution_interceptor is not None:
+                    await self._execution_interceptor.before_model_turn(
+                        turn,
+                        context,
+                        token,
+                    )
                 inference_request = self._inference_requests.create(request, turn)
                 await self._authorize_observed(
                     self._model_authorizer.authorize(inference_request, context),
@@ -439,6 +521,13 @@ class AgentLoop:
 
                 if model_result.kind is AgentModelTurnKind.FINAL_OUTPUT:
                     assert model_result.final_output is not None
+                    if self._execution_interceptor is not None:
+                        await self._execution_interceptor.before_final_output(
+                            turn,
+                            model_result.final_output,
+                            context,
+                            token,
+                        )
                     state.budget.record_model_usage(len(model_result.final_output.encode("utf-8")))
                     state.complete(now=self._now())
                     return self._result(
@@ -515,6 +604,13 @@ class AgentLoop:
                     context,
                 )
 
+                if self._execution_interceptor is not None:
+                    await self._execution_interceptor.before_tool_authorization(
+                        invocation,
+                        resolution.descriptor,
+                        context,
+                        token,
+                    )
                 state.start_tool_authorization(now=self._now())
                 await self._authorize_observed(
                     self._tool_authorizer.authorize(
@@ -579,6 +675,14 @@ class AgentLoop:
                             model_turn=model_turn,
                         )
                         raise
+                    token.raise_if_cancelled()
+                    if self._execution_interceptor is not None:
+                        await self._execution_interceptor.before_tool_invocation(
+                            invocation,
+                            resolution.descriptor,
+                            context,
+                            token,
+                        )
                     token.raise_if_cancelled()
                     state.start_tool_invocation(now=self._now())
                     tool_call = state.budget.tool_calls
@@ -662,6 +766,15 @@ class AgentLoop:
                 encoded_result = canonical_tool_invocation_result_bytes(tool_result)
                 state.budget.require_result_bytes(len(encoded_result))
                 state.budget.record_tool_result(len(encoded_result))
+                if self._execution_interceptor is not None:
+                    await self._execution_interceptor.after_tool_result(
+                        invocation,
+                        resolution.descriptor,
+                        tool_result,
+                        context,
+                        token,
+                        adapter,
+                    )
 
                 if tool_result.status is not ToolResultStatus.SUCCEEDED:
                     raise ToolExecutionError()
@@ -766,10 +879,23 @@ class AgentLoop:
         context: SecurityContext,
         cancellation: AgentCancellationToken,
     ) -> ToolFinalAdmissionValidator:
-        async def validate() -> None:
+        async def validate(
+            details: ToolFinalAdmissionContext | None = None,
+        ) -> ToolFinalAdmissionGrant | None:
             cancellation.raise_if_cancelled()
             await self._authorize_fresh_tool_admission(invocation, descriptor, context)
             cancellation.raise_if_cancelled()
+            grant = None
+            if self._execution_interceptor is not None:
+                grant = await self._execution_interceptor.final_tool_admission(
+                    invocation,
+                    descriptor,
+                    context,
+                    cancellation,
+                    details,
+                )
+            cancellation.raise_if_cancelled()
+            return grant
 
         return validate
 

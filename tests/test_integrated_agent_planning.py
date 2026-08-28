@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -28,6 +30,7 @@ from phoenix_os.agent import (
 )
 from phoenix_os.agent.authorization import AgentRunAuthorityBinding
 from phoenix_os.agent.configuration import AgentServiceConfiguration
+from phoenix_os.agent.contracts import AgentJsonValue
 from phoenix_os.agent.errors import AgentSchemaError, ToolExecutionError
 from phoenix_os.agent.service import AgentServiceState
 from phoenix_os.agent.state import AgentCancellationToken
@@ -43,6 +46,8 @@ from phoenix_os.integrated_agent import (
     IntegratedDataFlowDisposition,
     IntegratedDataFlowPolicy,
     IntegratedDataFlowRoute,
+    IntegratedDataProvenance,
+    IntegratedDataProvenanceAtom,
     IntegratedDataSink,
     IntegratedDataSourceKind,
     IntegratedExecutionProfile,
@@ -535,3 +540,194 @@ def test_runtime_rejects_planner_not_installed_in_agent_configuration() -> None:
 
     with pytest.raises(IntegratedAgentConfigurationError):
         IntegratedAgentRuntime(service, admission, planner=planner)
+
+
+class _AttemptProvenanceProvider:
+    def __init__(self, provenance: IntegratedDataProvenance) -> None:
+        self.provenance = provenance
+        self.calls: list[tuple[AgentRunId, ToolCallId]] = []
+
+    def provenance_for_attempt(
+        self,
+        run_id: AgentRunId,
+        call_id: ToolCallId,
+    ) -> IntegratedDataProvenance:
+        self.calls.append((run_id, call_id))
+        return self.provenance
+
+
+@pytest.mark.asyncio
+async def test_plan_update_inherits_exact_attempt_provenance_when_provider_is_configured() -> None:
+    inherited = IntegratedDataProvenance(
+        (
+            IntegratedDataProvenanceAtom(
+                source_kind=IntegratedDataSourceKind.USER_TASK,
+                source_binding="integrated-task:reviewed",
+            ),
+            IntegratedDataProvenanceAtom(
+                source_kind=IntegratedDataSourceKind.MEMORY,
+                source_binding="memory:private/record-7",
+                freshness_bindings=("generation:3",),
+            ),
+            IntegratedDataProvenanceAtom(
+                source_kind=IntegratedDataSourceKind.MODEL_OUTPUT,
+                source_binding="agent-run:reviewed/step:9",
+            ),
+        )
+    )
+    provider = _AttemptProvenanceProvider(inherited)
+    profile = _profile()
+    planner = IntegratedPlanner(profile, provenance_provider=provider)
+    configuration = _configuration(planner)
+    admission = _admission(profile, configuration)
+    lease = await admission.admit(_task(), _request())
+    planner.begin_run(lease.binding)
+    registry = ToolRegistry()
+    registry.register_tool(
+        planner.descriptor,
+        resolver=planner.resource_resolver,
+        adapter=planner.adapter,
+    )
+    step_id = AgentStepId(UUID("44444444-4444-4444-4444-444444444444"))
+    resolution = registry.admit_tool_call(
+        INTEGRATED_PLAN_UPDATE_TOOL_ID,
+        {"statements": ["research", "report"]},
+        resolution_context=ToolResourceResolutionContext(
+            agent_id=lease.binding.agent_id,
+            run_id=lease.binding.run_id,
+            step_id=step_id,
+        ),
+    )
+    call_id = ToolCallId(UUID("55555555-5555-5555-5555-555555555555"))
+    invocation = ToolInvocationRequest(
+        agent_id=lease.binding.agent_id,
+        run_id=lease.binding.run_id,
+        step_id=step_id,
+        call_id=call_id,
+        tool_id=INTEGRATED_PLAN_UPDATE_TOOL_ID,
+        arguments=resolution.arguments,
+        resolved_resource=resolution.resolved_resource,
+        created_at=_NOW,
+        deadline=_NOW + timedelta(seconds=5),
+    )
+
+    result = await planner.adapter.invoke(invocation)
+    plan = planner.current_plan(lease.binding.run_id)
+
+    assert result.status is ToolResultStatus.SUCCEEDED
+    assert plan is not None
+    assert provider.calls == [(lease.binding.run_id, call_id)]
+    assert set(inherited.atoms).issubset(plan.provenance.atoms)
+    assert (
+        IntegratedDataProvenanceAtom(
+            source_kind=IntegratedDataSourceKind.TOOL_RESULT,
+            source_binding=f"tool-result:{call_id}",
+            freshness_bindings=(f"tool:{INTEGRATED_PLAN_UPDATE_TOOL_ID}",),
+        )
+        in plan.provenance.atoms
+    )
+
+    planner.release_run(lease.binding.run_id)
+    await lease.release()
+
+
+@pytest.mark.asyncio
+async def test_planner_and_integrated_budget_share_one_plan_revision_limit() -> None:
+    from phoenix_os.integrated_agent import IntegratedRunBudget
+    from phoenix_os.integrated_agent.errors import (
+        IntegratedAgentBudgetExhaustedError,
+    )
+
+    profile = _profile(max_plan_revisions=1)
+    planner = IntegratedPlanner(profile)
+    configuration = _configuration(planner)
+    admission = _admission(profile, configuration)
+    request = _request()
+    lease = await admission.admit(_task(), request)
+    planner.begin_run(lease.binding)
+
+    registry = ToolRegistry()
+    registry.register_tool(
+        planner.descriptor,
+        resolver=planner.resource_resolver,
+        adapter=planner.adapter,
+    )
+    context = ToolResourceResolutionContext(
+        agent_id=lease.binding.agent_id,
+        run_id=lease.binding.run_id,
+        step_id=AgentStepId(UUID(int=905)),
+    )
+    binding = profile.require_tool_binding(INTEGRATED_PLAN_UPDATE_TOOL_ID)
+    assert isinstance(binding, IntegratedLocalTransformBinding)
+
+    resolution = registry.admit_tool_call(
+        INTEGRATED_PLAN_UPDATE_TOOL_ID,
+        {"statements": ["research once"]},
+        resolution_context=context,
+    )
+    invocation = ToolInvocationRequest(
+        agent_id=lease.binding.agent_id,
+        run_id=lease.binding.run_id,
+        step_id=context.step_id,
+        call_id=ToolCallId(UUID(int=906)),
+        tool_id=INTEGRATED_PLAN_UPDATE_TOOL_ID,
+        arguments=resolution.arguments,
+        resolved_resource=resolution.resolved_resource,
+        created_at=_NOW,
+        deadline=_NOW + timedelta(seconds=5),
+    )
+    budget = IntegratedRunBudget(
+        profile.budget_extension,
+        started_at=_NOW,
+        parent_deadline=request.deadline,
+    )
+    normalized_arguments = cast(
+        Mapping[str, AgentJsonValue],
+        invocation.arguments,
+    )
+
+    budget.require_step(binding, normalized_arguments, now=_NOW)
+    budget.consume_step(
+        invocation.call_id,
+        binding,
+        normalized_arguments,
+        now=_NOW,
+    )
+    first = await planner.adapter.invoke(invocation)
+
+    assert first.status is ToolResultStatus.SUCCEEDED
+    assert planner.current_revision(request.run_id) == 1
+    assert budget.usage.plan_revisions == 1
+
+    next_resolution = registry.admit_tool_call(
+        INTEGRATED_PLAN_UPDATE_TOOL_ID,
+        {"statements": ["do not exceed reviewed limit"]},
+        resolution_context=context,
+    )
+    next_invocation = ToolInvocationRequest(
+        agent_id=lease.binding.agent_id,
+        run_id=lease.binding.run_id,
+        step_id=context.step_id,
+        call_id=ToolCallId(UUID(int=907)),
+        tool_id=INTEGRATED_PLAN_UPDATE_TOOL_ID,
+        arguments=next_resolution.arguments,
+        resolved_resource=next_resolution.resolved_resource,
+        created_at=_NOW,
+        deadline=_NOW + timedelta(seconds=5),
+    )
+
+    next_normalized_arguments = cast(
+        Mapping[str, AgentJsonValue],
+        next_invocation.arguments,
+    )
+    with pytest.raises(IntegratedAgentBudgetExhaustedError):
+        budget.require_step(
+            binding,
+            next_normalized_arguments,
+            now=_NOW,
+        )
+    assert planner.current_revision(request.run_id) == 1
+    assert budget.usage.plan_revisions == 1
+
+    planner.release_run(lease.binding.run_id)
+    await lease.release()

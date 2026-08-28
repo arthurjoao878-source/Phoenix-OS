@@ -49,7 +49,10 @@ from phoenix_os.agent.memory_contracts import (
     MemorySearchResult,
     MemoryWriteRequest,
 )
-from phoenix_os.agent.memory_retrieval import AgentMemoryService
+from phoenix_os.agent.memory_retrieval import (
+    AgentMemoryService,
+    MemoryFinalAdmissionValidator,
+)
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.tools import ToolResourceResolutionContext
 from phoenix_os.policy import PrincipalType, SecurityContext
@@ -81,7 +84,11 @@ class _MemoryService(AgentMemoryService):
         self,
         request: MemorySearchRequest,
         context: SecurityContext,
+        *,
+        final_admission: MemoryFinalAdmissionValidator | None = None,
     ) -> MemorySearchResult:
+        if final_admission is not None:
+            await final_admission()
         self.search_request = request
         self.context = context
         return MemorySearchResult(scope=request.scope, hits=(), created_at=request.created_at)
@@ -90,7 +97,11 @@ class _MemoryService(AgentMemoryService):
         self,
         request: MemoryReadRequest,
         context: SecurityContext,
+        *,
+        final_admission: MemoryFinalAdmissionValidator | None = None,
     ) -> MemoryRecord | None:
+        if final_admission is not None:
+            await final_admission()
         self.read_request = request
         self.context = context
         return None
@@ -99,7 +110,11 @@ class _MemoryService(AgentMemoryService):
         self,
         request: MemoryWriteRequest,
         context: SecurityContext,
+        *,
+        final_admission: MemoryFinalAdmissionValidator | None = None,
     ) -> MemoryRecord:
+        if final_admission is not None:
+            await final_admission()
         self.write_request = request
         self.context = context
         incarnation = request.expected_incarnation or MemoryRecordIncarnation(UUID(int=8))
@@ -126,7 +141,11 @@ class _MemoryService(AgentMemoryService):
         self,
         request: MemoryDeleteRequest,
         context: SecurityContext,
+        *,
+        final_admission: MemoryFinalAdmissionValidator | None = None,
     ) -> None:
+        if final_admission is not None:
+            await final_admission()
         self.delete_request = request
         self.context = context
 

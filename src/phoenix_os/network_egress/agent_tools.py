@@ -170,6 +170,7 @@ class NetworkHttpToolAdapter:
             raise TypeError("context must be SecurityContext")
         if not callable(final_admission):
             raise TypeError("final_admission must be callable")
+
         body = self._validated_body(request)
         network_request = NetworkHttpRequest(
             profile_id=self._binding.profile.profile_id,

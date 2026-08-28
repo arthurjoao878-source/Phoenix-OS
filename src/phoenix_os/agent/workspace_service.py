@@ -14,6 +14,11 @@ from phoenix_os.agent.errors import (
     AgentServiceUnavailableError,
     AgentStateConflictError,
 )
+from phoenix_os.agent.tools import (
+    ToolFinalAdmissionContext,
+    ToolFinalAdmissionGrant,
+    ToolFinalAdmissionValidator,
+)
 from phoenix_os.agent.workspace_authorization import WorkspaceAuthorizer
 from phoenix_os.agent.workspace_contracts import (
     ArtifactDeleteRequest,
@@ -122,6 +127,8 @@ class AgentWorkspaceService:
         self,
         request: ArtifactListRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ArtifactListResult:
         self._require_request_context(request, ArtifactListRequest, context)
         self._ensure_open()
@@ -129,6 +136,12 @@ class AgentWorkspaceService:
         try:
             await self._authorizer.authorize_list(request, context)
             result = await self._store.list(request)
+            await _run_final_admission(
+                final_admission,
+                source_provenance_attributes=tuple(
+                    _workspace_provenance_attributes(record) for record in result.artifacts
+                ),
+            )
         except BaseException as exception:
             self._observe_failure(
                 operation=AgentWorkspaceOperation.LIST,
@@ -151,6 +164,8 @@ class AgentWorkspaceService:
         self,
         request: ArtifactReadRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ArtifactReadResult | None:
         self._require_request_context(request, ArtifactReadRequest, context)
         self._ensure_open()
@@ -159,6 +174,7 @@ class AgentWorkspaceService:
             await self._authorizer.authorize_read(request, context)
             initial = await self._store.read(request)
             if initial is None:
+                await _run_final_admission(final_admission)
                 result = None
             else:
                 bound_request = replace(
@@ -170,6 +186,12 @@ class AgentWorkspaceService:
                 admitted = await self._store.read(bound_request)
                 if admitted is None or admitted != initial:
                     raise AgentStateConflictError()
+                await _run_final_admission(
+                    final_admission,
+                    source_provenance_attributes=(
+                        _workspace_provenance_attributes(admitted.record),
+                    ),
+                )
                 result = admitted
         except BaseException as exception:
             self._observe_failure(
@@ -193,13 +215,21 @@ class AgentWorkspaceService:
         self,
         request: ArtifactWriteRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ArtifactRecord:
         self._require_request_context(request, ArtifactWriteRequest, context)
         self._ensure_open()
         started = time.perf_counter()
         try:
             await self._authorizer.authorize_write(request, context)
-            record = await self._store.write(request)
+            self._ensure_open()
+            grant = await _run_final_admission(
+                final_admission,
+                mutation_bytes=len(request.content),
+            )
+            admitted_request = _workspace_request_with_grant(request, grant)
+            record = await self._store.write(admitted_request)
         except BaseException as exception:
             self._observe_failure(
                 operation=AgentWorkspaceOperation.WRITE,
@@ -223,12 +253,16 @@ class AgentWorkspaceService:
         self,
         request: ArtifactDeleteRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> None:
         self._require_request_context(request, ArtifactDeleteRequest, context)
         self._ensure_open()
         started = time.perf_counter()
         try:
             await self._authorizer.authorize_delete(request, context)
+            self._ensure_open()
+            await _run_final_admission(final_admission)
             await self._store.delete(request)
         except BaseException as exception:
             self._observe_failure(
@@ -256,6 +290,8 @@ class AgentWorkspaceService:
         self,
         request: ArtifactImportRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ArtifactTransferReceipt:
         self._require_request_context(request, ArtifactImportRequest, context)
         self._ensure_open()
@@ -265,6 +301,8 @@ class AgentWorkspaceService:
             # Import is its own authority. The source cannot be touched before the
             # first exact policy decision and this path intentionally bypasses write().
             await self._authorizer.authorize_import(request, context)
+            self._ensure_open()
+            await _run_final_admission(final_admission)
             adapter, adapter_id = self._require_transfer_adapter()
             imported = await self._call_import_adapter(
                 adapter,
@@ -280,6 +318,10 @@ class AgentWorkspaceService:
             # source adapter is still returning. Never begin an authoritative mutation
             # after the service has been closed.
             self._ensure_open()
+            grant = await _run_final_admission(
+                final_admission,
+                mutation_bytes=len(validated.content),
+            )
             write_request = ArtifactWriteRequest(
                 scope=request.scope,
                 artifact_id=request.artifact_id,
@@ -296,6 +338,10 @@ class AgentWorkspaceService:
                 ),
                 expected_version=request.expected_version,
                 created_at=mutation_time,
+            )
+            write_request = _workspace_request_with_grant(
+                write_request,
+                grant,
             )
             record = await self._store.write(write_request)
             self._require_exact_written_record(record, write_request)
@@ -336,6 +382,8 @@ class AgentWorkspaceService:
         self,
         request: ArtifactExportRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ArtifactTransferReceipt:
         self._require_request_context(request, ArtifactExportRequest, context)
         self._ensure_open()
@@ -392,6 +440,12 @@ class AgentWorkspaceService:
             # boundary immediately before admitting the external export side effect so
             # Runtime shutdown cannot start a new transfer after admission closes.
             self._ensure_open()
+            await _run_final_admission(
+                final_admission,
+                source_provenance_attributes=(_workspace_provenance_attributes(record),),
+                source_record_version=record.version.value,
+                source_content_digest=str(record.content_digest),
+            )
             assert record.logical_path is not None
             assert record.media_type is not None
             exported = await self._call_export_adapter(
@@ -784,6 +838,69 @@ class AgentWorkspaceService:
         ):
             raise AgentCodecError("workspace authoritative result is invalid")
         return record, content
+
+
+async def _run_final_admission(
+    final_admission: ToolFinalAdmissionValidator | None,
+    *,
+    mutation_bytes: int = 0,
+    source_provenance_attributes: tuple[Mapping[str, str], ...] = (),
+    source_record_version: int | None = None,
+    source_content_digest: str | None = None,
+) -> ToolFinalAdmissionGrant | None:
+    if final_admission is None:
+        return None
+    if (
+        mutation_bytes
+        or source_provenance_attributes
+        or source_record_version is not None
+        or source_content_digest is not None
+    ):
+        grant = await final_admission(
+            ToolFinalAdmissionContext(
+                mutation_bytes=mutation_bytes,
+                source_provenance_attributes=source_provenance_attributes,
+                source_record_version=source_record_version,
+                source_content_digest=source_content_digest,
+            )
+        )
+    else:
+        grant = await final_admission()
+    if grant is not None and not isinstance(grant, ToolFinalAdmissionGrant):
+        raise TypeError("final admission must return ToolFinalAdmissionGrant or None")
+    return grant
+
+
+def _workspace_provenance_attributes(
+    record: ArtifactRecord,
+) -> Mapping[str, str]:
+    if (
+        not isinstance(record, ArtifactRecord)
+        or record.status is not ArtifactStatus.ACTIVE
+        or record.provenance is None
+    ):
+        raise AgentCodecError("workspace artifact provenance is unavailable")
+    return record.provenance.attributes
+
+
+def _workspace_request_with_grant(
+    request: ArtifactWriteRequest,
+    grant: ToolFinalAdmissionGrant | None,
+) -> ArtifactWriteRequest:
+    if grant is None:
+        return request
+    if not grant.provenance_attributes:
+        return request
+
+    attributes = dict(request.provenance.attributes)
+    if set(attributes).intersection(grant.provenance_attributes):
+        raise AgentCodecError("final admission provenance attributes collide")
+    attributes.update(grant.provenance_attributes)
+    try:
+        provenance = replace(request.provenance, attributes=attributes)
+        return replace(request, provenance=provenance)
+    except (TypeError, ValueError) as exception:
+        raise AgentCodecError("final admission provenance attributes are invalid") from exception
 
 
 def _duration_ms(started: float) -> int:

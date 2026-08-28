@@ -15,6 +15,7 @@ from phoenix_os.integrated_agent.admission import IntegratedAgentAdmission
 from phoenix_os.integrated_agent.composition import IntegratedAgentToolComposition
 from phoenix_os.integrated_agent.contracts import IntegratedTaskRequest
 from phoenix_os.integrated_agent.errors import IntegratedAgentConfigurationError
+from phoenix_os.integrated_agent.execution_guard import IntegratedAgentExecutionGuard
 from phoenix_os.integrated_agent.planning import IntegratedPlanner
 from phoenix_os.policy import SecurityContext
 from phoenix_os.runtime import RuntimeContext
@@ -54,6 +55,7 @@ class IntegratedAgentRuntime:
         *,
         planner: IntegratedPlanner | None = None,
         composition: IntegratedAgentToolComposition | None = None,
+        execution_guard: IntegratedAgentExecutionGuard | None = None,
     ) -> None:
         if not isinstance(service, IntegratedAgentServiceDelegate):
             raise TypeError("service must implement IntegratedAgentServiceDelegate")
@@ -68,6 +70,24 @@ class IntegratedAgentRuntime:
             IntegratedAgentToolComposition,
         ):
             raise TypeError("composition must be IntegratedAgentToolComposition or None")
+        if execution_guard is not None and not isinstance(
+            execution_guard,
+            IntegratedAgentExecutionGuard,
+        ):
+            raise TypeError("execution_guard must be IntegratedAgentExecutionGuard or None")
+        if execution_guard is not None:
+            if execution_guard.profile != admission.profile:
+                raise IntegratedAgentConfigurationError()
+            if planner is not None and planner.provenance_provider is not execution_guard:
+                raise IntegratedAgentConfigurationError()
+            service_runtime = getattr(service, "runtime", None)
+            if (
+                not isinstance(service_runtime, AgentLoop)
+                or service_runtime.execution_interceptor is not execution_guard
+                or service_runtime.memory_context_provider is not None
+                or service_runtime.artifact_context_provider is not None
+            ):
+                raise IntegratedAgentConfigurationError()
 
         registry: ToolRegistry | None = None
         if service.configuration.tool_ids:
@@ -115,6 +135,7 @@ class IntegratedAgentRuntime:
         self._admission = admission
         self._planner = planner
         self._composition = composition
+        self._execution_guard = execution_guard
         self._registry = registry
 
     @property
@@ -132,6 +153,10 @@ class IntegratedAgentRuntime:
     @property
     def composition(self) -> IntegratedAgentToolComposition | None:
         return self._composition
+
+    @property
+    def execution_guard(self) -> IntegratedAgentExecutionGuard | None:
+        return self._execution_guard
 
     @property
     def state(self) -> AgentServiceState:
@@ -154,6 +179,8 @@ class IntegratedAgentRuntime:
             raise TypeError("context must be RuntimeContext")
         if self._planner is not None:
             self._planner.close()
+        if self._execution_guard is not None:
+            self._execution_guard.close()
         await self._admission.close()
         await self._service.stop(context)
 
@@ -177,7 +204,11 @@ class IntegratedAgentRuntime:
 
         lease = await self._admission.admit(task, request)
         planner_started = False
+        guard_started = False
         try:
+            if self._execution_guard is not None:
+                self._execution_guard.begin_run(task, lease.request)
+                guard_started = True
             if self._planner is not None:
                 self._planner.begin_run(lease.binding)
                 planner_started = True
@@ -192,4 +223,8 @@ class IntegratedAgentRuntime:
                 if planner_started and self._planner is not None:
                     self._planner.release_run(lease.binding.run_id)
             finally:
-                await lease.release()
+                try:
+                    if guard_started and self._execution_guard is not None:
+                        self._execution_guard.release_run(lease.binding.run_id)
+                finally:
+                    await lease.release()

@@ -306,7 +306,76 @@ class ContextualToolAdapter(ToolAdapter, Protocol):
     ) -> ToolInvocationResult: ...
 
 
-type ToolFinalAdmissionValidator = Callable[[], Awaitable[None]]
+@dataclass(frozen=True, slots=True)
+class ToolFinalAdmissionContext:
+    """Content-free server-owned details available only at final tool admission."""
+
+    mutation_bytes: int = 0
+    source_provenance_attributes: tuple[AgentMetadata, ...] = ()
+    source_record_version: int | None = None
+    source_content_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.mutation_bytes, bool)
+            or not isinstance(self.mutation_bytes, int)
+            or self.mutation_bytes < 0
+        ):
+            raise ValueError("mutation_bytes must be a non-negative integer")
+
+        sources = tuple(self.source_provenance_attributes)
+        if len(sources) > 256:
+            raise ValueError("source_provenance_attributes exceeds the maximum source count")
+        frozen_sources: list[AgentMetadata] = []
+        for source in sources:
+            if not isinstance(source, Mapping):
+                raise TypeError("source_provenance_attributes must contain mappings")
+            frozen_sources.append(_freeze_metadata(source))
+        object.__setattr__(
+            self,
+            "source_provenance_attributes",
+            tuple(frozen_sources),
+        )
+
+        version = self.source_record_version
+        digest = self.source_content_digest
+        if (version is None) != (digest is None):
+            raise ValueError("source record version and content digest must be provided together")
+        if version is not None:
+            if (
+                isinstance(version, bool)
+                or not isinstance(version, int)
+                or not 1 <= version <= 2**63 - 1
+            ):
+                raise ValueError("source_record_version must be a positive bounded integer")
+        if digest is not None:
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 71
+                or not digest.startswith("sha256:")
+                or any(character not in "0123456789abcdef" for character in digest[7:])
+            ):
+                raise ValueError("source_content_digest must be a canonical SHA-256 digest")
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFinalAdmissionGrant:
+    """Bounded control metadata issued only by final admission authority."""
+
+    provenance_attributes: AgentMetadata = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "provenance_attributes",
+            _freeze_metadata(self.provenance_attributes),
+        )
+
+
+type ToolFinalAdmissionValidator = Callable[
+    ...,
+    Awaitable[ToolFinalAdmissionGrant | None],
+]
 
 
 @runtime_checkable

@@ -208,9 +208,12 @@ class IntegratedDataSink(StrEnum):
 
     MODEL = "model"
     ORCHESTRATION_STATE = "orchestration_state"
+    MEMORY = "memory"
     WORKSPACE = "workspace"
+    WORKSPACE_EXPORT = "workspace_export"
     NETWORK = "network"
     BROWSER_EFFECT = "browser_effect"
+    HOST_EFFECT = "host_effect"
     USER_RESULT = "user_result"
 
 

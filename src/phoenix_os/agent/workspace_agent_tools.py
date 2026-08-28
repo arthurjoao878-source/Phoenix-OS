@@ -30,7 +30,11 @@ from phoenix_os.agent.schemas import (
     ToolSchema,
     ToolSchemaType,
 )
-from phoenix_os.agent.tools import ToolDescriptor, ToolResourceResolutionContext
+from phoenix_os.agent.tools import (
+    ToolDescriptor,
+    ToolFinalAdmissionValidator,
+    ToolResourceResolutionContext,
+)
 from phoenix_os.agent.workspace_authorization import (
     WORKSPACE_DELETE_ACTION,
     WORKSPACE_EXPORT_ACTION,
@@ -237,23 +241,80 @@ class WorkspaceToolAdapter:
         request: ToolInvocationRequest,
         context: SecurityContext,
     ) -> ToolInvocationResult:
+        return await self._invoke_with_context(
+            request,
+            context,
+            final_admission=None,
+        )
+
+    async def invoke_with_context_and_final_admission(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+        final_admission: ToolFinalAdmissionValidator,
+    ) -> ToolInvocationResult:
+        if not callable(final_admission):
+            raise TypeError("final_admission must be callable")
+        return await self._invoke_with_context(
+            request,
+            context,
+            final_admission=final_admission,
+        )
+
+    async def _invoke_with_context(
+        self,
+        request: ToolInvocationRequest,
+        context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
+    ) -> ToolInvocationResult:
         if not isinstance(request, ToolInvocationRequest):
             raise TypeError("request must be ToolInvocationRequest")
         if not isinstance(context, SecurityContext):
             raise TypeError("context must be SecurityContext")
         scope = self._validated_scope(request, context)
         if self._binding.action == WORKSPACE_LIST_ACTION:
-            output = await self._list(request, scope, context)
+            output = await self._list(
+                request,
+                scope,
+                context,
+                final_admission=final_admission,
+            )
         elif self._binding.action == WORKSPACE_READ_ACTION:
-            output = await self._read(request, scope, context)
+            output = await self._read(
+                request,
+                scope,
+                context,
+                final_admission=final_admission,
+            )
         elif self._binding.action == WORKSPACE_WRITE_ACTION:
-            output = await self._write(request, scope, context)
+            output = await self._write(
+                request,
+                scope,
+                context,
+                final_admission=final_admission,
+            )
         elif self._binding.action == WORKSPACE_DELETE_ACTION:
-            output = await self._delete(request, scope, context)
+            output = await self._delete(
+                request,
+                scope,
+                context,
+                final_admission=final_admission,
+            )
         elif self._binding.action == WORKSPACE_IMPORT_ACTION:
-            output = await self._import(request, scope, context)
+            output = await self._import(
+                request,
+                scope,
+                context,
+                final_admission=final_admission,
+            )
         elif self._binding.action == WORKSPACE_EXPORT_ACTION:
-            output = await self._export(request, scope, context)
+            output = await self._export(
+                request,
+                scope,
+                context,
+                final_admission=final_admission,
+            )
         else:
             raise ToolExecutionError()
         return _success(request, output)
@@ -283,6 +344,8 @@ class WorkspaceToolAdapter:
         request: ToolInvocationRequest,
         scope: WorkspaceScope,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
     ) -> Mapping[str, AgentJsonInput]:
         prefix_value = request.arguments.get("prefix")
         prefix = None
@@ -311,6 +374,7 @@ class WorkspaceToolAdapter:
                 created_at=request.created_at,
             ),
             context,
+            final_admission=final_admission,
         )
         if result.scope != scope:
             raise ToolExecutionError()
@@ -321,6 +385,8 @@ class WorkspaceToolAdapter:
         request: ToolInvocationRequest,
         scope: WorkspaceScope,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
     ) -> Mapping[str, AgentJsonInput]:
         artifact_id = _artifact_id_argument(request.arguments)
         expected_version = _optional_version(request.arguments)
@@ -332,6 +398,7 @@ class WorkspaceToolAdapter:
                 created_at=request.created_at,
             ),
             context,
+            final_admission=final_admission,
         )
         if result is None:
             return {"found": False}
@@ -353,6 +420,8 @@ class WorkspaceToolAdapter:
         request: ToolInvocationRequest,
         scope: WorkspaceScope,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
     ) -> Mapping[str, AgentJsonInput]:
         artifact_id = _artifact_id_argument(request.arguments)
         logical_path = _logical_path_argument(request.arguments)
@@ -393,6 +462,7 @@ class WorkspaceToolAdapter:
                 created_at=request.created_at,
             ),
             context,
+            final_admission=final_admission,
         )
         if (
             record.scope != scope
@@ -409,6 +479,8 @@ class WorkspaceToolAdapter:
         request: ToolInvocationRequest,
         scope: WorkspaceScope,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
     ) -> Mapping[str, AgentJsonInput]:
         artifact_id = _artifact_id_argument(request.arguments)
         version = ArtifactVersion(_required_positive_int(request.arguments, "expected_version"))
@@ -420,6 +492,7 @@ class WorkspaceToolAdapter:
                 created_at=request.created_at,
             ),
             context,
+            final_admission=final_admission,
         )
         return {"deleted": True}
 
@@ -428,6 +501,8 @@ class WorkspaceToolAdapter:
         request: ToolInvocationRequest,
         scope: WorkspaceScope,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
     ) -> Mapping[str, AgentJsonInput]:
         artifact_id = _artifact_id_argument(request.arguments)
         source_reference = _transfer_reference_argument(request.arguments, "source_reference")
@@ -441,6 +516,7 @@ class WorkspaceToolAdapter:
                 created_at=request.created_at,
             ),
             context,
+            final_admission=final_admission,
         )
         return _receipt_output(
             receipt,
@@ -454,6 +530,8 @@ class WorkspaceToolAdapter:
         request: ToolInvocationRequest,
         scope: WorkspaceScope,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
     ) -> Mapping[str, AgentJsonInput]:
         artifact_id = _artifact_id_argument(request.arguments)
         version = ArtifactVersion(_required_positive_int(request.arguments, "expected_version"))
@@ -470,6 +548,7 @@ class WorkspaceToolAdapter:
                 created_at=request.created_at,
             ),
             context,
+            final_admission=final_admission,
         )
         return _receipt_output(
             receipt,

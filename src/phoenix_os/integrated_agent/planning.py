@@ -6,13 +6,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from threading import RLock
-from typing import cast
+from typing import Protocol, cast, runtime_checkable
 
 from phoenix_os.agent.contracts import (
     MAX_AGENT_ARGUMENT_BYTES,
     AgentJsonValue,
     AgentRunId,
     ToolAvailability,
+    ToolCallId,
     ToolEffect,
     ToolId,
     ToolInvocationRequest,
@@ -44,6 +45,7 @@ from phoenix_os.integrated_agent.contracts import (
     PlanProposal,
     PlanRevision,
 )
+from phoenix_os.integrated_agent.data_flow import integrated_provenance_union
 from phoenix_os.integrated_agent.errors import (
     IntegratedAgentConfigurationError,
     IntegratedAgentError,
@@ -187,12 +189,35 @@ class _IntegratedPlanUpdateAdapter:
         )
 
 
+@runtime_checkable
+class IntegratedAttemptProvenanceProvider(Protocol):
+    """Provide exact already-admitted provenance for one local-transform attempt."""
+
+    def provenance_for_attempt(
+        self,
+        run_id: AgentRunId,
+        call_id: ToolCallId,
+    ) -> IntegratedDataProvenance: ...
+
+
 class IntegratedPlanner:
     """Own bounded in-memory advisory plan revisions for exact admitted agent runs."""
 
-    def __init__(self, profile: IntegratedExecutionProfile) -> None:
+    def __init__(
+        self,
+        profile: IntegratedExecutionProfile,
+        *,
+        provenance_provider: IntegratedAttemptProvenanceProvider | None = None,
+    ) -> None:
         if not isinstance(profile, IntegratedExecutionProfile):
             raise TypeError("profile must be IntegratedExecutionProfile")
+        if provenance_provider is not None and not isinstance(
+            provenance_provider,
+            IntegratedAttemptProvenanceProvider,
+        ):
+            raise TypeError(
+                "provenance_provider must implement IntegratedAttemptProvenanceProvider"
+            )
         try:
             binding = profile.require_tool_binding(INTEGRATED_PLAN_UPDATE_TOOL_ID)
         except KeyError as exception:
@@ -201,6 +226,7 @@ class IntegratedPlanner:
             raise IntegratedAgentConfigurationError()
 
         self._profile = profile
+        self._provenance_provider = provenance_provider
         self._resolver = _IntegratedPlanUpdateResourceResolver(self)
         self._adapter = _IntegratedPlanUpdateAdapter(self)
         self._active: dict[AgentRunId, _PlannerRunState] = {}
@@ -211,6 +237,10 @@ class IntegratedPlanner:
     @property
     def profile(self) -> IntegratedExecutionProfile:
         return self._profile
+
+    @property
+    def provenance_provider(self) -> IntegratedAttemptProvenanceProvider | None:
+        return self._provenance_provider
 
     @property
     def descriptor(self) -> ToolDescriptor:
@@ -302,11 +332,25 @@ class IntegratedPlanner:
             next_revision = state.revision + 1
             if next_revision > self._profile.budget_extension.max_plan_revisions:
                 raise IntegratedAgentRejectedError("integrated plan revision budget is exhausted")
+            provenance = _plan_provenance(state.binding)
+            if self._provenance_provider is not None:
+                inherited = self._provenance_provider.provenance_for_attempt(
+                    request.run_id,
+                    request.call_id,
+                )
+                provenance = integrated_provenance_union(
+                    inherited,
+                    derived_atom=IntegratedDataProvenanceAtom(
+                        source_kind=IntegratedDataSourceKind.TOOL_RESULT,
+                        source_binding=f"tool-result:{request.call_id}",
+                        freshness_bindings=(f"tool:{request.tool_id}",),
+                    ),
+                )
             plan = NormalizedPlan.create(
                 task_id=state.binding.task_id,
                 revision=PlanRevision(next_revision),
                 statements=proposal.statements,
-                provenance=_plan_provenance(state.binding),
+                provenance=provenance,
             )
             state.revision = next_revision
             state.plan = plan

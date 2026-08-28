@@ -20,7 +20,11 @@ from phoenix_os.agent.contracts import (
 )
 from phoenix_os.agent.errors import ToolExecutionError
 from phoenix_os.agent.registry import ToolRegistry
-from phoenix_os.agent.tools import ToolResourceResolutionContext
+from phoenix_os.agent.tools import (
+    ToolFinalAdmissionContext,
+    ToolFinalAdmissionValidator,
+    ToolResourceResolutionContext,
+)
 from phoenix_os.agent.workspace_agent_tools import (
     WorkspaceAgentToolBinding,
     WorkspaceToolAdapter,
@@ -95,7 +99,11 @@ class _WorkspaceService(AgentWorkspaceService):
         self,
         request: ArtifactListRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ArtifactListResult:
+        if final_admission is not None:
+            await final_admission()
         self.list_request = request
         self.context = context
         return ArtifactListResult(
@@ -108,7 +116,11 @@ class _WorkspaceService(AgentWorkspaceService):
         self,
         request: ArtifactReadRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ArtifactReadResult | None:
+        if final_admission is not None:
+            await final_admission()
         self.read_request = request
         self.context = context
         return None
@@ -117,7 +129,10 @@ class _WorkspaceService(AgentWorkspaceService):
         self,
         request: ArtifactWriteRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ArtifactRecord:
+        del final_admission
         self.write_request = request
         self.context = context
         version = (
@@ -144,7 +159,10 @@ class _WorkspaceService(AgentWorkspaceService):
         self,
         request: ArtifactDeleteRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> None:
+        del final_admission
         self.delete_request = request
         self.context = context
 
@@ -152,7 +170,10 @@ class _WorkspaceService(AgentWorkspaceService):
         self,
         request: ArtifactImportRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ArtifactTransferReceipt:
+        del final_admission
         self.import_request = request
         self.context = context
         return ArtifactTransferReceipt(
@@ -175,7 +196,10 @@ class _WorkspaceService(AgentWorkspaceService):
         self,
         request: ArtifactExportRequest,
         context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
     ) -> ArtifactTransferReceipt:
+        del final_admission
         self.export_request = request
         self.context = context
         return ArtifactTransferReceipt(
@@ -438,3 +462,58 @@ async def test_workspace_adapter_rejects_substituted_upstream_resource() -> None
             substituted,
             _CONTEXT,
         )
+
+
+class _FinalAdmissionWorkspaceService(_WorkspaceService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.final_details: list[ToolFinalAdmissionContext | None] = []
+
+    async def write(
+        self,
+        request: ArtifactWriteRequest,
+        context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None = None,
+    ) -> ArtifactRecord:
+        if final_admission is not None:
+            details = ToolFinalAdmissionContext(mutation_bytes=len(request.content))
+            self.final_details.append(details)
+            await final_admission(details)
+        return await super().write(request, context)
+
+
+@pytest.mark.asyncio
+async def test_workspace_tool_forwards_final_admission_to_effect_boundary() -> None:
+    service = _FinalAdmissionWorkspaceService()
+    binding = _binding(WORKSPACE_WRITE_ACTION, scope_kind=WorkspaceScopeKind.RUN)
+    content = b"bounded final-admission bytes"
+    request = _request(
+        binding,
+        {
+            "artifact_id": str(UUID(int=101)),
+            "logical_path": "reports/final.txt",
+            "content_base64": base64.b64encode(content).decode("ascii"),
+            "media_type": "text/plain",
+        },
+    )
+    seen: list[ToolFinalAdmissionContext | None] = []
+
+    async def final_admission(
+        details: ToolFinalAdmissionContext | None = None,
+    ) -> None:
+        seen.append(details)
+
+    result = await WorkspaceToolAdapter(
+        service,
+        binding,
+    ).invoke_with_context_and_final_admission(
+        request,
+        _CONTEXT,
+        final_admission,
+    )
+
+    assert result.status is ToolResultStatus.SUCCEEDED
+    expected = ToolFinalAdmissionContext(mutation_bytes=len(content))
+    assert seen == [expected]
+    assert service.final_details == [expected]

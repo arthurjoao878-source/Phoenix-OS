@@ -320,3 +320,12 @@ def test_finite_effect_failure_and_phase_vocabularies_match_frozen_rfc_classes()
         "waiting",
         "terminal",
     }
+
+
+def test_data_sink_vocabulary_covers_cross_subsystem_memory_and_host_effects() -> None:
+    assert IntegratedDataSink.MEMORY.value == "memory"
+    assert IntegratedDataSink.HOST_EFFECT.value == "host_effect"
+
+
+def test_data_sink_vocabulary_includes_distinct_workspace_export_sink() -> None:
+    assert IntegratedDataSink.WORKSPACE_EXPORT.value == "workspace_export"

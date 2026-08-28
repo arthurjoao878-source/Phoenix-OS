@@ -1824,8 +1824,9 @@ async def test_effectful_agent_tool_host_requires_approval_and_full_intersection
     assert result.final_output == "complete"
     assert run_authorizer.contexts == [context, context]
     assert all(item is context for item in run_authorizer.contexts)
-    assert len(tool_authorizer.requests) == 2
+    assert len(tool_authorizer.requests) == 3
     assert tool_authorizer.requests[0] is tool_authorizer.requests[1]
+    assert tool_authorizer.requests[1] is tool_authorizer.requests[2]
     assert tool_authorizer.requests[0].agent_id == request.agent_id
     assert tool_authorizer.requests[0].run_id == request.run_id
     assert all(item is context for item in tool_authorizer.contexts)
@@ -1845,7 +1846,7 @@ async def test_effectful_agent_tool_host_requires_approval_and_full_intersection
     tool_snapshot = await tool_policy.snapshot()
     host_snapshot = await host_policy.snapshot()
     assert (run_snapshot.allowed, run_snapshot.denied) == (2, 0)
-    assert (tool_snapshot.allowed, tool_snapshot.denied) == (2, 0)
+    assert (tool_snapshot.allowed, tool_snapshot.denied) == (3, 0)
     assert (host_snapshot.allowed, host_snapshot.denied) == (1, 0)
 
 
