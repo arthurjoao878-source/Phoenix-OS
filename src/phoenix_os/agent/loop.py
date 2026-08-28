@@ -318,6 +318,22 @@ class AgentLoop:
     def artifact_context_provider(self) -> AgentArtifactContextProvider | None:
         return self._artifact_context
 
+    async def revalidate_run_authority(
+        self,
+        request: AgentRunRequest,
+        context: SecurityContext,
+        binding: AgentRunAuthorityBinding,
+    ) -> None:
+        """Reapply current bound run policy and authority freshness without execution."""
+
+        if not isinstance(request, AgentRunRequest):
+            raise TypeError("request must be AgentRunRequest")
+        if not isinstance(context, SecurityContext):
+            raise TypeError("context must be SecurityContext")
+        if not isinstance(binding, AgentRunAuthorityBinding):
+            raise TypeError("binding must be AgentRunAuthorityBinding")
+        await self._authorize_fresh_run_admission(request, context, binding)
+
     async def run(
         self,
         request: AgentRunRequest,

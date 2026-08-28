@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
+import pytest
+
+from phoenix_os.agent.contracts import AgentId, AgentRunId, AgentStepId
+from phoenix_os.agent.durable_codec import seal_checkpoint_envelope
+from phoenix_os.agent.durable_compatibility import (
+    DurableCompatibilityPolicy,
+    StaticDurableCompatibilityValidator,
+)
+from phoenix_os.agent.durable_contracts import (
+    CheckpointDigest,
+    CheckpointEnvelope,
+    CheckpointId,
+    CheckpointMetadata,
+    CheckpointNextOperation,
+    CheckpointPayloadProfile,
+    CheckpointSchemaVersion,
+    CheckpointSequence,
+    CompatibilityDigests,
+    DurableAgentRunId,
+    DurableRunStatus,
+    DurableRunVersion,
+    RecoveryDisposition,
+    RecoveryPoint,
+)
+from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
+from phoenix_os.agent.durable_recovery import (
+    DurableRecoveryResumeGate,
+    StartupDurableRecoveryCoordinator,
+    classify_recovery_checkpoint,
+)
+from phoenix_os.agent.state import AgentBudgetSnapshot
+
+_NOW = datetime(2026, 8, 28, 21, 0, tzinfo=UTC)
+_DURABLE_RUN_ID = DurableAgentRunId(UUID(int=601))
+_AGENT_RUN_ID = AgentRunId(UUID(int=602))
+_STEP_ID = AgentStepId(UUID(int=603))
+
+
+def _digest(character: str) -> CheckpointDigest:
+    return CheckpointDigest(character * 64)
+
+
+def _compatibility() -> CompatibilityDigests:
+    return CompatibilityDigests(
+        configuration=_digest("a"),
+        tool_registry=_digest("b"),
+        model_provider=_digest("c"),
+        checkpoint_codec=_digest("d"),
+    )
+
+
+def _validator() -> StaticDurableCompatibilityValidator:
+    return StaticDurableCompatibilityValidator(
+        (
+            DurableCompatibilityPolicy(
+                agent_id=AgentId("assistant"),
+                current=_compatibility(),
+                payload_profile=CheckpointPayloadProfile.METADATA_ONLY,
+            ),
+        )
+    )
+
+
+def _checkpoint(
+    *,
+    status: DurableRunStatus = DurableRunStatus.ACTIVE,
+    next_operation: CheckpointNextOperation = CheckpointNextOperation.MODEL_TURN,
+) -> CheckpointEnvelope:
+    return seal_checkpoint_envelope(
+        CheckpointEnvelope(
+            schema_version=CheckpointSchemaVersion(),
+            durable_run_id=_DURABLE_RUN_ID,
+            checkpoint_id=CheckpointId(UUID(int=604)),
+            sequence=CheckpointSequence(1),
+            previous_digest=None,
+            run_version=DurableRunVersion(1),
+            status=status,
+            agent_run_id=_AGENT_RUN_ID,
+            step_id=_STEP_ID,
+            metadata=CheckpointMetadata(
+                agent_id=AgentId("assistant"),
+                actor_id="worker-1",
+                next_operation=next_operation,
+                budget=AgentBudgetSnapshot(
+                    steps=0,
+                    model_turns=0,
+                    tool_calls=0,
+                    model_output_bytes=0,
+                    tool_result_bytes=0,
+                    input_tokens=0,
+                    output_tokens=0,
+                    started_at=_NOW - timedelta(minutes=1),
+                    deadline=_NOW + timedelta(hours=1),
+                ),
+                compatibility=_compatibility(),
+                payload_profile=CheckpointPayloadProfile.METADATA_ONLY,
+                retention_deadline=_NOW + timedelta(days=1),
+                metadata={"tenant": "demo"},
+            ),
+            created_at=_NOW,
+            digest=_digest("0"),
+        )
+    )
+
+
+@dataclass
+class _ResumeGate:
+    allowed: bool
+    calls: int = 0
+
+    async def revalidate_resume(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        now: datetime,
+    ) -> bool:
+        del checkpoint, now
+        self.calls += 1
+        return self.allowed
+
+
+def test_resume_gate_structurally_implements_generic_protocol() -> None:
+    assert isinstance(_ResumeGate(True), DurableRecoveryResumeGate)
+
+
+def test_paused_operator_with_resumable_next_operation_remains_operator_pause() -> None:
+    checkpoint = _checkpoint(
+        status=DurableRunStatus.PAUSED_OPERATOR,
+        next_operation=CheckpointNextOperation.MODEL_TURN,
+    )
+
+    point, disposition = classify_recovery_checkpoint(
+        checkpoint,
+        now=_NOW + timedelta(minutes=1),
+    )
+
+    assert point is RecoveryPoint.OPERATOR_PAUSE
+    assert disposition is RecoveryDisposition.PAUSE_OPERATOR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("allowed", "expected"),
+    (
+        (True, RecoveryDisposition.RESUME),
+        (False, RecoveryDisposition.PAUSE_OPERATOR),
+    ),
+)
+async def test_startup_resume_gate_can_only_restrict_structural_resume(
+    allowed: bool,
+    expected: RecoveryDisposition,
+) -> None:
+    checkpoint = _checkpoint()
+    store = InMemoryDurableRunStore()
+    await store.create(checkpoint)
+    gate = _ResumeGate(allowed)
+    coordinator = StartupDurableRecoveryCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_validator(),
+        resume_gate=gate,
+    )
+
+    assessment = await coordinator.assess_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=_NOW + timedelta(minutes=1),
+    )
+
+    assert assessment.point is RecoveryPoint.SAFE_BOUNDARY
+    assert assessment.disposition is expected
+    assert gate.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_indeterminate_entrypoint_applies_resume_gate_at_safe_boundary() -> None:
+    checkpoint = _checkpoint()
+    store = InMemoryDurableRunStore()
+    await store.create(checkpoint)
+    gate = _ResumeGate(False)
+    coordinator = StartupDurableRecoveryCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_validator(),
+        resume_gate=gate,
+    )
+
+    assessment = await coordinator.persist_indeterminate_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=_NOW + timedelta(minutes=1),
+    )
+
+    assert assessment.point is RecoveryPoint.SAFE_BOUNDARY
+    assert assessment.disposition is RecoveryDisposition.PAUSE_OPERATOR
+    assert gate.calls == 1

@@ -102,6 +102,29 @@ class IntegratedRunBudget:
         with self._lock:
             return self._usage
 
+    @classmethod
+    def restore(
+        cls,
+        extension: IntegratedBudgetExtension,
+        *,
+        started_at: datetime,
+        parent_deadline: datetime,
+        usage: IntegratedBudgetUsage,
+    ) -> IntegratedRunBudget:
+        """Restore exact persisted usage without resetting remaining budget."""
+
+        if not isinstance(usage, IntegratedBudgetUsage):
+            raise TypeError("usage must be IntegratedBudgetUsage")
+        restored = cls(
+            extension,
+            started_at=started_at,
+            parent_deadline=parent_deadline,
+        )
+        with restored._lock:
+            restored._require_within_extension(usage)
+            restored._usage = usage
+        return restored
+
     def remaining_seconds(self, *, now: datetime) -> float:
         self.require_active(now=now)
         return (self._deadline - now).total_seconds()

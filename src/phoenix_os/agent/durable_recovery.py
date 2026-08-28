@@ -41,6 +41,12 @@ from phoenix_os.agent.durable_contracts import (
     RecoveryPoint,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
+from phoenix_os.agent.durable_metadata import (
+    DurableCheckpointHistoryValidator,
+    DurableCheckpointMetadataProjector,
+    project_durable_checkpoint_metadata,
+    validate_durable_checkpoint_history,
+)
 from phoenix_os.agent.errors import AgentCodecError, AgentStateConflictError
 
 _OWNER_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
@@ -176,6 +182,18 @@ class DurableRecoveryCoordinator(Protocol):
 
 
 @runtime_checkable
+class DurableRecoveryResumeGate(Protocol):
+    """Revalidate whether one structurally safe checkpoint may auto-resume."""
+
+    def revalidate_resume(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        now: datetime,
+    ) -> Awaitable[bool]: ...
+
+
+@runtime_checkable
 class DurableIndeterminateRecoveryCoordinator(Protocol):
     """Persist fail-closed indeterminate recovery without resuming external work."""
 
@@ -203,6 +221,9 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         compatibility_validator: DurableCompatibilityValidator,
         approval_revalidator: DurableApprovalRevalidator | None = None,
         attempt_recorder: DurableExecutionAttemptRecorder | None = None,
+        metadata_projector: DurableCheckpointMetadataProjector | None = None,
+        history_validator: DurableCheckpointHistoryValidator | None = None,
+        resume_gate: DurableRecoveryResumeGate | None = None,
     ) -> None:
         if not isinstance(store, DurableRunStore):
             raise TypeError("store must be DurableRunStore")
@@ -215,8 +236,26 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             DurableApprovalRevalidator,
         ):
             raise TypeError("approval_revalidator must implement DurableApprovalRevalidator")
+        if metadata_projector is not None and not isinstance(
+            metadata_projector,
+            DurableCheckpointMetadataProjector,
+        ):
+            raise TypeError("metadata_projector must implement DurableCheckpointMetadataProjector")
+        if history_validator is not None and not isinstance(
+            history_validator,
+            DurableCheckpointHistoryValidator,
+        ):
+            raise TypeError("history_validator must implement DurableCheckpointHistoryValidator")
+        if resume_gate is not None and not isinstance(
+            resume_gate,
+            DurableRecoveryResumeGate,
+        ):
+            raise TypeError("resume_gate must implement DurableRecoveryResumeGate")
         selected_attempt_recorder = (
-            StoreBackedDurableExecutionAttemptRecorder(store=store)
+            StoreBackedDurableExecutionAttemptRecorder(
+                store=store,
+                metadata_projector=metadata_projector,
+            )
             if attempt_recorder is None
             else attempt_recorder
         )
@@ -227,6 +266,9 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         self._compatibility_validator = compatibility_validator
         self._approval_revalidator = approval_revalidator
         self._attempt_recorder = selected_attempt_recorder
+        self._metadata_projector = metadata_projector
+        self._history_validator = history_validator
+        self._resume_gate = resume_gate
         self._closed = False
 
     @property
@@ -263,6 +305,11 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                 limit=checkpoint.sequence.value,
             )
             _validate_authoritative_history(checkpoint, history)
+            validate_durable_checkpoint_history(
+                self._history_validator,
+                checkpoint,
+                history,
+            )
             compatibility = self._compatibility_validator.validate(checkpoint)
             _validate_compatibility_assessment(checkpoint, compatibility)
             point, disposition = classify_recovery_checkpoint(checkpoint, now=now)
@@ -285,6 +332,12 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             if not compatibility.compatible and disposition is RecoveryDisposition.RESUME:
                 point = RecoveryPoint.UNSAFE_STATE
                 disposition = RecoveryDisposition.PAUSE_OPERATOR
+            disposition = await _revalidate_resume_disposition(
+                self._resume_gate,
+                checkpoint,
+                disposition=disposition,
+                now=now,
+            )
             return _assessment(
                 checkpoint=checkpoint,
                 lease=lease,
@@ -330,6 +383,11 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                 limit=checkpoint.sequence.value,
             )
             _validate_authoritative_history(checkpoint, history)
+            validate_durable_checkpoint_history(
+                self._history_validator,
+                checkpoint,
+                history,
+            )
             compatibility = self._compatibility_validator.validate(checkpoint)
             _validate_compatibility_assessment(checkpoint, compatibility)
             point, disposition = classify_recovery_checkpoint(checkpoint, now=now)
@@ -352,6 +410,12 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             if not compatibility.compatible and disposition is RecoveryDisposition.RESUME:
                 point = RecoveryPoint.UNSAFE_STATE
                 disposition = RecoveryDisposition.PAUSE_OPERATOR
+            disposition = await _revalidate_resume_disposition(
+                self._resume_gate,
+                checkpoint,
+                disposition=disposition,
+                now=now,
+            )
 
             if disposition in {
                 RecoveryDisposition.MARK_INDETERMINATE_MODEL,
@@ -373,11 +437,22 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                     transitioned,
                     reason=reason,
                     now=now,
+                    metadata_projector=self._metadata_projector,
                 )
                 authoritative = await self._store.get_current(run_id)
                 if authoritative != transitioned:
                     raise AgentStateConflictError()
                 checkpoint = transitioned
+                post_history = await self._store.list_history(
+                    run_id,
+                    limit=checkpoint.sequence.value,
+                )
+                _validate_authoritative_history(checkpoint, post_history)
+                validate_durable_checkpoint_history(
+                    self._history_validator,
+                    checkpoint,
+                    post_history,
+                )
                 point, disposition = classify_recovery_checkpoint(checkpoint, now=now)
                 if disposition is not RecoveryDisposition.PAUSE_OPERATOR:
                     raise AgentStateConflictError()
@@ -444,6 +519,23 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             raise RuntimeError("durable recovery coordinator is closed")
 
 
+async def _revalidate_resume_disposition(
+    gate: DurableRecoveryResumeGate | None,
+    checkpoint: CheckpointEnvelope,
+    *,
+    disposition: RecoveryDisposition,
+    now: datetime,
+) -> RecoveryDisposition:
+    if disposition is not RecoveryDisposition.RESUME or gate is None:
+        return disposition
+    allowed = await gate.revalidate_resume(checkpoint, now=now)
+    if type(allowed) is not bool:
+        raise TypeError("resume gate must return a boolean")
+    if allowed:
+        return RecoveryDisposition.RESUME
+    return RecoveryDisposition.PAUSE_OPERATOR
+
+
 def classify_recovery_checkpoint(
     checkpoint: CheckpointEnvelope,
     *,
@@ -506,7 +598,10 @@ def classify_recovery_checkpoint(
         return RecoveryPoint.AWAITING_APPROVAL, RecoveryDisposition.PAUSE_OPERATOR
 
     if checkpoint.status is DurableRunStatus.PAUSED_OPERATOR:
-        if next_operation is not CheckpointNextOperation.OPERATOR_REVIEW:
+        if (
+            next_operation is not CheckpointNextOperation.OPERATOR_REVIEW
+            and next_operation not in _RESUMABLE_NEXT_OPERATIONS
+        ):
             return RecoveryPoint.UNSAFE_STATE, RecoveryDisposition.TERMINATE_FAILED
         return RecoveryPoint.OPERATOR_PAUSE, RecoveryDisposition.PAUSE_OPERATOR
 
@@ -592,6 +687,7 @@ def _validate_indeterminate_transition(
     *,
     reason: IndeterminateReason,
     now: datetime,
+    metadata_projector: DurableCheckpointMetadataProjector | None = None,
 ) -> None:
     before_attempt = before.metadata.active_attempt
     after_attempt = after.metadata.active_attempt
@@ -612,10 +708,21 @@ def _validate_indeterminate_transition(
             completed_at=now,
             indeterminate_reason=reason,
         )
+        expected_metadata_values = project_durable_checkpoint_metadata(
+            metadata_projector,
+            before,
+            checkpoint_id=after.checkpoint_id,
+            status=expected_status,
+            step_id=before.step_id,
+            next_operation=CheckpointNextOperation.OPERATOR_REVIEW,
+            active_attempt=expected_attempt,
+            metadata=before.metadata.metadata,
+        )
         expected_metadata = replace(
             before.metadata,
             next_operation=CheckpointNextOperation.OPERATOR_REVIEW,
             active_attempt=expected_attempt,
+            metadata=expected_metadata_values,
         )
     except (TypeError, ValueError) as exception:
         raise AgentStateConflictError() from exception
