@@ -29,6 +29,7 @@ from phoenix_os.agent.durable_metadata import (
     DurableCheckpointMetadataProjector,
     project_durable_checkpoint_metadata,
 )
+from phoenix_os.agent.durable_mutation import append_durable_checkpoint_confirmed
 from phoenix_os.agent.errors import AgentStateConflictError
 
 _ALLOWED_TERMINAL_STATUSES = frozenset(
@@ -572,9 +573,10 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
                 digest=CheckpointDigest("0" * 64),
             )
         )
-        return await self._store.append(
-            candidate,
-            expected_version=current.run_version,
+        return await append_durable_checkpoint_confirmed(
+            self._store,
+            current=current,
+            intended=candidate,
             lease=lease,
             now=now,
         )
