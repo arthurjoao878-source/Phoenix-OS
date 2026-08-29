@@ -20,6 +20,10 @@ from phoenix_os.agent.durable_contracts import (
     RetentionPolicy,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
+from phoenix_os.agent.durable_metadata import (
+    DurableCheckpointHistoryValidator,
+    DurableCheckpointMetadataProjector,
+)
 from phoenix_os.agent.durable_observer import (
     DurableRunObserver,
     NullDurableRunObserver,
@@ -34,6 +38,7 @@ from phoenix_os.agent.durable_reconciliation_administration import (
 )
 from phoenix_os.agent.durable_recovery import (
     DurableRecoveryCoordinator,
+    DurableRecoveryResumeGate,
     StartupDurableRecoveryCoordinator,
 )
 from phoenix_os.agent.durable_retention import DurableRetentionStore
@@ -242,6 +247,9 @@ def create_durable_agent_runtime_stack(
     compatibility_validator: DurableCompatibilityValidator,
     recovery_configuration: DurableRecoveryWorkerConfiguration | None = None,
     approval_revalidator: DurableApprovalRevalidator | None = None,
+    metadata_projector: DurableCheckpointMetadataProjector | None = None,
+    history_validator: DurableCheckpointHistoryValidator | None = None,
+    resume_gate: DurableRecoveryResumeGate | None = None,
     observer: DurableRunObserver | None = None,
     administration_configuration: DurableAdministrationConfiguration | None = None,
     machine_guard: DurableMachineAdministrationGuard | None = None,
@@ -266,6 +274,21 @@ def create_durable_agent_runtime_stack(
         DurableApprovalRevalidator,
     ):
         raise TypeError("approval_revalidator must implement DurableApprovalRevalidator")
+    if metadata_projector is not None and not isinstance(
+        metadata_projector,
+        DurableCheckpointMetadataProjector,
+    ):
+        raise TypeError("metadata_projector must implement DurableCheckpointMetadataProjector")
+    if history_validator is not None and not isinstance(
+        history_validator,
+        DurableCheckpointHistoryValidator,
+    ):
+        raise TypeError("history_validator must implement DurableCheckpointHistoryValidator")
+    if resume_gate is not None and not isinstance(
+        resume_gate,
+        DurableRecoveryResumeGate,
+    ):
+        raise TypeError("resume_gate must implement DurableRecoveryResumeGate")
     if observer is not None and not isinstance(observer, DurableRunObserver):
         raise TypeError("observer must implement DurableRunObserver")
     if administration_configuration is not None and not isinstance(
@@ -341,6 +364,9 @@ def create_durable_agent_runtime_stack(
         lease_manager=lease_manager,
         compatibility_validator=compatibility_validator,
         approval_revalidator=approval_revalidator,
+        metadata_projector=metadata_projector,
+        history_validator=history_validator,
+        resume_gate=resume_gate,
     )
     worker = BoundedDurableRecoveryWorker(
         store=store,
@@ -389,6 +415,7 @@ def create_durable_agent_runtime_stack(
         reconciliation_applier = StoreBackedDurableReconciliationDispositionApplier(
             store=store,
             authorizer=reconciliation_authorizer,
+            metadata_projector=metadata_projector,
         )
         reconciliation_administration = DurableReconciliationAdministration(
             store=store,

@@ -57,6 +57,7 @@ from phoenix_os.host_automation.authorization import (
     HOST_CLIPBOARD_WRITE_ACTION,
 )
 from phoenix_os.integrated_agent.contracts import (
+    IntegratedBudgetUsage,
     IntegratedDataProvenance,
     IntegratedDataProvenanceAtom,
     IntegratedDataSink,
@@ -165,6 +166,51 @@ class IntegratedAgentExecutionGuard:
             self._seen.add(request.run_id)
             self._active[request.run_id] = state
 
+    def restore_run(
+        self,
+        task: IntegratedTaskRequest,
+        request: AgentRunRequest,
+        *,
+        provenance: IntegratedDataProvenance,
+        budget_usage: IntegratedBudgetUsage,
+    ) -> None:
+        """Restore one reviewed safe-boundary run without replaying attempts."""
+
+        if not isinstance(task, IntegratedTaskRequest):
+            raise TypeError("task must be IntegratedTaskRequest")
+        if not isinstance(request, AgentRunRequest):
+            raise TypeError("request must be AgentRunRequest")
+        if not isinstance(provenance, IntegratedDataProvenance):
+            raise TypeError("provenance must be IntegratedDataProvenance")
+        if not isinstance(budget_usage, IntegratedBudgetUsage):
+            raise TypeError("budget_usage must be IntegratedBudgetUsage")
+        if request.agent_id != self._profile.agent_id:
+            raise IntegratedAgentValidationError(
+                "integrated restored run agent does not match profile"
+            )
+        required = frozenset(_task_provenance(task).atoms)
+        if not required.issubset(frozenset(provenance.atoms)):
+            raise IntegratedAgentValidationError(
+                "restored integrated provenance does not preserve task binding"
+            )
+        state = _IntegratedExecutionRunState(
+            request=request,
+            task=task,
+            provenance=provenance,
+            budget=IntegratedRunBudget.restore(
+                self._profile.budget_extension,
+                started_at=request.created_at,
+                parent_deadline=request.deadline,
+                usage=budget_usage,
+            ),
+        )
+        with self._lock:
+            self._require_open()
+            if request.run_id in self._seen or request.run_id in self._active:
+                raise IntegratedAgentStaleError("integrated execution run id cannot be reused")
+            self._seen.add(request.run_id)
+            self._active[request.run_id] = state
+
     def release_run(self, run_id: AgentRunId) -> None:
         if not isinstance(run_id, AgentRunId):
             raise TypeError("run_id must be AgentRunId")
@@ -177,6 +223,13 @@ class IntegratedAgentExecutionGuard:
         with self._lock:
             state = self._active.get(run_id)
             return None if state is None else state.provenance
+
+    def current_budget_usage(self, run_id: AgentRunId) -> IntegratedBudgetUsage | None:
+        if not isinstance(run_id, AgentRunId):
+            raise TypeError("run_id must be AgentRunId")
+        with self._lock:
+            state = self._active.get(run_id)
+            return None if state is None else state.budget.usage
 
     def failure_for(self, run_id: AgentRunId) -> IntegratedFailureClass | None:
         if not isinstance(run_id, AgentRunId):

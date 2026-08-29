@@ -180,6 +180,7 @@ class IntegratedAgentAdmission:
         self._task_digests: dict[IntegratedTaskId, IntegratedTaskDigest] = {}
         self._seen_run_ids: set[AgentRunId] = set()
         self._active: dict[AgentRunId, IntegratedAgentRunBinding] = {}
+        self._active_requests: dict[AgentRunId, AgentRunRequest] = {}
         self._closed = False
         self._lock = asyncio.Lock()
 
@@ -277,6 +278,7 @@ class IntegratedAgentAdmission:
             self._task_digests.setdefault(task.task_id, task_digest)
             self._seen_run_ids.add(effective_request.run_id)
             self._active[effective_request.run_id] = binding
+            self._active_requests[effective_request.run_id] = effective_request
 
         return IntegratedAgentAdmissionLease(self, effective_request, binding)
 
@@ -288,6 +290,17 @@ class IntegratedAgentAdmission:
             raise TypeError("run_id must be AgentRunId")
         async with self._lock:
             return self._active.get(run_id)
+
+    async def request_for_run(
+        self,
+        run_id: AgentRunId,
+    ) -> AgentRunRequest | None:
+        """Return the exact current effective request for one active binding."""
+
+        if not isinstance(run_id, AgentRunId):
+            raise TypeError("run_id must be AgentRunId")
+        async with self._lock:
+            return self._active_requests.get(run_id)
 
     async def close(self) -> None:
         async with self._lock:
@@ -301,6 +314,7 @@ class IntegratedAgentAdmission:
                     "integrated run binding is no longer the active binding"
                 )
             del self._active[binding.run_id]
+            del self._active_requests[binding.run_id]
 
 
 def most_restrictive_agent_limits(*limits: AgentLimits) -> AgentLimits:

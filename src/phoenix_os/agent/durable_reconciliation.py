@@ -31,6 +31,10 @@ from phoenix_os.agent.durable_contracts import (
     ReconciliationDecision,
     ReconciliationRequest,
 )
+from phoenix_os.agent.durable_metadata import (
+    DurableCheckpointMetadataProjector,
+    project_durable_checkpoint_metadata,
+)
 from phoenix_os.agent.durable_status_lookup import (
     DurableAttemptExternalStatus,
     DurableAttemptStatusLookupOutcome,
@@ -472,6 +476,7 @@ class StoreBackedDurableReconciliationDispositionApplier:
         checkpoint_id_factory: Callable[[], CheckpointId] = CheckpointId,
         reconciliation_id_factory: Callable[[], UUID] = uuid4,
         max_reconciliation_attempts: int = DEFAULT_DURABLE_RECONCILIATION_ATTEMPTS,
+        metadata_projector: DurableCheckpointMetadataProjector | None = None,
     ) -> None:
         if not isinstance(store, DurableRunStore):
             raise TypeError("store must implement DurableRunStore")
@@ -490,11 +495,17 @@ class StoreBackedDurableReconciliationDispositionApplier:
             raise ValueError("max_reconciliation_attempts must be greater than zero")
         if max_reconciliation_attempts > MAX_RECONCILIATION_ATTEMPTS:
             raise ValueError("max_reconciliation_attempts exceeds the global maximum")
+        if metadata_projector is not None and not isinstance(
+            metadata_projector,
+            DurableCheckpointMetadataProjector,
+        ):
+            raise TypeError("metadata_projector must implement DurableCheckpointMetadataProjector")
         self._store = store
         self._authorizer = authorizer
         self._checkpoint_id_factory = checkpoint_id_factory
         self._reconciliation_id_factory = reconciliation_id_factory
         self._max_reconciliation_attempts = max_reconciliation_attempts
+        self._metadata_projector = metadata_projector
 
     async def apply(
         self,
@@ -658,9 +669,19 @@ class StoreBackedDurableReconciliationDispositionApplier:
         if not isinstance(checkpoint_id, CheckpointId):
             raise TypeError("checkpoint_id_factory must return CheckpointId")
         try:
-            metadata_values = _metadata_with_record(
+            metadata_values: Mapping[str, str] = _metadata_with_record(
                 current.metadata.metadata,
                 record,
+            )
+            metadata_values = project_durable_checkpoint_metadata(
+                self._metadata_projector,
+                current,
+                checkpoint_id=checkpoint_id,
+                status=status,
+                step_id=current.step_id,
+                next_operation=next_operation,
+                active_attempt=attempt,
+                metadata=metadata_values,
             )
             metadata = replace(
                 current.metadata,

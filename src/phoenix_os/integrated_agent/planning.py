@@ -277,6 +277,45 @@ class IntegratedPlanner:
             self._seen.add(binding.run_id)
             self._active[binding.run_id] = _PlannerRunState(binding=binding)
 
+    def restore_run(
+        self,
+        binding: IntegratedAgentRunBinding,
+        *,
+        plan: NormalizedPlan | None,
+    ) -> None:
+        """Restore exact reviewed advisory plan state for one recovered run."""
+
+        if not isinstance(binding, IntegratedAgentRunBinding):
+            raise TypeError("binding must be IntegratedAgentRunBinding")
+        if plan is not None and not isinstance(plan, NormalizedPlan):
+            raise TypeError("plan must be NormalizedPlan or None")
+        if (
+            binding.profile_id != self._profile.profile_id
+            or binding.profile_generation != self._profile.generation
+            or binding.agent_id != self._profile.agent_id
+        ):
+            raise IntegratedAgentConfigurationError()
+        if plan is not None and (
+            plan.task_id != binding.task_id
+            or plan.revision.value > self._profile.budget_extension.max_plan_revisions
+        ):
+            raise IntegratedAgentValidationError(
+                "restored integrated plan does not match active binding"
+            )
+        state = _PlannerRunState(
+            binding=binding,
+            revision=0 if plan is None else plan.revision.value,
+            plan=plan,
+        )
+        with self._lock:
+            self._require_open()
+            if binding.run_id in self._seen or binding.run_id in self._active:
+                raise IntegratedAgentRejectedError(
+                    "agent run id cannot be reused for integrated planning"
+                )
+            self._seen.add(binding.run_id)
+            self._active[binding.run_id] = state
+
     def release_run(self, run_id: AgentRunId) -> None:
         if not isinstance(run_id, AgentRunId):
             raise TypeError("run_id must be AgentRunId")

@@ -25,6 +25,10 @@ from phoenix_os.agent.durable_contracts import (
     ExecutionAttemptStatus,
     IndeterminateReason,
 )
+from phoenix_os.agent.durable_metadata import (
+    DurableCheckpointMetadataProjector,
+    project_durable_checkpoint_metadata,
+)
 from phoenix_os.agent.errors import AgentStateConflictError
 
 _ALLOWED_TERMINAL_STATUSES = frozenset(
@@ -120,6 +124,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         store: DurableRunStore,
         attempt_id_factory: Callable[[], ExecutionAttemptId] = ExecutionAttemptId,
         checkpoint_id_factory: Callable[[], CheckpointId] = CheckpointId,
+        metadata_projector: DurableCheckpointMetadataProjector | None = None,
     ) -> None:
         if not isinstance(store, DurableRunStore):
             raise TypeError("store must be DurableRunStore")
@@ -127,9 +132,15 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             raise TypeError("attempt_id_factory must be callable")
         if not callable(checkpoint_id_factory):
             raise TypeError("checkpoint_id_factory must be callable")
+        if metadata_projector is not None and not isinstance(
+            metadata_projector,
+            DurableCheckpointMetadataProjector,
+        ):
+            raise TypeError("metadata_projector must implement DurableCheckpointMetadataProjector")
         self._store = store
         self._attempt_id_factory = attempt_id_factory
         self._checkpoint_id_factory = checkpoint_id_factory
+        self._metadata_projector = metadata_projector
 
     async def prepare_model_attempt(
         self,
@@ -532,10 +543,21 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         checkpoint_id = self._checkpoint_id_factory()
         if not isinstance(checkpoint_id, CheckpointId):
             raise TypeError("checkpoint_id_factory must return CheckpointId")
+        metadata_values = project_durable_checkpoint_metadata(
+            self._metadata_projector,
+            current,
+            checkpoint_id=checkpoint_id,
+            status=status,
+            step_id=current.step_id,
+            next_operation=next_operation,
+            active_attempt=attempt,
+            metadata=current.metadata.metadata,
+        )
         metadata = replace(
             current.metadata,
             next_operation=next_operation,
             active_attempt=attempt,
+            metadata=metadata_values,
         )
         candidate = seal_checkpoint_envelope(
             replace(
