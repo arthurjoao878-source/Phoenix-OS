@@ -19,6 +19,11 @@ from phoenix_os.agent.durable_recovery import (
     DurableRecoveryAssessment,
     DurableRecoveryCoordinator,
 )
+from phoenix_os.agent.durable_reliability import (
+    NOOP_RELIABILITY_FAULT_INJECTOR,
+    ReliabilityFaultInjector,
+    ReliabilityFaultPoint,
+)
 from phoenix_os.agent.errors import AgentCodecError, AgentStateConflictError
 
 MAX_RECOVERY_WORKER_PAGE_SIZE = MAX_RECOVERY_CANDIDATE_PAGE
@@ -301,6 +306,7 @@ class BoundedDurableRecoveryWorker(DurableRecoveryWorker):
         coordinator: DurableRecoveryCoordinator,
         configuration: DurableRecoveryWorkerConfiguration | None = None,
         clock: Callable[[], datetime] | None = None,
+        fault_injector: ReliabilityFaultInjector | None = None,
     ) -> None:
         if not isinstance(store, DurableRunStore):
             raise TypeError("store must be DurableRunStore")
@@ -314,11 +320,17 @@ class BoundedDurableRecoveryWorker(DurableRecoveryWorker):
         selected_clock = (lambda: datetime.now(UTC)) if clock is None else clock
         if not callable(selected_clock):
             raise TypeError("clock must be callable")
+        selected_fault_injector = (
+            NOOP_RELIABILITY_FAULT_INJECTOR if fault_injector is None else fault_injector
+        )
+        if not isinstance(selected_fault_injector, ReliabilityFaultInjector):
+            raise TypeError("fault_injector must implement ReliabilityFaultInjector")
 
         self._store = store
         self._coordinator = coordinator
         self._configuration = selected_configuration
         self._clock: Callable[[], datetime] = selected_clock
+        self._fault_injector = selected_fault_injector
         self._state = DurableRecoveryWorkerState.CREATED
         self._stop_requested = asyncio.Event()
         self._closed_event = asyncio.Event()
@@ -508,6 +520,7 @@ class BoundedDurableRecoveryWorker(DurableRecoveryWorker):
                 after=after,
             )
             _validate_candidate_page(candidates, limit=page_limit, after=after)
+            self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_AFTER_CANDIDATE_READ)
             accumulator.pages += 1
             if not candidates:
                 accumulator.exhausted = True

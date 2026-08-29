@@ -47,6 +47,11 @@ from phoenix_os.agent.durable_metadata import (
     project_durable_checkpoint_metadata,
     validate_durable_checkpoint_history,
 )
+from phoenix_os.agent.durable_reliability import (
+    NOOP_RELIABILITY_FAULT_INJECTOR,
+    ReliabilityFaultInjector,
+    ReliabilityFaultPoint,
+)
 from phoenix_os.agent.errors import AgentCodecError, AgentStateConflictError
 
 _OWNER_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
@@ -224,6 +229,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         metadata_projector: DurableCheckpointMetadataProjector | None = None,
         history_validator: DurableCheckpointHistoryValidator | None = None,
         resume_gate: DurableRecoveryResumeGate | None = None,
+        fault_injector: ReliabilityFaultInjector | None = None,
     ) -> None:
         if not isinstance(store, DurableRunStore):
             raise TypeError("store must be DurableRunStore")
@@ -251,6 +257,11 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             DurableRecoveryResumeGate,
         ):
             raise TypeError("resume_gate must implement DurableRecoveryResumeGate")
+        selected_fault_injector = (
+            NOOP_RELIABILITY_FAULT_INJECTOR if fault_injector is None else fault_injector
+        )
+        if not isinstance(selected_fault_injector, ReliabilityFaultInjector):
+            raise TypeError("fault_injector must implement ReliabilityFaultInjector")
         selected_attempt_recorder = (
             StoreBackedDurableExecutionAttemptRecorder(
                 store=store,
@@ -269,6 +280,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         self._metadata_projector = metadata_projector
         self._history_validator = history_validator
         self._resume_gate = resume_gate
+        self._fault_injector = selected_fault_injector
         self._closed = False
 
     @property
@@ -295,8 +307,10 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             now=now,
         )
         try:
+            self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_AFTER_LEASE_ACQUIRE)
             self._ensure_open()
             checkpoint = await self._store.get_current(run_id)
+            self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_AFTER_REREAD)
             if checkpoint is None or checkpoint.status.terminal:
                 raise AgentStateConflictError()
 
@@ -338,6 +352,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                 disposition=disposition,
                 now=now,
             )
+            self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_AFTER_LIVE_REVALIDATION)
             return _assessment(
                 checkpoint=checkpoint,
                 lease=lease,
@@ -373,8 +388,10 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             now=now,
         )
         try:
+            self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_AFTER_LEASE_ACQUIRE)
             self._ensure_open()
             checkpoint = await self._store.get_current(run_id)
+            self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_AFTER_REREAD)
             if checkpoint is None or checkpoint.status.terminal:
                 raise AgentStateConflictError()
 
@@ -416,6 +433,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                 disposition=disposition,
                 now=now,
             )
+            self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_AFTER_LIVE_REVALIDATION)
 
             if disposition in {
                 RecoveryDisposition.MARK_INDETERMINATE_MODEL,
@@ -424,6 +442,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                 attempt = checkpoint.metadata.active_attempt
                 if attempt is None or attempt.status is not ExecutionAttemptStatus.STARTED:
                     raise AgentStateConflictError()
+                self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_BEFORE_TRANSITION)
                 transitioned = await self._attempt_recorder.mark_indeterminate(
                     run_id,
                     attempt.attempt_id,
@@ -432,6 +451,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                     reason=reason,
                     now=now,
                 )
+                self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_AFTER_TRANSITION_COMMIT)
                 _validate_indeterminate_transition(
                     checkpoint,
                     transitioned,
@@ -491,6 +511,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             after=after,
         )
         _validate_candidate_page(candidates, limit=limit, after=after)
+        self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_AFTER_CANDIDATE_READ)
 
         assessments: list[DurableRecoveryAssessment] = []
         for run_id in candidates:
