@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.35.0` implements thirty-five accepted specifications:
+Version `0.36.0` implements thirty-six accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -107,6 +107,11 @@ Version `0.35.0` implements thirty-five accepted specifications:
   session/page/revision/element identities, independent fresh exact browser-action authority,
   bounded top-level destination admission, zero-effect preparation and final commit
   revalidation, controlled tool composition, and content-free Runtime lifecycle.
+- **RFC-0036 - Secure Integrated Agent Execution and End-to-End Orchestration:** opt-in
+  Phoenix-owned task-level orchestration bound to immutable task digests and exact
+  server-owned integrated profiles, advisory planning without authority, exact local/bridge
+  tool bindings, conservative provenance/data-flow admission, safe durable recovery, and
+  content-free Runtime observation and administration.
 
 The core intentionally contains no AI model, remote database driver, external vector database,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -117,6 +122,9 @@ does not add generic shell, keyboard/mouse, force-kill, elevation, or arbitrary 
 RFC-0035 adds explicit opt-in browser-automation mediation but does not bundle a production browser
 engine or expose arbitrary URL, selector, coordinate, script, executable, proxy, cookie, credential,
 or host-path control.
+RFC-0036 adds explicit opt-in task-level integrated orchestration but does not add a second
+agent loop, workflow engine, capability registry, policy engine, downstream authority, provenance
+declassification primitive, or generic ambient access to memory, workspace, host, network, or browser.
 The standard-library SQLite adapter is a local reference implementation; stronger storage remains behind
 the State Store and Audit Store protocols. Other integrations belong behind capability providers,
 lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
@@ -385,6 +393,32 @@ public browser identifiers/contracts and closed-world authority-catalog shape
 without DNS resolution, sockets, HTTP exchange, browser-process launch,
 navigation, click, fill, page disclosure, credential access, or remote effect.
 
+## Integrated-agent release gate
+
+RFC-0036 adds a named release gate for immutable task/profile binding, advisory
+planning without authority, exact local/downstream tool bindings, conservative
+provenance and data-flow admission, final `USER_RESULT` disclosure, sequential
+effect handling, safe durable recovery, content-free operations, adversarial E2E,
+and package boundaries:
+
+```bash
+python scripts/check_integrated_agent_release.py
+```
+
+The gate reruns the complete `test_integrated_agent_*.py` surface plus the
+v0.36.0 release specification, requires the exact reviewed
+`phoenix_os/integrated_agent` package, validates the 102-invariant threat review,
+runs deterministic external-network-denied E2E, validates wheel/sdist metadata
+and archive paths, rebuilds a wheel from the validated sdist, and installs both
+wheel forms with `--no-deps --no-index` in isolated environments.
+
+The installed-package smoke validates only bounded integrated contracts,
+content-free operational shapes, exact permissions, package identity, and the
+reviewed authority catalog. It performs no model/provider call, DNS lookup,
+external socket connection, browser navigation, network request, host effect,
+memory/workspace mutation, credential access, approval consumption, or remote
+effect.
+
 ## Windows host-automation dogfood
 
 Gate 5 is manual and Windows-only because it exercises the interactive desktop through
@@ -416,6 +450,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 
 ## Release notes
 
+- [Phoenix OS 0.36.0](docs/releases/v0.36.0.md)
 - [Phoenix OS 0.35.0](docs/releases/v0.35.0.md)
 - [Phoenix OS 0.34.0](docs/releases/v0.34.0.md)
 - [Phoenix OS 0.33.0](docs/releases/v0.33.0.md)
@@ -429,7 +464,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize browser-automation, network-egress, effective-authority, host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
+The release notes summarize integrated-agent, browser-automation, network-egress, effective-authority, host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
 security boundaries, compatibility, migration, architecture decisions,
 validation, and package artifacts.
 
@@ -561,6 +596,21 @@ is bundled. The
 [RFC-0035 browser-automation threat-model and security-invariant review](docs/security/RFC-0035-secure-browser-automation-threat-model-review.md)
 maps all fifty release invariants and residual risks.
 
+Phoenix OS 0.36.0 adds opt-in secure integrated agent execution over the existing
+agent, inference, memory, workspace, host, network, browser, delegation, and durable
+boundaries. Rollout starts disabled and binds each task to one immutable digest plus
+one exact server-owned integrated profile generation:
+
+- [Migrate v0.35.0 deployments to v0.36.0 secure integrated agent execution](docs/migrations/v0.35.0-to-v0.36.0-secure-integrated-agent-execution.md)
+
+Task text, planning, model/tool results, downstream content, and persisted orchestration
+metadata remain untrusted data. Model-originated protected work retains independent
+`tool.invoke` and downstream canonical authority; provenance is conservative, data-flow
+routes are server-owned, final output crosses explicit `USER_RESULT` admission, and
+indeterminate effects are not replayed automatically. The
+[RFC-0036 integrated-agent threat-model and security-invariant review](docs/security/RFC-0036-secure-integrated-agent-execution-threat-model-review.md)
+maps all 102 release invariants and residual risks.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -634,6 +684,16 @@ effect. The
 [RFC-0035 browser-automation threat-model and security-invariant review](docs/security/RFC-0035-secure-browser-automation-threat-model-review.md)
 records the stale-identity, SSRF, composition, prepare/commit, lifecycle, and
 release evidence.
+
+RFC-0036 treats task content, planning, model/tool/downstream results, and persisted
+orchestration state as data rather than authority. Exact task digest/profile binding,
+integrated tool bindings, provenance atoms, data-flow routes, result audience, budgets,
+and recovery compatibility remain Phoenix-owned. Planning cannot manufacture authority,
+model-originated protected work retains independent tool/downstream admission, and
+possible external effects are never transparently replayed. The
+[RFC-0036 integrated-agent threat-model and security-invariant review](docs/security/RFC-0036-secure-integrated-agent-execution-threat-model-review.md)
+records all 102 invariants plus confused-deputy, exfiltration, recovery, observability,
+package-boundary, and release evidence.
 
 ## Local dashboard example
 

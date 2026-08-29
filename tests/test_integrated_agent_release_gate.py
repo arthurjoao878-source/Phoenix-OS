@@ -61,6 +61,18 @@ def test_integrated_release_gate_manifest_covers_frozen_security_requirements() 
     assert all(paths for paths in manifest.values())
 
 
+def test_integrated_release_gate_covers_v036_release_metadata() -> None:
+    namespace = _namespace()
+    companion = namespace["_COMPANION_TESTS"]
+    hardening = namespace["_REQUIRED_HARDENING_FILES"]
+    assert isinstance(companion, tuple)
+    assert isinstance(hardening, tuple)
+    assert companion == ("tests/test_v036_release.py",)
+    assert "docs/releases/v0.36.0.md" in hardening
+    assert (_ROOT / "tests/test_v036_release.py").is_file()
+    assert (_ROOT / "docs/releases/v0.36.0.md").is_file()
+
+
 def test_integrated_release_gate_freezes_exact_package_surface() -> None:
     namespace = _namespace()
     required = namespace["_REQUIRED_INTEGRATED_MODULES"]

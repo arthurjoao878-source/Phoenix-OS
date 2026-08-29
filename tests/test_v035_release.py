@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PYPROJECT = _ROOT / "pyproject.toml"
 _README = _ROOT / "README.md"
 _CHANGELOG = _ROOT / "CHANGELOG.md"
 _RELEASE_NOTES = _ROOT / "docs" / "releases" / "v0.35.0.md"
@@ -19,13 +17,8 @@ _RFC = (
 _GATE = _ROOT / "scripts" / "check_browser_automation_release.py"
 
 
-def test_project_version_is_v0350() -> None:
-    assert tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]["version"] == "0.35.0"
-
-
-def test_readme_announces_thirty_five_specs_and_browser_gate() -> None:
+def test_readme_preserves_v035_release_history_and_browser_gate() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.35.0` implements thirty-five accepted specifications:" in readme
     assert "RFC-0035" in readme
     assert "Secure Browser Automation and Controlled Web Interaction" in readme
     current = "[Phoenix OS 0.35.0](docs/releases/v0.35.0.md)"

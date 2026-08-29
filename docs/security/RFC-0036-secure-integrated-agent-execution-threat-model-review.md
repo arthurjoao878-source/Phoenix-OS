@@ -201,15 +201,16 @@ metadata.
 
 ## Package and publication boundary
 
-S7e must add `python scripts/check_integrated_agent_release.py` and make it release
-blocking. The gate must validate the exact integrated package surface, complete
-integrated regression suite, RFC/migration/ADR/security documents, wheel/sdist safety,
+S7e added `python scripts/check_integrated_agent_release.py` and made it release
+blocking. The gate validates the exact integrated package surface, complete integrated
+regression suite, RFC/migration/ADR/security/release documents, wheel/sdist safety,
 matching metadata, rebuild-from-sdist behavior, isolated install/smoke, and deterministic
-network-free E2E behavior.
+external-network-denied E2E behavior.
 
-S7d does not modify package version, `CHANGELOG.md`, release notes, tags, publication
-metadata, or remote release state. Those operations remain S8 work after S7e and global
-gates are green.
+S7 intentionally did not modify package version, `CHANGELOG.md`, v0.36.0 release notes,
+tags, publication metadata, or remote release state. S8 finalizes only release metadata
+after the S1-S7 targeted security, global, package, canonical-diff, and adversarial gates
+are green.
 
 ## Residual risks
 
@@ -222,10 +223,14 @@ that configuration.
 
 ## Review conclusion
 
-The S1-S7d architecture is consistent with the frozen RFC-0036 threat model provided the
-dedicated S7e integrated-agent release/package gate remains green and the final S8
-canonical diff/adversarial review confirms that release metadata finalization does not
-widen authority, disclosure, recovery, observability, package, or lifecycle semantics.
+RFC-0036 is acceptable for the Phoenix OS 0.36.0 release candidate only when all 102
+invariants remain mapped, the complete integrated targeted suite and global quality
+checks are green, the dedicated integrated package gate and package boundaries pass, and
+the final S8 canonical diff/adversarial review confirms that release metadata finalization
+plus compatibility-only release-gate wiring did not widen authority, disclosure,
+recovery, observability, package, or lifecycle semantics or alter runtime behavior,
+package authority, integrated execution semantics, or downstream authority semantics.
 
-Tag creation, artifact/checksum publication, GitHub Release publication, remote
-branch/PR operations, review, and merge remain separately authorized release operations.
+The exact release commit must then pass the normal Python 3.12/3.13 CI matrix. Annotated
+tag creation, artifact/checksum publication, GitHub Release publication, PR review, and
+merge remain separate explicitly authorized release operations.
