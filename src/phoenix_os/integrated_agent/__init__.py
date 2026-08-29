@@ -1,5 +1,15 @@
 """Secure integrated-agent contracts and finite admission/runtime composition for RFC-0036."""
 
+from phoenix_os.integrated_agent.administration import (
+    INTEGRATED_AGENT_HEALTH_READ_PERMISSION,
+    INTEGRATED_AGENT_HEALTH_RESOURCE,
+    INTEGRATED_AGENT_INSPECTION_READ_PERMISSION,
+    IntegratedAgentAdministration,
+    IntegratedAgentAdministrationAccessDeniedError,
+    IntegratedAgentAdministrationSnapshot,
+    IntegratedAgentRedactedRunInspection,
+    integrated_agent_inspection_resource,
+)
 from phoenix_os.integrated_agent.admission import (
     IntegratedAgentAdmission,
     IntegratedAgentAdmissionLease,
@@ -120,6 +130,14 @@ from phoenix_os.integrated_agent.execution_control import (
     integrated_effect_disposition,
 )
 from phoenix_os.integrated_agent.execution_guard import IntegratedAgentExecutionGuard
+from phoenix_os.integrated_agent.observer import (
+    MAX_INTEGRATED_OBSERVATION_DURATION_MS,
+    ContentFreeIntegratedAgentObserver,
+    IntegratedAgentObservabilityConfiguration,
+    IntegratedAgentObservation,
+    IntegratedAgentObserver,
+    NullIntegratedAgentObserver,
+)
 from phoenix_os.integrated_agent.planning import IntegratedPlanner
 from phoenix_os.integrated_agent.profiles import (
     INTEGRATED_PLAN_UPDATE_TOOL_ID,
@@ -143,6 +161,9 @@ from phoenix_os.integrated_agent.runtime import (
 )
 
 __all__ = [
+    "INTEGRATED_AGENT_HEALTH_READ_PERMISSION",
+    "INTEGRATED_AGENT_HEALTH_RESOURCE",
+    "INTEGRATED_AGENT_INSPECTION_READ_PERMISSION",
     "INTEGRATED_PLAN_UPDATE_TOOL_ID",
     "INTEGRATED_PLAN_UPDATE_TRANSFORM_ID",
     "MAX_INTEGRATED_BINDING_LENGTH",
@@ -151,6 +172,7 @@ __all__ = [
     "MAX_INTEGRATED_FRESHNESS_BINDINGS",
     "MAX_INTEGRATED_IDENTIFIER_LENGTH",
     "MAX_INTEGRATED_LOCAL_STATE_KEYS",
+    "MAX_INTEGRATED_OBSERVATION_DURATION_MS",
     "MAX_INTEGRATED_PLAN_DOCUMENT_BYTES",
     "MAX_INTEGRATED_PLAN_REVISION",
     "MAX_INTEGRATED_PLAN_STATEMENTS",
@@ -169,6 +191,10 @@ __all__ = [
     "MAX_INTEGRATED_TASK_OBJECTIVE_BYTES",
     "MAX_INTEGRATED_TASK_OBJECTIVE_CHARS",
     "MAX_INTEGRATED_TOOL_BINDINGS",
+    "ContentFreeIntegratedAgentObserver",
+    "IntegratedAgentAdministration",
+    "IntegratedAgentAdministrationAccessDeniedError",
+    "IntegratedAgentAdministrationSnapshot",
     "IntegratedAgentAdmission",
     "IntegratedAgentAdmissionLease",
     "IntegratedAgentBudgetExhaustedError",
@@ -182,7 +208,11 @@ __all__ = [
     "IntegratedAgentErrorCode",
     "IntegratedAgentExecutionGuard",
     "IntegratedAgentIndeterminateEffectError",
+    "IntegratedAgentObservabilityConfiguration",
+    "IntegratedAgentObservation",
+    "IntegratedAgentObserver",
     "IntegratedAgentProvenanceOverflowError",
+    "IntegratedAgentRedactedRunInspection",
     "IntegratedAgentRejectedError",
     "IntegratedAgentRunBinding",
     "IntegratedAgentRuntime",
@@ -226,6 +256,7 @@ __all__ = [
     "IntegratedToolRegistration",
     "IntegratedWaitingReason",
     "NormalizedPlan",
+    "NullIntegratedAgentObserver",
     "PlanDigest",
     "PlanProposal",
     "PlanRevision",
@@ -245,6 +276,7 @@ __all__ = [
     "encode_normalized_plan",
     "encode_plan_proposal",
     "integrated_agent_configuration_json",
+    "integrated_agent_inspection_resource",
     "integrated_browser_profile_binding_id",
     "integrated_browser_tool_registration",
     "integrated_effect_disposition",

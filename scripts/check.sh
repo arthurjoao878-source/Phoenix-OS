@@ -16,3 +16,4 @@ python scripts/check_host_automation_release.py
 python scripts/check_authority_release.py
 python scripts/check_network_egress_release.py
 python scripts/check_browser_automation_release.py
+python scripts/check_integrated_agent_release.py
