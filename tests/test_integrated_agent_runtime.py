@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from phoenix_os.agent.configuration import (
     AgentToolConfiguration,
 )
 from phoenix_os.agent.contracts import AgentRunRequest
+from phoenix_os.agent.errors import AgentErrorCode
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.service import AgentServiceState
 from phoenix_os.agent.state import AgentCancellationToken
@@ -28,6 +30,7 @@ from phoenix_os.integrated_agent import (
     IntegratedAgentAdmission,
     IntegratedAgentConfigurationError,
     IntegratedAgentExecutionGuard,
+    IntegratedAgentObservation,
     IntegratedAgentRuntime,
     IntegratedAgentToolComposition,
     IntegratedDataFlowDisposition,
@@ -40,7 +43,9 @@ from phoenix_os.integrated_agent import (
     IntegratedExecutionProfileGeneration,
     IntegratedExecutionProfileId,
     IntegratedExecutionProfileSelection,
+    IntegratedFailureClass,
     IntegratedLocalTransformBinding,
+    IntegratedOrchestrationPhase,
     IntegratedPlanner,
     IntegratedTaskId,
     IntegratedTaskRequest,
@@ -324,3 +329,164 @@ def test_runtime_rejects_planner_not_bound_to_execution_guard_provenance() -> No
             planner=planner,
             execution_guard=guard,
         )
+
+
+class _RecordingIntegratedObserver:
+    def __init__(self) -> None:
+        self.observations: list[IntegratedAgentObservation] = []
+        self.terminal = asyncio.Event()
+
+    async def record(
+        self,
+        observation: IntegratedAgentObservation,
+        context: SecurityContext,
+    ) -> None:
+        assert isinstance(context, SecurityContext)
+        self.observations.append(observation)
+        if observation.phase is IntegratedOrchestrationPhase.TERMINAL:
+            self.terminal.set()
+
+
+class _FailingIntegratedObserver:
+    async def record(
+        self,
+        observation: IntegratedAgentObservation,
+        context: SecurityContext,
+    ) -> None:
+        del observation, context
+        raise RuntimeError("observer failure must stay best-effort")
+
+
+class _BlockingIntegratedObserver:
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def record(
+        self,
+        observation: IntegratedAgentObservation,
+        context: SecurityContext,
+    ) -> None:
+        del observation, context
+        self.entered.set()
+        await self.release.wait()
+
+
+@pytest.mark.asyncio
+async def test_runtime_emits_content_free_derived_phases_without_run_identity_changes() -> None:
+    configuration = _configuration()
+    service = _RecordingAgentService(configuration)
+    admission = _admission(configuration)
+    observer = _RecordingIntegratedObserver()
+    runtime = IntegratedAgentRuntime(service, admission, observer=observer)
+    context = RuntimeContext(services={})
+    request = _request()
+    task = _task()
+
+    await runtime.start(context)
+    result = await runtime.run(task, request, _security_context())
+    await asyncio.wait_for(observer.terminal.wait(), timeout=1)
+
+    assert result.run_id == request.run_id
+    assert [item.phase for item in observer.observations] == [
+        IntegratedOrchestrationPhase.CREATED,
+        IntegratedOrchestrationPhase.EXECUTING,
+        IntegratedOrchestrationPhase.TERMINAL,
+    ]
+    assert all(item.task_id == task.task_id for item in observer.observations)
+    assert all(item.run_id == request.run_id for item in observer.observations)
+    assert all(
+        item.profile_id == IntegratedExecutionProfileId("integrated-research")
+        for item in observer.observations
+    )
+    assert observer.observations[-1].failure_class is None
+    assert observer.observations[-1].duration_ms is not None
+
+    rendered = repr(observer.observations)
+    assert task.objective not in rendered
+    assert request.messages[0].content not in rendered
+    assert result.final_output is not None
+    assert result.final_output not in rendered
+
+    await runtime.stop(context)
+
+
+@pytest.mark.asyncio
+async def test_runtime_observer_failure_cannot_change_execution_result() -> None:
+    configuration = _configuration()
+    service = _RecordingAgentService(configuration)
+    admission = _admission(configuration)
+    runtime = IntegratedAgentRuntime(
+        service,
+        admission,
+        observer=_FailingIntegratedObserver(),
+    )
+    context = RuntimeContext(services={})
+
+    await runtime.start(context)
+    result = await runtime.run(_task(), _request(), _security_context())
+    assert result.status is AgentRunStatus.COMPLETED
+    assert result.final_output == "done"
+    await runtime.stop(context)
+
+
+@pytest.mark.asyncio
+async def test_runtime_never_awaits_observer_on_execution_path() -> None:
+    configuration = _configuration()
+    service = _RecordingAgentService(configuration)
+    admission = _admission(configuration)
+    observer = _BlockingIntegratedObserver()
+    runtime = IntegratedAgentRuntime(service, admission, observer=observer)
+    context = RuntimeContext(services={})
+
+    await runtime.start(context)
+    result = await runtime.run(_task(), _request(), _security_context())
+
+    assert result.status is AgentRunStatus.COMPLETED
+    await asyncio.wait_for(observer.entered.wait(), timeout=1)
+    observer.release.set()
+    await runtime.stop(context)
+
+
+class _RejectedResultAgentService(_RecordingAgentService):
+    async def run(
+        self,
+        request: AgentRunRequest,
+        context: SecurityContext,
+        *,
+        cancellation: AgentCancellationToken | None = None,
+        _authority_binding: AgentRunAuthorityBinding | None = None,
+    ) -> AgentRunResult:
+        assert isinstance(context, SecurityContext)
+        self.run_calls.append(request)
+        self.authority_bindings.append(_authority_binding)
+        self.cancellations.append(cancellation)
+        return AgentRunResult(
+            run_id=request.run_id,
+            status=AgentRunStatus.FAILED,
+            model_turns=1,
+            tool_calls=0,
+            error_code=AgentErrorCode.AUTHORIZATION_REJECTED.value,
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_terminal_observation_uses_finite_failure_class_not_raw_error() -> None:
+    configuration = _configuration()
+    service = _RejectedResultAgentService(configuration)
+    admission = _admission(configuration)
+    observer = _RecordingIntegratedObserver()
+    runtime = IntegratedAgentRuntime(service, admission, observer=observer)
+    context = RuntimeContext(services={})
+
+    await runtime.start(context)
+    result = await runtime.run(_task(), _request(), _security_context())
+    await asyncio.wait_for(observer.terminal.wait(), timeout=1)
+
+    assert result.status is AgentRunStatus.FAILED
+    terminal = observer.observations[-1]
+    assert terminal.phase is IntegratedOrchestrationPhase.TERMINAL
+    assert terminal.failure_class is IntegratedFailureClass.AUTHORITY_DENIED
+    assert "authorization_rejected" not in repr(terminal)
+
+    await runtime.stop(context)

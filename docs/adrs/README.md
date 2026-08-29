@@ -66,6 +66,11 @@ the decision requires a new ADR that explicitly supersedes the previous one.
 | [ADR-0065](ADR-0065-server-owned-browser-profiles-and-navigation-targets.md) | Accepted | Keep browser profiles, generations, origins, adapters, and initial navigation targets server-owned and exact. |
 | [ADR-0066](ADR-0066-opaque-stale-safe-browser-identities.md) | Accepted | Use opaque subject-bound session/page/revision/element identities and fail closed on stale browser state. |
 | [ADR-0067](ADR-0067-zero-effect-preparation-and-final-browser-admission.md) | Accepted | Separate zero-effect preparation from final revalidated commit and never transparently retry ambiguous effects. |
+| [ADR-0068](ADR-0068-plans-and-integrated-content-are-data.md) | Accepted | Treat task, plan, model, tool, retrieved, persisted, and resupplied content as data that never grants Phoenix authority. |
+| [ADR-0069](ADR-0069-server-owned-integrated-profiles-and-exact-capability-bridges.md) | Accepted | Reuse the RFC-0027 tool registry with one exact server-owned local-transform/downstream-bridge binding per exposed integrated tool. |
+| [ADR-0070](ADR-0070-exact-provenance-cross-subsystem-flow-and-final-disclosure.md) | Accepted | Preserve exact bounded provenance and require explicit server-owned data-flow plus authenticated USER_RESULT disclosure admission. |
+| [ADR-0071](ADR-0071-sequential-integrated-effects-and-no-transparent-retry.md) | Accepted | Admit integrated effects sequentially with final current revalidation and never transparently retry work after a possible effect. |
+| [ADR-0072](ADR-0072-metadata-only-recovery-and-content-free-operations.md) | Accepted | Keep recovery metadata non-authoritative, require fresh safe recovery, and keep routine observability/administration content-free. |
 
 ## Related specifications
 
@@ -90,3 +95,5 @@ the decision requires a new ADR that explicitly supersedes the previous one.
   [RFC-0032 — Secure Host Automation and Desktop Control](../rfcs/RFC-0032-secure-host-automation-and-desktop-control.md).
 - ADR-0064 through ADR-0067 record the principal durable choices implemented by
   [RFC-0035 — Secure Browser Automation and Controlled Web Interaction](../rfcs/RFC-0035-secure-browser-automation-and-controlled-web-interaction.md).
+- ADR-0068 through ADR-0072 record the principal durable choices implemented by
+  [RFC-0036 — Secure Integrated Agent Execution and End-to-End Orchestration](../rfcs/RFC-0036-secure-integrated-agent-execution-and-end-to-end-orchestration.md).
