@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.36.0] - 2026-08-28
+
+### Added
+- Accepted RFC-0036 secure integrated agent execution and end-to-end orchestration with immutable task identity/digest, exact server-owned integrated profile generations, advisory bounded planning through `integrated.plan.update`, and no second agent/run/tool authority model.
+- Added exact server-owned local-transform/downstream-bridge tool composition across existing memory, workspace, host, network, browser, delegation, and durable boundaries while retaining independent `tool.invoke` and canonical downstream authorization.
+- Added conservative exact provenance propagation, finite server-owned cross-subsystem data-flow routes, explicit authenticated `USER_RESULT` admission, bounded task-level budgets/deadlines/cancellation, and sequential no-transparent-retry effect handling.
+- Added metadata-only durable projection with fresh recovery revalidation, reviewed context resupply, content-free best-effort observation, separately authorized redacted inspection, migration/ADR/threat-model evidence, deterministic adversarial E2E, and a dedicated integrated-agent package release gate.
+
+### Security
+- Planning and content are data, never authority: task/model/tool/browser/network/memory/workspace/clipboard/child/persisted inputs cannot choose or widen profiles, credentials, policy resources, approvals, canonical resources, or downstream authority.
+- Every model-originated protected operation retains exact current `tool.invoke` plus its independent downstream canonical authority; plans and checkpoints grant no authority and current configuration/policy/freshness/cancellation/deadline/budget always win.
+- Provenance remains a bounded exact conservative union with no v0.36.0 declassification primitive; overflow fails closed, and denied data flow occurs before approval consumption or effect admission.
+- Final result release crosses the explicit `USER_RESULT` sink for an authenticated Phoenix-owned audience and exact admitted source scope.
+- Potentially effectful integrated work is sequential, never transparently retried after possible effect start, and ambiguous outcomes remain `INDETERMINATE` for RFC-0028 reconciliation.
+- Routine observability is content-free; `integrated.agent.health.read` and exact-run `integrated.agent.inspection.read` remain separate, bounded, redacted, and non-authoritative.
+
+### Compatibility
+- Phoenix OS 0.35.0 behavior is preserved when integrated-execution configuration is omitted; upgrade creates no integrated task, profile, planner, tool binding, bridge, route, durable projection, observer, permission, approval, credential, worker, or external effect automatically.
+- Existing inference, agent, durable, delegation, memory, workspace, host, authority, network, and browser services retain their existing identities, authorizers, freshness rules, limits, approvals, and effect semantics.
+- Release validation includes the complete regression suite, all global release gates, the dedicated integrated-agent gate, deterministic network-free adversarial E2E, exact wheel/sdist boundaries, rebuilt-sdist wheel, isolated offline smoke, canonical diff/security review, and Python 3.12/3.13 CI.
+- Release publication uses annotated Git tag `v0.36.0`, wheel and sdist artifacts, and `SHA256SUMS`.
+
+
 ## [0.35.0] - 2026-08-26
 
 ### Added

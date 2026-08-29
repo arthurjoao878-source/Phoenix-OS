@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 
 _ROOT = Path(__file__).resolve().parents[1]
 _GATE_COMMAND = "python scripts/check_integrated_agent_release.py"
+_COMPANION_TESTS = ("tests/test_v036_release.py",)
 
 _REQUIRED_INTEGRATED_MODULES = frozenset(
     {
@@ -100,6 +101,7 @@ _REQUIRED_INTEGRATED_TESTS = frozenset(
 _REQUIRED_HARDENING_FILES = (
     "docs/rfcs/RFC-0036-secure-integrated-agent-execution-and-end-to-end-orchestration.md",
     "docs/migrations/v0.35.0-to-v0.36.0-secure-integrated-agent-execution.md",
+    "docs/releases/v0.36.0.md",
     "docs/security/RFC-0036-secure-integrated-agent-execution-threat-model-review.md",
     "docs/adrs/README.md",
     "docs/adrs/ADR-0068-plans-and-integrated-content-are-data.md",
@@ -376,7 +378,10 @@ def _integrated_test_files() -> tuple[str, ...]:
         raise RuntimeError(
             "integrated-agent regression suite is missing required tests: " + ", ".join(missing)
         )
-    return discovered
+    for relative in _COMPANION_TESTS:
+        if not (_ROOT / relative).is_file():
+            raise RuntimeError(f"required integrated-agent companion test is missing: {relative}")
+    return (*discovered, *_COMPANION_TESTS)
 
 
 def _integrated_source_files() -> tuple[str, ...]:

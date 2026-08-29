@@ -84,7 +84,7 @@ _REQUIRED_SDIST_DOCUMENTS = (
 )
 _FORBIDDEN_ARCHIVE_COMPONENTS = frozenset({".env", ".git", "__pycache__"})
 _FORBIDDEN_ARCHIVE_SUFFIXES = frozenset({".key", ".p12", ".pem", ".pfx", ".pyc", ".pyo"})
-_SUPPORTED_RELEASE_VERSIONS = frozenset({"0.34.0", "0.35.0"})
+_SUPPORTED_RELEASE_VERSIONS = frozenset({"0.34.0", "0.35.0", "0.36.0"})
 
 
 def _run(
@@ -103,7 +103,14 @@ def _project_metadata() -> tuple[str, str, str]:
         project.get("version"),
         project.get("requires-python"),
     )
-    if not all(isinstance(value, str) and value for value in (name, version, requires_python)):
+    if (
+        not isinstance(name, str)
+        or not name
+        or not isinstance(version, str)
+        or not version
+        or not isinstance(requires_python, str)
+        or not requires_python
+    ):
         raise RuntimeError("pyproject release metadata is incomplete")
     return name, version, requires_python
 

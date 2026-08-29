@@ -1,6 +1,6 @@
 # RFC-0036: Secure Integrated Agent Execution and End-to-End Orchestration
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.36.0
 - Owners: Phoenix OS maintainers
 - Architecture freeze: 2026-08-26
@@ -1500,10 +1500,42 @@ The same rule applies to the final result. Sensitive memory or workspace content
 safe to return merely because the model can see it. `USER_RESULT` disclosure must be admitted for the
 authenticated result audience and applicable source scope before final content is released.
 
-## Draft acceptance criteria
+## Release acceptance evidence
 
-RFC-0036 is ready for architecture freeze only when the implementation plan can support the
-following claim:
+The v0.36.0 release candidate seals RFC-0036 with the following executable evidence:
+
+- [x] All eight RFC-0036 slices are complete and preserve the frozen authority/intersection model.
+- [x] Every task retains one immutable Phoenix-owned task identity/digest and one exact current
+  server-owned integrated profile generation bound into existing RFC-0027 run admission.
+- [x] Planning remains bounded untrusted data; `integrated.plan.update` crosses normal
+  `tool.invoke` and cannot create profiles, credentials, approvals, resources, or authority.
+- [x] Every exposed integrated tool has exactly one reviewed `LOCAL_TRANSFORM` or
+  `DOWNSTREAM_BRIDGE` binding, with independent downstream canonical authorization.
+- [x] Exact provenance atoms propagate conservatively across model/local/bridge transformations;
+  v0.36.0 exposes no declassification primitive and overflow fails closed.
+- [x] Finite server-owned data-flow routes deny disallowed cross-subsystem disclosure before
+  approval consumption/effect admission and independently govern authenticated `USER_RESULT`.
+- [x] Integrated budgets compose restrictively, child deadlines never extend the parent,
+  cancellation stops new admission, and effectful steps remain sequential.
+- [x] No potentially effectful work is transparently retried after possible effect start;
+  `INDETERMINATE` enters the existing RFC-0028 reconciliation path.
+- [x] Durable recovery retains exact task/profile metadata but grants no authority, requires fresh
+  current authorization/configuration/freshness, and never fabricates missing planning context.
+- [x] Routine observation remains content-free; health and exact-run redacted inspection retain
+  separate `integrated.agent.health.read` / `integrated.agent.inspection.read` authority.
+- [x] Confused-deputy, prompt-injection, exfiltration, stale-state, approval-replay, recovery,
+  observer-failure, and deterministic network-free E2E adversarial tests pass.
+- [x] Named release gate: `python scripts/check_integrated_agent_release.py`.
+- [x] Exact wheel/sdist boundaries, rebuilt-sdist wheel, isolated offline smoke, global quality
+  gates, canonical diff review, and final adversarial review are release requirements.
+- [x] The normal Python 3.12/3.13 CI matrix executes the integrated-agent release gate.
+
+## Acceptance
+
+RFC-0036 is accepted for Phoenix OS 0.36.0 after the complete regression suite, dedicated
+integrated-agent release gate, package verification, final adversarial and canonical release review,
+and exact release-commit Python 3.12/3.13 CI matrix pass. The accepted implementation supports the
+frozen claim:
 
 > A compromised model, prompt, browser page, network response, memory record, workspace artifact,
 > clipboard value, child-agent result, tool result, or persisted planning state can influence
@@ -1513,5 +1545,39 @@ following claim:
 > silently widen cross-subsystem or final-result disclosure, replay an indeterminate effect,
 > fabricate missing recovery context, or restore stale authority after recovery.
 
-Until that claim is covered by exact contracts, deterministic tests, adversarial tests, and the
-dedicated release gate, RFC-0036 remains Draft.
+Annotated tag publication, release artifact upload, `SHA256SUMS`, GitHub Release publication, PR
+review, and merge remain separate explicitly authorized release operations after the exact release
+commit has passed the complete CI matrix.
+
+## Compatibility
+
+Phoenix OS v0.35.0 behavior is preserved when integrated-execution configuration is omitted.
+
+Upgrade creates no integrated task, profile, planner, tool binding, bridge, route, durable
+projection, observer, administrator, permission, approval, credential, worker, downstream action,
+or external effect automatically.
+
+Existing RFC-0026 through RFC-0035 inference, agent, durable, delegation, memory, workspace, host,
+effective-authority, network, and browser boundaries remain independently authoritative and
+unchanged.
+
+## Architecture freeze
+
+The v0.36.0 implementation MUST preserve the following frozen boundaries:
+
+- task/model/tool/downstream/persisted content remains data rather than authority;
+- exact task digest and integrated profile ID/generation remain immutable for an admitted run;
+- RFC-0027 remains the authoritative run/step/tool/model execution boundary;
+- planning remains advisory and cannot manufacture authority-bearing state;
+- every integrated tool retains one exact server-owned local/bridge binding;
+- model-originated downstream work retains independent `tool.invoke` and downstream authority;
+- provenance remains exact, bounded, conservative, non-declassifying, and fail-closed on overflow;
+- cross-subsystem and final-result disclosure remains separately admitted by server-owned routes;
+- effectful integrated execution remains sequential with no transparent retry after possible effect;
+- durable metadata/checkpoints grant no authority and recovery requires fresh current validation;
+- missing planning context is explicitly resupplied through reviewed paths or execution terminates safely;
+- routine observation remains content-free and inspection remains separately authorized/redacted; and
+- integrated execution cannot recursively invoke itself without a future reviewed RFC boundary.
+
+Any implementation need that weakens or expands one of these frozen boundaries requires architecture
+re-review before code proceeds.
