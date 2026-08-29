@@ -1871,6 +1871,7 @@ class SQLiteDurableRunStore(DurableRunStore):
         connection: Connection,
         run_row: Row,
     ) -> CheckpointEnvelope:
+        self._validate_history_aggregate(connection, run_row)
         run_id = _row_text(run_row, "run_id")
         sequence = _row_int(run_row, "current_sequence", positive=True)
         row = connection.execute(

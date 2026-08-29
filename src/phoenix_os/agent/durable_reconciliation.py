@@ -35,6 +35,7 @@ from phoenix_os.agent.durable_metadata import (
     DurableCheckpointMetadataProjector,
     project_durable_checkpoint_metadata,
 )
+from phoenix_os.agent.durable_mutation import append_durable_checkpoint_confirmed
 from phoenix_os.agent.durable_status_lookup import (
     DurableAttemptExternalStatus,
     DurableAttemptStatusLookupOutcome,
@@ -704,9 +705,10 @@ class StoreBackedDurableReconciliationDispositionApplier:
             )
         except (TypeError, ValueError, OverflowError) as exception:
             raise AgentStateConflictError() from exception
-        return await self._store.append(
-            candidate,
-            expected_version=current.run_version,
+        return await append_durable_checkpoint_confirmed(
+            self._store,
+            current=current,
+            intended=candidate,
             lease=lease,
             now=now,
         )
