@@ -30,6 +30,11 @@ from phoenix_os.agent.durable_metadata import (
     project_durable_checkpoint_metadata,
 )
 from phoenix_os.agent.durable_mutation import append_durable_checkpoint_confirmed
+from phoenix_os.agent.durable_reliability import (
+    NOOP_RELIABILITY_FAULT_INJECTOR,
+    ReliabilityFaultInjector,
+    ReliabilityFaultPoint,
+)
 from phoenix_os.agent.errors import AgentStateConflictError
 
 _ALLOWED_TERMINAL_STATUSES = frozenset(
@@ -126,6 +131,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         attempt_id_factory: Callable[[], ExecutionAttemptId] = ExecutionAttemptId,
         checkpoint_id_factory: Callable[[], CheckpointId] = CheckpointId,
         metadata_projector: DurableCheckpointMetadataProjector | None = None,
+        fault_injector: ReliabilityFaultInjector | None = None,
     ) -> None:
         if not isinstance(store, DurableRunStore):
             raise TypeError("store must be DurableRunStore")
@@ -138,10 +144,16 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             DurableCheckpointMetadataProjector,
         ):
             raise TypeError("metadata_projector must implement DurableCheckpointMetadataProjector")
+        selected_fault_injector = (
+            NOOP_RELIABILITY_FAULT_INJECTOR if fault_injector is None else fault_injector
+        )
+        if not isinstance(selected_fault_injector, ReliabilityFaultInjector):
+            raise TypeError("fault_injector must implement ReliabilityFaultInjector")
         self._store = store
         self._attempt_id_factory = attempt_id_factory
         self._checkpoint_id_factory = checkpoint_id_factory
         self._metadata_projector = metadata_projector
+        self._fault_injector = selected_fault_injector
 
     async def prepare_model_attempt(
         self,
@@ -176,7 +188,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             prepared_at=now,
             external_request_digest=external_request_digest,
         )
-        return await self._append(
+        prepared = await self._append(
             current,
             lease=lease,
             now=now,
@@ -184,6 +196,8 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             next_operation=CheckpointNextOperation.MODEL_TURN,
             attempt=attempt,
         )
+        self._fault_injector.inject(ReliabilityFaultPoint.ATTEMPT_AFTER_PREPARED)
+        return prepared
 
     async def prepare_tool_attempt(
         self,
@@ -226,7 +240,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             tool_effect=tool_effect,
             external_request_digest=external_request_digest,
         )
-        return await self._append(
+        prepared = await self._append(
             current,
             lease=lease,
             now=now,
@@ -234,6 +248,8 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             next_operation=CheckpointNextOperation.TOOL_INVOCATION,
             attempt=attempt,
         )
+        self._fault_injector.inject(ReliabilityFaultPoint.ATTEMPT_AFTER_PREPARED)
+        return prepared
 
     async def mark_started(
         self,
@@ -265,7 +281,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             status=ExecutionAttemptStatus.STARTED,
             started_at=now,
         )
-        return await self._append(
+        started_checkpoint = await self._append(
             current,
             lease=lease,
             now=now,
@@ -273,6 +289,8 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             next_operation=current.metadata.next_operation,
             attempt=started,
         )
+        self._fault_injector.inject(ReliabilityFaultPoint.ATTEMPT_AFTER_STARTED)
+        return started_checkpoint
 
     async def mark_indeterminate(
         self,
@@ -372,6 +390,10 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             next_operation=next_operation,
             error_code=error_code,
         )
+        if attempt.status is ExecutionAttemptStatus.STARTED:
+            self._fault_injector.inject(
+                ReliabilityFaultPoint.ATTEMPT_AFTER_EXTERNAL_RETURN_BEFORE_TERMINAL_RECORD
+            )
         try:
             terminal = replace(
                 attempt,

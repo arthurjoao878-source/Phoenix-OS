@@ -36,6 +36,11 @@ from phoenix_os.agent.durable_metadata import (
     project_durable_checkpoint_metadata,
 )
 from phoenix_os.agent.durable_mutation import append_durable_checkpoint_confirmed
+from phoenix_os.agent.durable_reliability import (
+    NOOP_RELIABILITY_FAULT_INJECTOR,
+    ReliabilityFaultInjector,
+    ReliabilityFaultPoint,
+)
 from phoenix_os.agent.durable_status_lookup import (
     DurableAttemptExternalStatus,
     DurableAttemptStatusLookupOutcome,
@@ -478,6 +483,7 @@ class StoreBackedDurableReconciliationDispositionApplier:
         reconciliation_id_factory: Callable[[], UUID] = uuid4,
         max_reconciliation_attempts: int = DEFAULT_DURABLE_RECONCILIATION_ATTEMPTS,
         metadata_projector: DurableCheckpointMetadataProjector | None = None,
+        fault_injector: ReliabilityFaultInjector | None = None,
     ) -> None:
         if not isinstance(store, DurableRunStore):
             raise TypeError("store must implement DurableRunStore")
@@ -501,12 +507,18 @@ class StoreBackedDurableReconciliationDispositionApplier:
             DurableCheckpointMetadataProjector,
         ):
             raise TypeError("metadata_projector must implement DurableCheckpointMetadataProjector")
+        selected_fault_injector = (
+            NOOP_RELIABILITY_FAULT_INJECTOR if fault_injector is None else fault_injector
+        )
+        if not isinstance(selected_fault_injector, ReliabilityFaultInjector):
+            raise TypeError("fault_injector must implement ReliabilityFaultInjector")
         self._store = store
         self._authorizer = authorizer
         self._checkpoint_id_factory = checkpoint_id_factory
         self._reconciliation_id_factory = reconciliation_id_factory
         self._max_reconciliation_attempts = max_reconciliation_attempts
         self._metadata_projector = metadata_projector
+        self._fault_injector = selected_fault_injector
 
     async def apply(
         self,
@@ -570,7 +582,8 @@ class StoreBackedDurableReconciliationDispositionApplier:
             lookup_result=lookup_result,
             now=now,
         )
-        return await self._append(
+        self._fault_injector.inject(ReliabilityFaultPoint.RECONCILE_BEFORE_MUTATION)
+        applied = await self._append(
             current,
             lease=lease,
             record=record,
@@ -579,6 +592,8 @@ class StoreBackedDurableReconciliationDispositionApplier:
             attempt=result_attempt,
             now=now,
         )
+        self._fault_injector.inject(ReliabilityFaultPoint.RECONCILE_AFTER_MUTATION_COMMIT)
+        return applied
 
     async def _require_reconciliation_capacity(
         self,
