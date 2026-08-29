@@ -15,6 +15,11 @@ from phoenix_os.agent.durable_contracts import (
     DurableRunLimits,
     FencingGeneration,
 )
+from phoenix_os.agent.durable_reliability import (
+    NOOP_RELIABILITY_FAULT_INJECTOR,
+    ReliabilityFaultInjector,
+    ReliabilityFaultPoint,
+)
 from phoenix_os.agent.errors import AgentLimitExceededError, AgentStateConflictError
 
 
@@ -81,11 +86,22 @@ class DurableLeaseManager(Protocol):
 class InMemoryDurableLeaseManager(DurableLeaseManager):
     """Atomic in-memory leases with fail-closed clock and fencing checks."""
 
-    def __init__(self, *, limits: DurableRunLimits | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        limits: DurableRunLimits | None = None,
+        fault_injector: ReliabilityFaultInjector | None = None,
+    ) -> None:
         selected_limits = DurableRunLimits() if limits is None else limits
         if not isinstance(selected_limits, DurableRunLimits):
             raise TypeError("limits must be DurableRunLimits")
+        selected_fault_injector = (
+            NOOP_RELIABILITY_FAULT_INJECTOR if fault_injector is None else fault_injector
+        )
+        if not isinstance(selected_fault_injector, ReliabilityFaultInjector):
+            raise TypeError("fault_injector must implement ReliabilityFaultInjector")
         self._limits = selected_limits
+        self._fault_injector = selected_fault_injector
         self._active: dict[DurableAgentRunId, DurableLease] = {}
         self._generations: dict[DurableAgentRunId, FencingGeneration] = {}
         self._closed = False
@@ -114,6 +130,7 @@ class InMemoryDurableLeaseManager(DurableLeaseManager):
 
         self._require_run_id(run_id)
         _require_timezone_aware(now, label="now")
+        self._fault_injector.inject(ReliabilityFaultPoint.LEASE_BEFORE_ACQUIRE)
 
         async with self._lock:
             self._ensure_open()
@@ -144,6 +161,7 @@ class InMemoryDurableLeaseManager(DurableLeaseManager):
             )
             self._generations[run_id] = generation
             self._active[run_id] = lease
+            self._fault_injector.inject(ReliabilityFaultPoint.LEASE_AFTER_ACQUIRE)
             return lease
 
     async def get_current(
@@ -179,6 +197,7 @@ class InMemoryDurableLeaseManager(DurableLeaseManager):
 
         self._require_lease(lease)
         _require_timezone_aware(now, label="now")
+        self._fault_injector.inject(ReliabilityFaultPoint.LEASE_BEFORE_RENEW)
 
         async with self._lock:
             self._ensure_open()
@@ -192,6 +211,7 @@ class InMemoryDurableLeaseManager(DurableLeaseManager):
                 expires_at=now + self._limits.lease_duration,
             )
             self._active[current.run_id] = renewed
+            self._fault_injector.inject(ReliabilityFaultPoint.LEASE_AFTER_RENEW)
             return renewed
 
     async def require_current(

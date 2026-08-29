@@ -32,6 +32,11 @@ from phoenix_os.agent.durable_contracts import (
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
 from phoenix_os.agent.durable_payload import validate_protected_payload_for_checkpoint
+from phoenix_os.agent.durable_reliability import (
+    NOOP_RELIABILITY_FAULT_INJECTOR,
+    ReliabilityFaultInjector,
+    ReliabilityFaultPoint,
+)
 from phoenix_os.agent.errors import (
     AgentCodecError,
     AgentLimitExceededError,
@@ -517,11 +522,18 @@ class SQLiteDurableLeaseManager(DurableLeaseManager):
         limits: DurableRunLimits | None = None,
         busy_timeout_ms: int = DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS,
         create_parent: bool = True,
+        fault_injector: ReliabilityFaultInjector | None = None,
     ) -> None:
         selected_limits = DurableRunLimits() if limits is None else limits
         if not isinstance(selected_limits, DurableRunLimits):
             raise TypeError("limits must be DurableRunLimits")
+        selected_fault_injector = (
+            NOOP_RELIABILITY_FAULT_INJECTOR if fault_injector is None else fault_injector
+        )
+        if not isinstance(selected_fault_injector, ReliabilityFaultInjector):
+            raise TypeError("fault_injector must implement ReliabilityFaultInjector")
         self._limits = selected_limits
+        self._fault_injector = selected_fault_injector
         self._database = _SQLiteDurableDatabase(
             path,
             busy_timeout_ms=busy_timeout_ms,
@@ -551,6 +563,7 @@ class SQLiteDurableLeaseManager(DurableLeaseManager):
         self._ensure_open()
         self._require_run_id(run_id)
         _require_timezone_aware(now, label="now")
+        self._fault_injector.inject(ReliabilityFaultPoint.LEASE_BEFORE_ACQUIRE)
 
         async with self._database.lock:
             self._ensure_open()
@@ -607,6 +620,7 @@ class SQLiteDurableLeaseManager(DurableLeaseManager):
                     ),
                 )
                 connection.execute("COMMIT")
+                self._fault_injector.inject(ReliabilityFaultPoint.LEASE_AFTER_ACQUIRE)
                 return lease
             except sqlite3.IntegrityError as exception:
                 _rollback(connection)
@@ -660,6 +674,7 @@ class SQLiteDurableLeaseManager(DurableLeaseManager):
         self._ensure_open()
         self._require_lease(lease)
         _require_timezone_aware(now, label="now")
+        self._fault_injector.inject(ReliabilityFaultPoint.LEASE_BEFORE_RENEW)
 
         async with self._database.lock:
             self._ensure_open()
@@ -692,6 +707,7 @@ class SQLiteDurableLeaseManager(DurableLeaseManager):
                 if cursor.rowcount != 1:
                     raise AgentStateConflictError()
                 connection.execute("COMMIT")
+                self._fault_injector.inject(ReliabilityFaultPoint.LEASE_AFTER_RENEW)
                 return renewed
             except sqlite3.Error as exception:
                 _rollback(connection)
