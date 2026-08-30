@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-import tomllib
+import runpy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,9 +9,20 @@ GATE = "python scripts/check_reliability_release.py"
 PREVIOUS = "python scripts/check_integrated_agent_release.py"
 
 
-def test_s7_preserves_package_version_0360() -> None:
-    document = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert document["project"]["version"] == "0.36.0"
+def _namespace() -> dict[str, object]:
+    return runpy.run_path(str(ROOT / "scripts/check_reliability_release.py"))
+
+
+def test_reliability_release_gate_covers_v037_release_metadata() -> None:
+    namespace = _namespace()
+    companion = namespace["_COMPANION_TESTS"]
+    documents = namespace["_REQUIRED_DOCUMENTS"]
+    assert isinstance(companion, tuple)
+    assert isinstance(documents, tuple)
+    assert companion == ("tests/test_v037_release.py",)
+    assert "docs/releases/v0.37.0.md" in documents
+    assert (ROOT / "tests/test_v037_release.py").is_file()
+    assert (ROOT / "docs/releases/v0.37.0.md").is_file()
 
 
 def test_reliability_gate_is_wired_after_integrated_gate_everywhere() -> None:

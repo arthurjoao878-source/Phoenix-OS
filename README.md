@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.36.0` implements thirty-six accepted specifications:
+Version `0.37.0` implements thirty-seven accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -112,6 +112,11 @@ Version `0.36.0` implements thirty-six accepted specifications:
   server-owned integrated profiles, advisory planning without authority, exact local/bridge
   tool bindings, conservative provenance/data-flow admission, safe durable recovery, and
   content-free Runtime observation and administration.
+- **RFC-0037 - Durable Runs, Recovery, and Reliability Hardening:** deterministic
+  crash/failure evidence over RFC-0028/RFC-0036 durability, exact ambiguous-write re-read,
+  fenced takeover/concurrent recovery, no-replay indeterminate effects, fresh live recovery
+  authority, monotonic deadlines/budgets/cancellation, stale-restore protection, bounded
+  recovery loops, and content-free reliability diagnostics.
 
 The core intentionally contains no AI model, remote database driver, external vector database,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -125,6 +130,9 @@ or host-path control.
 RFC-0036 adds explicit opt-in task-level integrated orchestration but does not add a second
 agent loop, workflow engine, capability registry, policy engine, downstream authority, provenance
 declassification primitive, or generic ambient access to memory, workspace, host, network, or browser.
+RFC-0037 hardens RFC-0028/RFC-0036 crash and recovery behavior without adding a second durable
+state machine, checkpoint format, authority model, transparent external-effect retry path, or
+production chaos-control surface.
 The standard-library SQLite adapter is a local reference implementation; stronger storage remains behind
 the State Store and Audit Store protocols. Other integrations belong behind capability providers,
 lifecycle components, named services, sinks, allowlisted plugins, and external adapters.
@@ -419,6 +427,28 @@ external socket connection, browser navigation, network request, host effect,
 memory/workspace mutation, credential access, approval consumption, or remote
 effect.
 
+## Reliability release gate
+
+RFC-0037 adds a named network-free gate for durable mutation ambiguity, checkpoint
+integrity, fencing/takeover, concurrent recovery, indeterminate effects, live recovery
+revalidation, deadline/budget/cancellation continuity, retention/restore safety,
+bounded repeated restart, content-free diagnostics, and package boundaries:
+
+```bash
+python scripts/check_reliability_release.py
+```
+
+The gate runs the reviewed durable/integrated reliability regression surface plus the
+v0.37.0 release specification, validates the exact 48-invariant threat review and
+release documents, proves the deterministic fault injector is absent from ordinary
+production composition, validates wheel/sdist metadata and paths, rebuilds a wheel
+from the validated sdist, and installs both wheel forms with `--no-deps --no-index`
+in isolated environments.
+
+The installed-package smoke is deterministic and non-networking. It exercises only
+the inert no-op reliability seam and ordinary packaged composition; model/tool content,
+checkpoint bytes, policy data, or external responses cannot select a fault point.
+
 ## Windows host-automation dogfood
 
 Gate 5 is manual and Windows-only because it exercises the interactive desktop through
@@ -450,6 +480,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 
 ## Release notes
 
+- [Phoenix OS 0.37.0](docs/releases/v0.37.0.md)
 - [Phoenix OS 0.36.0](docs/releases/v0.36.0.md)
 - [Phoenix OS 0.35.0](docs/releases/v0.35.0.md)
 - [Phoenix OS 0.34.0](docs/releases/v0.34.0.md)
@@ -464,7 +495,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 - [Phoenix OS 0.25.0](docs/releases/v0.25.0.md)
 - [Phoenix OS 0.24.0](docs/releases/v0.24.0.md)
 
-The release notes summarize integrated-agent, browser-automation, network-egress, effective-authority, host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
+The release notes summarize durable-recovery reliability, integrated-agent, browser-automation, network-egress, effective-authority, host-automation, agent-workspace, agent-memory, multi-agent, durable-agent, agent, inference, inbound, and webhook behavior,
 security boundaries, compatibility, migration, architecture decisions,
 validation, and package artifacts.
 
@@ -611,6 +642,21 @@ indeterminate effects are not replayed automatically. The
 [RFC-0036 integrated-agent threat-model and security-invariant review](docs/security/RFC-0036-secure-integrated-agent-execution-threat-model-review.md)
 maps all 102 release invariants and residual risks.
 
+Phoenix OS 0.37.0 hardens the existing RFC-0028 durable-run and RFC-0036
+integrated durable recovery paths against hostile crash timing, ambiguous persistence
+outcomes, stale ownership, repeated restart, live configuration changes, retention
+races, and stale backup restoration:
+
+- [Migrate v0.36.0 deployments to v0.37.0 durable recovery reliability hardening](docs/migrations/v0.36.0-to-v0.37.0-durable-recovery-reliability.md)
+
+Persisted checkpoints remain untrusted data and grant no authority. Recovery requires
+fresh current authority/configuration/dependency evidence, preserves original deadlines
+and consumed budgets, honors cancellation, never transparently replays uncertain
+external effects, and fails closed when store freshness cannot be established. The
+[RFC-0037 durable-recovery reliability threat-model and invariant review](docs/security/RFC-0037-durable-recovery-reliability-threat-model-review.md)
+maps all 48 release invariants, deterministic crash/restart evidence, residual risks,
+and package/release boundaries.
+
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
@@ -694,6 +740,18 @@ possible external effects are never transparently replayed. The
 [RFC-0036 integrated-agent threat-model and security-invariant review](docs/security/RFC-0036-secure-integrated-agent-execution-threat-model-review.md)
 records all 102 invariants plus confused-deputy, exfiltration, recovery, observability,
 package-boundary, and release evidence.
+
+RFC-0037 hardens the existing RFC-0028 durable-run engine and RFC-0036 integrated
+recovery path rather than adding a parallel durable architecture. Unknown writes require
+exact authoritative re-read; fencing generation decides ownership; uncertain external
+effects remain indeterminate; current authority/configuration/dependency evidence wins
+after restart; deadlines/budgets/cancellation remain monotonic; stale restore ambiguity
+pauses recovery; and fault injection remains a bounded test-only seam. No new ADR was
+required by S7 because the final hardening introduced no new durable state machine,
+authority boundary, or independent persistence model. The
+[RFC-0037 durable-recovery reliability threat-model and invariant review](docs/security/RFC-0037-durable-recovery-reliability-threat-model-review.md)
+records all 48 invariants plus mutation, fencing, replay, live-revalidation,
+retention/restore, repeated-restart, package-boundary, and release evidence.
 
 ## Local dashboard example
 

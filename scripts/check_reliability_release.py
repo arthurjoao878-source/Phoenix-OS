@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 _ROOT = Path(__file__).resolve().parents[1]
 _GATE_COMMAND = "python scripts/check_reliability_release.py"
 _PREVIOUS_GATE_COMMAND = "python scripts/check_integrated_agent_release.py"
+_COMPANION_TESTS = ("tests/test_v037_release.py",)
 
 _EXPLICIT_TESTS = (
     "tests/test_integrated_agent_durable_live_revalidation.py",
@@ -119,6 +120,7 @@ _MATRIX_REQUIREMENT_FILES: dict[str, tuple[str, ...]] = {
 _REQUIRED_DOCUMENTS = (
     "docs/rfcs/RFC-0037-durable-runs-recovery-and-reliability.md",
     "docs/migrations/v0.36.0-to-v0.37.0-durable-recovery-reliability.md",
+    "docs/releases/v0.37.0.md",
     "docs/security/RFC-0037-durable-recovery-reliability-threat-model-review.md",
 )
 
@@ -241,7 +243,10 @@ def _reliability_test_files() -> tuple[str, ...]:
     for relative in selected:
         if not (_ROOT / relative).is_file():
             raise RuntimeError(f"RFC-0037 reliability test is missing: {relative}")
-    return tuple(sorted(selected))
+    for relative in _COMPANION_TESTS:
+        if not (_ROOT / relative).is_file():
+            raise RuntimeError(f"required RFC-0037 companion test is missing: {relative}")
+    return (*tuple(sorted(selected)), *_COMPANION_TESTS)
 
 
 def _validate_matrix_manifest() -> None:

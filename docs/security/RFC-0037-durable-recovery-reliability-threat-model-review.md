@@ -2,8 +2,9 @@
 
 ## Review method
 
-This S7 review maps the frozen RFC-0037 threat/failure model and all 48 reliability
-invariants to the S1-S7 implementation and deterministic regression surface.
+This final S8 release review maps the frozen RFC-0037 threat/failure model and all 48 reliability
+invariants to the S1-S8 implementation, deterministic regression surface, and v0.37.0
+release boundary.
 
 The dominant rules are:
 
@@ -196,9 +197,10 @@ invariant map and matrix manifest, verifies the fault-injection production bound
 builds wheel and sdist, rebuilds a wheel from the sdist, and performs isolated offline
 artifact smoke.
 
-S7 intentionally leaves the package version at `0.36.0` and does not finalize
-`CHANGELOG.md`, README compatibility notes, v0.37.0 release notes, tags, checksums,
-artifacts, or GitHub Release state. Those remain S8 actions after green S7 CI.
+S8 finalizes package/repository release metadata for `0.37.0` while preserving the
+S1-S7 production implementation and authority model. Tag creation, checksums, artifact
+upload, and GitHub Release publication remain separate controlled operations after S8
+merge and green post-merge `main` CI.
 
 ## Residual risks
 
@@ -213,11 +215,20 @@ destroy the fail-closed signal and must treat that as an operational integrity f
 
 ## Review conclusion
 
-RFC-0037 is ready for the v0.37.0 release-finalization slice only when this exact 1..48
-invariant map remains complete, the reviewed reliability matrix and soak tests pass, the
-dedicated network-free reliability gate is green, every prior named release gate remains
-green, package artifacts install in isolated offline environments, and the exact S7
-commit passes Python 3.12/3.13 CI.
+RFC-0037 is acceptable for the Phoenix OS 0.37.0 release candidate only while this
+exact 1..48 invariant map remains complete, the reviewed reliability matrix and soak
+tests pass, the dedicated network-free reliability gate and every prior named release
+gate remain green, full `scripts/check.ps1` remains green, and package artifacts build,
+rebuild from sdist, and install in isolated offline environments.
 
-Tagging, checksums, artifact publication and GitHub Release publication remain separate
-actions after the final S8 merge and green post-merge `main` CI.
+The final S8 canonical diff/adversarial review confirms that release metadata
+finalization plus compatibility-only release-gate wiring did not widen runtime behavior,
+durable authority, replay semantics, fencing semantics, recovery semantics, or
+external-effect semantics; it also did not weaken deadline/budget/cancellation
+continuity, retention/restore fail-closed behavior, content-free diagnostics, or the
+test-only fault-injection boundary.
+
+The exact S8 release commit must pass the normal Python 3.12/3.13 CI matrix. Annotated
+tag creation, checksums, artifact publication, GitHub Release publication, PR review,
+and merge remain separate explicitly authorized release operations, and publication
+requires green post-merge `main` CI.

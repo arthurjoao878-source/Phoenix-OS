@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.37.0] - 2026-08-30
+
+### Added
+- Accepted RFC-0037 durable runs, recovery, and reliability hardening over the existing RFC-0028 durable-run engine and RFC-0036 integrated recovery path, without a second durable state machine, checkpoint format, or authority model.
+- Added deterministic Phoenix-owned fault injection, exact committed/not-committed/`COMMIT_OUTCOME_UNKNOWN` durable mutation classification, authoritative re-read after ambiguous writes, and adversarial checkpoint corruption/truncation/substitution/rollback coverage.
+- Added exhaustive fencing/takeover/concurrent-recoverer evidence, crash-safe `PREPARED`/`STARTED`/`INDETERMINATE` handling, fresh live recovery revalidation, persistent finite recovery-attempt bounds, and repeated-restart soak coverage.
+- Added deadline/budget/cancellation continuity, fenced retention and reconciliation cleanup races, schema-v5 store freshness witness / stale-backup anti-resurrection handling, content-free reliability administration, migration/threat-review evidence, and the dedicated `check_reliability_release.py` gate.
+
+### Security
+- Recovery is continuation under fresh evidence, never replay by assumption; a restart cannot increase authority, budget, lifetime, or certainty.
+- Persisted checkpoints remain untrusted data: current policy, configuration, dependency identity, approval state, limits, deadline, cancellation, lease/fencing ownership, and reviewed reconciliation evidence remain authoritative after restart.
+- Unknown durable write outcomes are resolved by exact authoritative re-read and comparison; local success is not durability proof and local failure is not proof that nothing committed.
+- Stale workers cannot mutate after newer fencing takeover, concurrent recoverers cannot both transition current state, and uncertain external effects remain `INDETERMINATE` until sufficient reviewed evidence permits progress.
+- Total deadlines and finite budgets never reset across restart, cancellation blocks new protected work, recovery loops are bounded, and stale/ambiguous restore state pauses automatic recovery rather than resurrecting authority.
+- Fault injection is test-only, Phoenix-owned, bounded, absent from ordinary production composition, and routine reliability diagnostics remain content-free.
+
+### Compatibility
+- Phoenix OS 0.36.0 behavior is preserved when durable execution is omitted; RFC-0028 remains the only durable-run state machine and RFC-0036 continues to reuse it.
+- The durable SQLite reference schema advances to version 5 with persistent recovery-attempt bookkeeping and store-freshness evidence; rollback guidance forbids in-place schema downgrade or freshness-evidence rewriting.
+- Existing agent, inference, integrated-agent, durable, delegation, memory, workspace, host, authority, network, and browser canonical authorization boundaries remain independently authoritative.
+- Release validation includes the full regression suite, all 14 named release gates, the adversarial reliability matrix, full `scripts/check.ps1`, wheel/sdist validation, rebuilt-sdist wheel, isolated offline smoke, canonical final security review, and Python 3.12/3.13 CI.
+- Release publication uses annotated Git tag `v0.37.0`, wheel and sdist artifacts, and `SHA256SUMS` only after green post-merge `main` CI and explicit release authorization.
+
+
 ## [0.36.0] - 2026-08-28
 
 ### Added
