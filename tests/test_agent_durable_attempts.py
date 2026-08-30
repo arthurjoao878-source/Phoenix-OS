@@ -36,7 +36,22 @@ from phoenix_os.agent.contracts import (
     ToolEffect,
 )
 from phoenix_os.agent.durable_codec import seal_checkpoint_envelope
+from phoenix_os.agent.durable_contracts import (
+    IndeterminateReason,
+    RecoveryDisposition,
+    RecoveryPoint,
+)
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
+from phoenix_os.agent.durable_recovery import classify_recovery_checkpoint
+from phoenix_os.agent.durable_reliability import (
+    ReliabilityFaultInjector,
+    ReliabilityFaultPoint,
+)
+from phoenix_os.agent.durable_reliability_fake import (
+    DeterministicReliabilityFaultInjector,
+    InjectedReliabilityFault,
+    ReliabilityFaultTrigger,
+)
 from phoenix_os.agent.errors import AgentStateConflictError
 from phoenix_os.agent.state import AgentBudgetSnapshot
 
@@ -176,6 +191,7 @@ def _recorder(
     *,
     attempt_ids: tuple[ExecutionAttemptId, ...] = (ATTEMPT_ID,),
     checkpoint_ids: tuple[CheckpointId, ...] | None = None,
+    fault_injector: ReliabilityFaultInjector | None = None,
 ) -> StoreBackedDurableExecutionAttemptRecorder:
     attempts = iter(attempt_ids)
     checkpoints = iter(_checkpoint_ids() if checkpoint_ids is None else checkpoint_ids)
@@ -196,6 +212,7 @@ def _recorder(
         store=store,
         attempt_id_factory=next_attempt_id,
         checkpoint_id_factory=next_checkpoint_id,
+        fault_injector=fault_injector,
     )
 
 
@@ -1159,3 +1176,330 @@ async def test_attempt_checkpoints_preserve_immutable_run_metadata_and_budgets()
     assert prepared.metadata.budget == current.metadata.budget
     assert prepared.metadata.retention_deadline == current.metadata.retention_deadline
     assert prepared.metadata.metadata == current.metadata.metadata
+
+
+async def _prepare_crash_boundary_attempt(
+    recorder: StoreBackedDurableExecutionAttemptRecorder,
+    checkpoint: CheckpointEnvelope,
+    lease: DurableLease,
+    kind: ExecutionAttemptKind,
+) -> CheckpointEnvelope:
+    if kind is ExecutionAttemptKind.MODEL_TURN:
+        return await recorder.prepare_model_attempt(
+            DURABLE_RUN_ID,
+            expected_version=checkpoint.run_version,
+            lease=lease,
+            external_request_digest=_digest("e"),
+            now=PREPARE_TIME,
+        )
+    return await recorder.prepare_tool_attempt(
+        DURABLE_RUN_ID,
+        expected_version=checkpoint.run_version,
+        lease=lease,
+        tool_call_id=CALL_ID,
+        tool_effect=ToolEffect.IRREVERSIBLE_WRITE,
+        external_request_digest=_digest("f"),
+        now=PREPARE_TIME,
+    )
+
+
+def _crash_boundary_checkpoint(kind: ExecutionAttemptKind) -> CheckpointEnvelope:
+    return _checkpoint(
+        next_operation=(
+            CheckpointNextOperation.MODEL_TURN
+            if kind is ExecutionAttemptKind.MODEL_TURN
+            else CheckpointNextOperation.TOOL_INVOCATION
+        )
+    )
+
+
+def _recovery_after_started(
+    kind: ExecutionAttemptKind,
+) -> tuple[RecoveryPoint, RecoveryDisposition]:
+    return (
+        (
+            RecoveryPoint.ACTIVE_MODEL_ATTEMPT
+            if kind is ExecutionAttemptKind.MODEL_TURN
+            else RecoveryPoint.ACTIVE_TOOL_ATTEMPT
+        ),
+        (
+            RecoveryDisposition.MARK_INDETERMINATE_MODEL
+            if kind is ExecutionAttemptKind.MODEL_TURN
+            else RecoveryDisposition.MARK_INDETERMINATE_TOOL
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (ExecutionAttemptKind.MODEL_TURN, ExecutionAttemptKind.TOOL_INVOCATION),
+)
+async def test_crash_after_prepared_is_durable_but_cannot_transparently_reprepare(
+    kind: ExecutionAttemptKind,
+) -> None:
+    checkpoint = _crash_boundary_checkpoint(kind)
+    store = InMemoryDurableRunStore()
+    await store.create(checkpoint)
+    lease = await store.lease_manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="attempt-worker",
+        now=LEASE_TIME,
+    )
+    injector = DeterministicReliabilityFaultInjector(
+        (ReliabilityFaultTrigger(ReliabilityFaultPoint.ATTEMPT_AFTER_PREPARED),),
+        max_total_hits=16,
+    )
+    recorder = _recorder(
+        store,
+        attempt_ids=(ATTEMPT_ID, OTHER_ATTEMPT_ID),
+        fault_injector=injector,
+    )
+
+    with pytest.raises(InjectedReliabilityFault) as crash:
+        await _prepare_crash_boundary_attempt(recorder, checkpoint, lease, kind)
+
+    assert crash.value.point is ReliabilityFaultPoint.ATTEMPT_AFTER_PREPARED
+    authoritative = await store.get_current(DURABLE_RUN_ID)
+    assert authoritative is not None
+    attempt = authoritative.metadata.active_attempt
+    assert attempt is not None
+    assert attempt.attempt_id == ATTEMPT_ID
+    assert attempt.kind is kind
+    assert attempt.status is ExecutionAttemptStatus.PREPARED
+    assert attempt.started_at is None
+    assert authoritative.run_version == checkpoint.run_version.next()
+    assert await store.list_history(DURABLE_RUN_ID, limit=4) == (
+        checkpoint,
+        authoritative,
+    )
+
+    point, disposition = classify_recovery_checkpoint(
+        authoritative,
+        now=START_TIME,
+    )
+    assert point is RecoveryPoint.SAFE_BOUNDARY
+    assert disposition is RecoveryDisposition.RESUME
+
+    with pytest.raises(AgentStateConflictError):
+        await _prepare_crash_boundary_attempt(
+            recorder,
+            authoritative,
+            lease,
+            kind,
+        )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (ExecutionAttemptKind.MODEL_TURN, ExecutionAttemptKind.TOOL_INVOCATION),
+)
+async def test_crash_after_started_never_allows_transparent_model_or_tool_replay(
+    kind: ExecutionAttemptKind,
+) -> None:
+    checkpoint = _crash_boundary_checkpoint(kind)
+    store = InMemoryDurableRunStore()
+    await store.create(checkpoint)
+    lease = await store.lease_manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="attempt-worker",
+        now=LEASE_TIME,
+    )
+    injector = DeterministicReliabilityFaultInjector(
+        (ReliabilityFaultTrigger(ReliabilityFaultPoint.ATTEMPT_AFTER_STARTED),),
+        max_total_hits=16,
+    )
+    recorder = _recorder(
+        store,
+        attempt_ids=(ATTEMPT_ID, OTHER_ATTEMPT_ID),
+        fault_injector=injector,
+    )
+    prepared = await _prepare_crash_boundary_attempt(
+        recorder,
+        checkpoint,
+        lease,
+        kind,
+    )
+    attempt = prepared.metadata.active_attempt
+    assert attempt is not None
+
+    with pytest.raises(InjectedReliabilityFault) as crash:
+        await recorder.mark_started(
+            DURABLE_RUN_ID,
+            attempt.attempt_id,
+            expected_version=prepared.run_version,
+            lease=lease,
+            now=START_TIME,
+        )
+
+    assert crash.value.point is ReliabilityFaultPoint.ATTEMPT_AFTER_STARTED
+    authoritative = await store.get_current(DURABLE_RUN_ID)
+    assert authoritative is not None
+    active = authoritative.metadata.active_attempt
+    assert active is not None
+    assert active.status is ExecutionAttemptStatus.STARTED
+    assert active.started_at == START_TIME
+    assert await store.list_history(DURABLE_RUN_ID, limit=4) == (
+        checkpoint,
+        prepared,
+        authoritative,
+    )
+
+    expected_point, expected_disposition = _recovery_after_started(kind)
+    point, disposition = classify_recovery_checkpoint(
+        authoritative,
+        now=COMPLETE_TIME,
+    )
+    assert point is expected_point
+    assert disposition is expected_disposition
+
+    with pytest.raises(AgentStateConflictError):
+        await _prepare_crash_boundary_attempt(
+            recorder,
+            authoritative,
+            lease,
+            kind,
+        )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (ExecutionAttemptKind.MODEL_TURN, ExecutionAttemptKind.TOOL_INVOCATION),
+)
+async def test_external_return_crash_leaves_started_attempt_for_fail_closed_recovery(
+    kind: ExecutionAttemptKind,
+) -> None:
+    checkpoint = _crash_boundary_checkpoint(kind)
+    store = InMemoryDurableRunStore()
+    await store.create(checkpoint)
+    lease = await store.lease_manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="attempt-worker",
+        now=LEASE_TIME,
+    )
+    injector = DeterministicReliabilityFaultInjector(
+        (
+            ReliabilityFaultTrigger(
+                ReliabilityFaultPoint.ATTEMPT_AFTER_EXTERNAL_RETURN_BEFORE_TERMINAL_RECORD
+            ),
+        ),
+        max_total_hits=16,
+    )
+    recorder = _recorder(
+        store,
+        attempt_ids=(ATTEMPT_ID, OTHER_ATTEMPT_ID),
+        fault_injector=injector,
+    )
+    prepared = await _prepare_crash_boundary_attempt(
+        recorder,
+        checkpoint,
+        lease,
+        kind,
+    )
+    attempt = prepared.metadata.active_attempt
+    assert attempt is not None
+    started = await recorder.mark_started(
+        DURABLE_RUN_ID,
+        attempt.attempt_id,
+        expected_version=prepared.run_version,
+        lease=lease,
+        now=START_TIME,
+    )
+
+    with pytest.raises(InjectedReliabilityFault) as crash:
+        await recorder.mark_terminal(
+            DURABLE_RUN_ID,
+            attempt.attempt_id,
+            expected_version=started.run_version,
+            lease=lease,
+            status=ExecutionAttemptStatus.SUCCEEDED,
+            next_operation=(
+                CheckpointNextOperation.VALIDATE_PROPOSAL
+                if kind is ExecutionAttemptKind.MODEL_TURN
+                else CheckpointNextOperation.VALIDATE_RESULT
+            ),
+            now=COMPLETE_TIME,
+        )
+
+    assert (
+        crash.value.point
+        is ReliabilityFaultPoint.ATTEMPT_AFTER_EXTERNAL_RETURN_BEFORE_TERMINAL_RECORD
+    )
+    authoritative = await store.get_current(DURABLE_RUN_ID)
+    assert authoritative == started
+    assert authoritative.metadata.active_attempt is not None
+    assert authoritative.metadata.active_attempt.status is ExecutionAttemptStatus.STARTED
+    assert await store.list_history(DURABLE_RUN_ID, limit=5) == (
+        checkpoint,
+        prepared,
+        started,
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await _prepare_crash_boundary_attempt(
+            recorder,
+            authoritative,
+            lease,
+            kind,
+        )
+
+    indeterminate = await recorder.mark_indeterminate(
+        DURABLE_RUN_ID,
+        attempt.attempt_id,
+        expected_version=authoritative.run_version,
+        lease=lease,
+        reason=IndeterminateReason.PROCESS_LOSS,
+        now=COMPLETE_TIME + timedelta(seconds=1),
+    )
+    assert indeterminate.status is (
+        DurableRunStatus.INDETERMINATE_MODEL
+        if kind is ExecutionAttemptKind.MODEL_TURN
+        else DurableRunStatus.INDETERMINATE_TOOL
+    )
+    assert indeterminate.metadata.active_attempt is not None
+    assert indeterminate.metadata.active_attempt.status is ExecutionAttemptStatus.INDETERMINATE
+
+
+async def test_prepared_cancellation_does_not_claim_external_return_boundary() -> None:
+    checkpoint = _checkpoint()
+    store = InMemoryDurableRunStore()
+    await store.create(checkpoint)
+    lease = await store.lease_manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="attempt-worker",
+        now=LEASE_TIME,
+    )
+    injector = DeterministicReliabilityFaultInjector(
+        (
+            ReliabilityFaultTrigger(
+                ReliabilityFaultPoint.ATTEMPT_AFTER_EXTERNAL_RETURN_BEFORE_TERMINAL_RECORD
+            ),
+        ),
+        max_total_hits=8,
+    )
+    recorder = _recorder(store, fault_injector=injector)
+    prepared = await recorder.prepare_model_attempt(
+        DURABLE_RUN_ID,
+        expected_version=checkpoint.run_version,
+        lease=lease,
+        external_request_digest=_digest("e"),
+        now=PREPARE_TIME,
+    )
+    attempt = prepared.metadata.active_attempt
+    assert attempt is not None
+
+    cancelled = await recorder.mark_terminal(
+        DURABLE_RUN_ID,
+        attempt.attempt_id,
+        expected_version=prepared.run_version,
+        lease=lease,
+        status=ExecutionAttemptStatus.CANCELLED,
+        now=START_TIME,
+    )
+
+    assert cancelled.status is DurableRunStatus.PAUSED_OPERATOR
+    assert injector.pending_trigger_count == 1
+    assert all(
+        observation.point
+        is not ReliabilityFaultPoint.ATTEMPT_AFTER_EXTERNAL_RETURN_BEFORE_TERMINAL_RECORD
+        for observation in injector.observations
+    )

@@ -50,6 +50,7 @@ from phoenix_os.agent import (
     ReconciliationDecision,
     ReconciliationEvidence,
     ReconciliationRequest,
+    StoreBackedDurableExecutionAttemptRecorder,
     StoreBackedDurableReconciliationDispositionApplier,
     ToolCallId,
     ToolEffect,
@@ -57,6 +58,15 @@ from phoenix_os.agent import (
     reconciliation_disposition_record,
 )
 from phoenix_os.agent.durable_codec import seal_checkpoint_envelope
+from phoenix_os.agent.durable_reliability import (
+    ReliabilityFaultInjector,
+    ReliabilityFaultPoint,
+)
+from phoenix_os.agent.durable_reliability_fake import (
+    DeterministicReliabilityFaultInjector,
+    InjectedReliabilityFault,
+    ReliabilityFaultTrigger,
+)
 from phoenix_os.agent.state import AgentBudgetSnapshot
 from phoenix_os.policy import PrincipalType, SecurityContext
 
@@ -360,14 +370,16 @@ async def _store_and_lease(
 
 def _applier(
     store: InMemoryDurableRunStore,
-    authorizer: _RecordingAuthorizer,
+    authorizer: DurableReconciliationAuthorizer,
     *,
     max_reconciliation_attempts: int = DEFAULT_DURABLE_RECONCILIATION_ATTEMPTS,
+    fault_injector: ReliabilityFaultInjector | None = None,
 ) -> StoreBackedDurableReconciliationDispositionApplier:
     return StoreBackedDurableReconciliationDispositionApplier(
         store=store,
         authorizer=authorizer,
         max_reconciliation_attempts=max_reconciliation_attempts,
+        fault_injector=fault_injector,
     )
 
 
@@ -1606,3 +1618,259 @@ async def test_second_reconciliation_replaces_only_current_record_metadata() -> 
     assert second.metadata.metadata["tenant"] == "demo"
     history = await store.list_history(checkpoint.durable_run_id, limit=3)
     assert history == (checkpoint, first, second)
+
+
+class _CrashBeforeAuthorizationAuthorizer:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def authorize(
+        self,
+        request: ReconciliationRequest,
+        checkpoint: CheckpointEnvelope,
+        lease: DurableLease,
+        context: SecurityContext,
+    ) -> None:
+        del request, checkpoint, lease, context
+        self.calls += 1
+        raise RuntimeError("simulated reconciliation crash before authorization")
+
+
+async def test_crash_before_reconciliation_authorization_cannot_mutate_state() -> None:
+    checkpoint = _checkpoint()
+    store, _, lease = await _store_and_lease(checkpoint)
+    authorizer = _CrashBeforeAuthorizationAuthorizer()
+    request = _request(
+        checkpoint,
+        lease,
+        ReconciliationDecision.REMAIN_INDETERMINATE,
+    )
+    applier = StoreBackedDurableReconciliationDispositionApplier(
+        store=store,
+        authorizer=authorizer,
+    )
+
+    with pytest.raises(RuntimeError, match="before authorization"):
+        await applier.apply(
+            request,
+            lease=lease,
+            context=_context(),
+            now=APPLY_TIME,
+        )
+
+    assert authorizer.calls == 1
+    assert await store.get_current(DURABLE_RUN_ID) == checkpoint
+    assert await store.list_history(DURABLE_RUN_ID, limit=4) == (checkpoint,)
+
+
+async def test_crash_after_authorization_before_reconciliation_mutation_is_fail_closed() -> None:
+    checkpoint = _checkpoint()
+    store, _, lease = await _store_and_lease(checkpoint)
+    authorizer = _RecordingAuthorizer()
+    injector = DeterministicReliabilityFaultInjector(
+        (ReliabilityFaultTrigger(ReliabilityFaultPoint.RECONCILE_BEFORE_MUTATION),),
+        max_total_hits=8,
+    )
+    request = _request(
+        checkpoint,
+        lease,
+        ReconciliationDecision.REMAIN_INDETERMINATE,
+    )
+    applier = _applier(
+        store,
+        authorizer,
+        fault_injector=injector,
+    )
+
+    with pytest.raises(InjectedReliabilityFault) as crash:
+        await applier.apply(
+            request,
+            lease=lease,
+            context=_context(),
+            now=APPLY_TIME,
+        )
+
+    assert crash.value.point is ReliabilityFaultPoint.RECONCILE_BEFORE_MUTATION
+    assert len(authorizer.calls) == 1
+    assert await store.get_current(DURABLE_RUN_ID) == checkpoint
+    assert await store.list_history(DURABLE_RUN_ID, limit=4) == (checkpoint,)
+
+
+async def test_crash_after_reconciliation_commit_is_durable_once_and_duplicate_rejected() -> None:
+    checkpoint = _checkpoint()
+    store, _, lease = await _store_and_lease(checkpoint)
+    authorizer = _RecordingAuthorizer()
+    injector = DeterministicReliabilityFaultInjector(
+        (ReliabilityFaultTrigger(ReliabilityFaultPoint.RECONCILE_AFTER_MUTATION_COMMIT),),
+        max_total_hits=8,
+    )
+    request = _request(
+        checkpoint,
+        lease,
+        ReconciliationDecision.REMAIN_INDETERMINATE,
+    )
+    applier = _applier(
+        store,
+        authorizer,
+        fault_injector=injector,
+    )
+
+    with pytest.raises(InjectedReliabilityFault) as crash:
+        await applier.apply(
+            request,
+            lease=lease,
+            context=_context(),
+            now=APPLY_TIME,
+        )
+
+    assert crash.value.point is ReliabilityFaultPoint.RECONCILE_AFTER_MUTATION_COMMIT
+    authoritative = await store.get_current(DURABLE_RUN_ID)
+    assert authoritative is not None
+    assert authoritative.run_version == checkpoint.run_version.next()
+    record = reconciliation_disposition_record(authoritative)
+    assert record.decision is ReconciliationDecision.REMAIN_INDETERMINATE
+    assert record.attempt_id == ATTEMPT_ID
+    history = await store.list_history(DURABLE_RUN_ID, limit=4)
+    assert history == (checkpoint, authoritative)
+
+    with pytest.raises(AgentStateConflictError):
+        await applier.apply(
+            request,
+            lease=lease,
+            context=_context(),
+            now=APPLY_TIME + timedelta(seconds=1),
+        )
+    assert await store.list_history(DURABLE_RUN_ID, limit=4) == history
+
+
+@pytest.mark.parametrize("lookup_case", ("unknown", "timeout"))
+async def test_confirm_not_started_rejects_unknown_or_timed_out_lookup_without_mutation(
+    lookup_case: str,
+) -> None:
+    checkpoint = _checkpoint()
+    store, _, lease = await _store_and_lease(checkpoint)
+    lookup = (
+        _lookup_result(checkpoint, DurableAttemptExternalStatus.UNKNOWN)
+        if lookup_case == "unknown"
+        else _empty_lookup_result(
+            checkpoint,
+            DurableAttemptStatusLookupOutcome.TIMED_OUT,
+        )
+    )
+
+    with pytest.raises(ValueError, match="requires evidence"):
+        _request(
+            checkpoint,
+            lease,
+            ReconciliationDecision.CONFIRM_NOT_STARTED,
+            lookup_result=lookup,
+        )
+
+    assert await store.get_current(DURABLE_RUN_ID) == checkpoint
+    assert await store.list_history(DURABLE_RUN_ID, limit=4) == (checkpoint,)
+
+
+async def test_later_fresh_attempt_requires_exact_not_started_evidence() -> None:
+    checkpoint = _checkpoint()
+    store, _, lease = await _store_and_lease(checkpoint)
+
+    unknown = _lookup_result(
+        checkpoint,
+        DurableAttemptExternalStatus.UNKNOWN,
+    )
+    with pytest.raises(ValueError, match="requires evidence"):
+        _request(
+            checkpoint,
+            lease,
+            ReconciliationDecision.CONFIRM_NOT_STARTED,
+            lookup_result=unknown,
+        )
+
+    assert await store.get_current(DURABLE_RUN_ID) == checkpoint
+    assert await store.list_history(DURABLE_RUN_ID, limit=4) == (checkpoint,)
+
+    blocked_recorder = StoreBackedDurableExecutionAttemptRecorder(
+        store=store,
+        attempt_id_factory=lambda: OTHER_ATTEMPT_ID,
+    )
+    with pytest.raises(AgentStateConflictError):
+        await blocked_recorder.prepare_model_attempt(
+            DURABLE_RUN_ID,
+            expected_version=checkpoint.run_version,
+            lease=lease,
+            external_request_digest=_digest("7"),
+            now=APPLY_TIME,
+        )
+
+    proved_not_started = _lookup_result(
+        checkpoint,
+        DurableAttemptExternalStatus.NOT_STARTED,
+    )
+    request = _request(
+        checkpoint,
+        lease,
+        ReconciliationDecision.CONFIRM_NOT_STARTED,
+        lookup_result=proved_not_started,
+    )
+    reconciled = await _applier(store, _RecordingAuthorizer()).apply(
+        request,
+        lease=lease,
+        context=_context(),
+        lookup_result=proved_not_started,
+        now=APPLY_TIME,
+    )
+
+    prior_attempt = reconciled.metadata.active_attempt
+    assert reconciled.status is DurableRunStatus.PAUSED_OPERATOR
+    assert reconciled.metadata.next_operation is CheckpointNextOperation.MODEL_TURN
+    assert prior_attempt is not None
+    assert prior_attempt.attempt_id == ATTEMPT_ID
+    assert prior_attempt.status is ExecutionAttemptStatus.CANCELLED
+
+    clean_metadata = {
+        key: value
+        for key, value in reconciled.metadata.metadata.items()
+        if not key.startswith("reconciliation.")
+    }
+    resumed = seal_checkpoint_envelope(
+        replace(
+            reconciled,
+            checkpoint_id=CheckpointId(UUID("a0000000-0000-0000-0000-000000000001")),
+            sequence=CheckpointSequence(1),
+            previous_digest=None,
+            run_version=DurableRunVersion(1),
+            status=DurableRunStatus.ACTIVE,
+            metadata=replace(
+                reconciled.metadata,
+                next_operation=CheckpointNextOperation.MODEL_TURN,
+                metadata=clean_metadata,
+            ),
+            created_at=APPLY_TIME + timedelta(seconds=1),
+            digest=_digest("0"),
+        )
+    )
+    resumed_store = InMemoryDurableRunStore()
+    await resumed_store.create(resumed)
+    resumed_lease = await resumed_store.lease_manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="fresh-attempt-worker",
+        now=APPLY_TIME + timedelta(seconds=2),
+    )
+    fresh_recorder = StoreBackedDurableExecutionAttemptRecorder(
+        store=resumed_store,
+        attempt_id_factory=lambda: OTHER_ATTEMPT_ID,
+        checkpoint_id_factory=lambda: CheckpointId(UUID("a0000000-0000-0000-0000-000000000002")),
+    )
+    fresh = await fresh_recorder.prepare_model_attempt(
+        DURABLE_RUN_ID,
+        expected_version=resumed.run_version,
+        lease=resumed_lease,
+        external_request_digest=_digest("7"),
+        now=APPLY_TIME + timedelta(seconds=3),
+    )
+
+    fresh_attempt = fresh.metadata.active_attempt
+    assert fresh_attempt is not None
+    assert fresh_attempt.attempt_id == OTHER_ATTEMPT_ID
+    assert fresh_attempt.status is ExecutionAttemptStatus.PREPARED
+    assert fresh_attempt.attempt_id != prior_attempt.attempt_id
