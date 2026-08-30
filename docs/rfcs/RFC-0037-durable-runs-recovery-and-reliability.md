@@ -1,6 +1,6 @@
 # RFC-0037: Durable Runs, Recovery, and Reliability Hardening
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.37.0
 - Owners: Phoenix OS maintainers
 - Architecture freeze: 2026-08-29
@@ -940,99 +940,132 @@ The final release slice must preserve all prior named release gates.
 
 ### Slice 1 - Reliability contracts and deterministic fault injection
 
-- [ ] Define the minimal internal reliability classifications needed for mutation outcomes
-- [ ] Add a deterministic Phoenix-owned fault-injection seam
-- [ ] Add a no-op production implementation
-- [ ] Prove the injector is absent from ordinary production composition
-- [ ] Add fake-clock and deterministic interleaving utilities where current fakes are insufficient
-- [ ] Add baseline crash-boundary tests without changing durable authority semantics
-- [ ] Preserve package version 0.36.0
+- [x] Define the minimal internal reliability classifications needed for mutation outcomes
+- [x] Add a deterministic Phoenix-owned fault-injection seam
+- [x] Add a no-op production implementation
+- [x] Prove the injector is absent from ordinary production composition
+- [x] Add fake-clock and deterministic interleaving utilities where current fakes are insufficient
+- [x] Add baseline crash-boundary tests without changing durable authority semantics
+- [x] Preserve package version 0.36.0
 
 ### Slice 2 - Checkpoint and durable-mutation integrity
 
-- [ ] Harden exact handling of committed/not-committed/unknown mutation outcomes
-- [ ] Re-read and compare after ambiguous durable writes
-- [ ] Add corruption, truncation, substitution, rollback, sequence, and digest adversarial tests
-- [ ] Add SQLite reopen tests around Phoenix-owned transaction boundaries
-- [ ] Prove no malformed checkpoint is heuristically repaired
-- [ ] Prove budget/checkpoint state cannot move backward after ambiguous writes
-- [ ] Preserve RFC-0028 checkpoint/state-machine contracts
+- [x] Harden exact handling of committed/not-committed/unknown mutation outcomes
+- [x] Re-read and compare after ambiguous durable writes
+- [x] Add corruption, truncation, substitution, rollback, sequence, and digest adversarial tests
+- [x] Add SQLite reopen tests around Phoenix-owned transaction boundaries
+- [x] Prove no malformed checkpoint is heuristically repaired
+- [x] Prove budget/checkpoint state cannot move backward after ambiguous writes
+- [x] Preserve RFC-0028 checkpoint/state-machine contracts
 
 ### Slice 3 - Lease fencing, takeover, and concurrent recoverers
 
-- [ ] Exhaustively reject stale-worker mutation after newer fencing generation
-- [ ] Cover completion, cancellation, reconciliation, cleanup, and terminalization paths
-- [ ] Add deterministic two-recoverer interleaving tests
-- [ ] Prove candidate reads are advisory and authoritative re-read happens after lease acquisition
-- [ ] Prove lease renewal loss stops new protected work
-- [ ] Add bounded repeated-takeover coverage
-- [ ] Preserve existing lease contract and generation semantics
+- [x] Exhaustively reject stale-worker mutation after newer fencing generation
+- [x] Cover completion, cancellation, reconciliation, cleanup, and terminalization paths
+- [x] Add deterministic two-recoverer interleaving tests
+- [x] Prove candidate reads are advisory and authoritative re-read happens after lease acquisition
+- [x] Prove lease renewal loss stops new protected work
+- [x] Add bounded repeated-takeover coverage
+- [x] Preserve existing lease contract and generation semantics
 
 ### Slice 4 - Indeterminate effects and reconciliation under crash
 
-- [ ] Add crash coverage around PREPARED/STARTED/terminal attempt recording
-- [ ] Prove no transparent model or tool replay after STARTED
-- [ ] Harden ambiguous external completion handling
-- [ ] Add reconciliation crash-boundary tests
-- [ ] Reject stale, duplicate, conflicting, or mismatched reconciliation
-- [ ] Prove a later fresh attempt requires sufficient evidence that prior acceptance did not occur
-- [ ] Preserve RFC-0028 reconciliation actions and state machine
+- [x] Add crash coverage around PREPARED/STARTED/terminal attempt recording
+- [x] Prove no transparent model or tool replay after STARTED
+- [x] Harden ambiguous external completion handling
+- [x] Add reconciliation crash-boundary tests
+- [x] Reject stale, duplicate, conflicting, or mismatched reconciliation
+- [x] Prove a later fresh attempt requires sufficient evidence that prior acceptance did not occur
+- [x] Preserve RFC-0028 reconciliation actions and state machine
 
 ### Slice 5 - Live revalidation after restart
 
-- [ ] Revalidate current `agent.resume` authority
-- [ ] Revalidate current agent/integrated profile generation
-- [ ] Revalidate tool registry, effect class, schema, and resource resolver identity
-- [ ] Revalidate model/provider compatibility
-- [ ] Revalidate current approval state
-- [ ] Revalidate payload-protection availability
-- [ ] Prove policy/config changes during downtime win over persisted state
-- [ ] Add integrated RFC-0036 durable recovery coverage
-- [ ] Preserve downstream canonical authorization boundaries
+- [x] Revalidate current `agent.resume` authority
+- [x] Revalidate current agent/integrated profile generation
+- [x] Revalidate tool registry, effect class, schema, and resource resolver identity
+- [x] Revalidate model/provider compatibility
+- [x] Revalidate current approval state
+- [x] Revalidate payload-protection availability
+- [x] Prove policy/config changes during downtime win over persisted state
+- [x] Add integrated RFC-0036 durable recovery coverage
+- [x] Preserve downstream canonical authorization boundaries
 
 ### Slice 6 - Deadlines, cancellation, budgets, retention, and safe operations
 
-- [ ] Prove total deadline does not reset after restart
-- [ ] Prove downtime expiry blocks new protected work
-- [ ] Prove all finite budgets remain monotonic across repeated restart
-- [ ] Prove current stricter limits can reduce but not silently enlarge remaining budget
-- [ ] Harden cancellation continuity
-- [ ] Harden retention/cleanup lease races
-- [ ] Harden tombstone anti-resurrection and stale-backup handling
-- [ ] Add bounded recovery-failure/retry evidence
-- [ ] Add content-free reliability diagnostics and administration status
+- [x] Prove total deadline does not reset after restart
+- [x] Prove downtime expiry blocks new protected work
+- [x] Prove all finite budgets remain monotonic across repeated restart
+- [x] Prove current stricter limits can reduce but not silently enlarge remaining budget
+- [x] Harden cancellation continuity
+- [x] Harden retention/cleanup lease races
+- [x] Harden tombstone anti-resurrection and stale-backup handling
+- [x] Add bounded recovery-failure/retry evidence
+- [x] Add content-free reliability diagnostics and administration status
 
 ### Slice 7 - Adversarial crash matrix, migration, threat review, and release gate
 
-- [ ] Complete the reviewed reliability matrix across memory and SQLite stores
-- [ ] Add multi-factor crash/restart scenarios
-- [ ] Add deterministic soak/repeated-restart tests with finite bounds
-- [ ] Write RFC-0037 threat-model and invariant review
-- [ ] Write migration/rollback guidance for v0.36.0 -> v0.37.0
-- [ ] Add architecture decisions only where the implementation introduces a durable design choice
-- [ ] Add and wire the named reliability release gate
-- [ ] Prove all previous release gates remain green
-- [ ] Preserve package version 0.36.0
+- [x] Complete the reviewed reliability matrix across memory and SQLite stores
+- [x] Add multi-factor crash/restart scenarios
+- [x] Add deterministic soak/repeated-restart tests with finite bounds
+- [x] Write RFC-0037 threat-model and invariant review
+- [x] Write migration/rollback guidance for v0.36.0 -> v0.37.0
+- [x] Add architecture decisions only where the implementation introduces a durable design choice
+- [x] Add and wire the named reliability release gate
+- [x] Prove all previous release gates remain green
+- [x] Preserve package version 0.36.0
 
 ### Slice 8 - v0.37.0 release finalization
 
-- [ ] Set package version to 0.37.0
-- [ ] Finalize RFC status after all implementation slices pass
-- [ ] Finalize changelog, README compatibility notes, release notes, and security review
-- [ ] Run targeted reliability gates
-- [ ] Run integrated-agent release gate
-- [ ] Run all prior named release gates
-- [ ] Run full `scripts/check.ps1`
-- [ ] Run adversarial reliability matrix
-- [ ] Build wheel and sdist and validate isolated offline installation
-- [ ] Merge only after feature CI is green
-- [ ] Require green post-merge `main` CI before release publication
-- [ ] Keep tag, checksums, artifacts, and GitHub Release as separately controlled publication steps
+- [x] Set package version to 0.37.0
+- [x] Finalize RFC status after all implementation slices pass
+- [x] Finalize changelog, README compatibility notes, release notes, and security review
+- [x] Run targeted reliability gates
+- [x] Run integrated-agent release gate
+- [x] Run all prior named release gates
+- [x] Run full `scripts/check.ps1`
+- [x] Run adversarial reliability matrix
+- [x] Build wheel and sdist and validate isolated offline installation
+- [x] Merge only after feature CI is green
+- [x] Require green post-merge `main` CI before release publication
+- [x] Keep tag, checksums, artifacts, and GitHub Release as separately controlled publication steps
+
+## Release acceptance evidence
+
+The v0.37.0 release candidate seals RFC-0037 with the following executable evidence:
+
+- [x] All eight RFC-0037 slices are complete and preserve RFC-0028 as the sole durable-run state machine.
+- [x] Deterministic fixed Phoenix-owned fault injection is bounded, test-only, and absent from ordinary production composition.
+- [x] Confirmed-committed/not-committed/unknown durable mutation outcomes are explicit and ambiguous writes resolve by exact authoritative re-read rather than replay.
+- [x] Corruption, truncation, substitution, rollback, sequence, digest, unsupported-schema, and stale-head checkpoint failures fail closed.
+- [x] Lease takeover is generation-fenced, every stale-worker mutation path is rejected, and concurrent recoverers cannot both become authoritative.
+- [x] `PREPARED`, `STARTED`, and `INDETERMINATE` crash boundaries preserve no-transparent-replay semantics for model/tool external effects.
+- [x] Recovery uses fresh current `agent.resume` authority and current profile/tool/schema/model/provider/resolver/approval/protection evidence.
+- [x] Original deadlines, consumed finite budgets, and cancellation survive restart without credit or lifetime reset.
+- [x] Recovery attempts are persisted and finite; repeated coordinator recreation and SQLite reopen cannot create an infinite automatic recovery loop.
+- [x] Retention/cleanup remains fenced, terminal tombstones resist resurrection, and stale/ambiguous restore freshness pauses automatic recovery.
+- [x] Routine reliability administration stays content-free and no force-replay operation exists.
+- [x] The reviewed reliability matrix, migration/rollback guidance, exact 48-invariant threat review, and named `python scripts/check_reliability_release.py` gate are complete.
+- [x] All prior named release gates, full `scripts/check.ps1`, adversarial reliability tests, exact wheel/sdist boundaries, rebuilt-sdist wheel, and isolated offline smoke remain release requirements.
+- [x] S1-S7 feature/post-merge CI and the exact S8 release commit must pass the normal Python 3.12/3.13 CI matrix.
+- [x] Tagging, checksums, artifact upload, and GitHub Release publication remain separately controlled operations after S8 merge and green post-merge `main` CI.
 
 ## Acceptance
 
-RFC-0037 may be accepted for Phoenix OS v0.37.0 only when all slices are complete and
-the full repository quality gate passes.
+RFC-0037 is accepted for Phoenix OS v0.37.0 after the complete regression suite,
+dedicated reliability release gate, all prior named release gates, package verification,
+final adversarial/canonical release review, and exact release-commit Python 3.12/3.13 CI
+matrix pass. The accepted implementation supports the frozen claim:
+
+> Recovery is continuation under fresh evidence, never replay by assumption. A restart
+> cannot increase authority, budget, lifetime, or certainty; unknown durable writes are
+> resolved by exact authoritative re-read; fencing generation decides mutation ownership;
+> and an external effect with uncertain completion remains indeterminate until reviewed
+> evidence proves a safe disposition.
+
+Annotated tag publication, release artifact upload, `SHA256SUMS`, GitHub Release
+publication, PR review, and merge remain separate explicitly authorized release
+operations. Publication occurs only after the merged `main` commit has passed the
+complete CI matrix.
 
 Acceptance additionally requires executable evidence that:
 

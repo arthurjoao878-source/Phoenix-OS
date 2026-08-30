@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PYPROJECT = _ROOT / "pyproject.toml"
 _README = _ROOT / "README.md"
 _CHANGELOG = _ROOT / "CHANGELOG.md"
 _RELEASE_NOTES = _ROOT / "docs" / "releases" / "v0.36.0.md"
@@ -27,13 +25,8 @@ _RFC = (
 _GATE = _ROOT / "scripts" / "check_integrated_agent_release.py"
 
 
-def test_project_version_is_v0360() -> None:
-    assert tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]["version"] == "0.36.0"
-
-
-def test_readme_announces_thirty_six_specs_and_integrated_gate() -> None:
+def test_readme_preserves_v036_release_history_and_integrated_gate() -> None:
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.36.0` implements thirty-six accepted specifications:" in readme
     assert "RFC-0036" in readme
     assert "Secure Integrated Agent Execution and End-to-End Orchestration" in readme
     current = "[Phoenix OS 0.36.0](docs/releases/v0.36.0.md)"
