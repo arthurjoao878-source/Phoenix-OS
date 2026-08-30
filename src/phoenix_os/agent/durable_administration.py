@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from phoenix_os.agent.durable_authorization import durable_agent_run_resource
 from phoenix_os.agent.durable_compatibility import (
@@ -26,6 +26,11 @@ from phoenix_os.agent.durable_lease import DurableLeaseManager
 from phoenix_os.agent.durable_observer import (
     DurableRunObserver,
     DurableRunObserverSnapshot,
+)
+from phoenix_os.agent.durable_reliability import (
+    DurableRecoveryAttemptStore,
+    DurableStoreFreshnessCategory,
+    DurableStoreFreshnessSource,
 )
 from phoenix_os.agent.durable_retention_worker import (
     DurableRetentionWorker,
@@ -80,6 +85,13 @@ class DurableRetentionCategory(StrEnum):
     """Safe classification against the checkpoint retention deadline."""
 
     RETAINED = "retained"
+    EXPIRED = "expired"
+
+
+class DurableDeadlineCategory(StrEnum):
+    """Content-free classification against the original total deadline."""
+
+    ACTIVE = "active"
     EXPIRED = "expired"
 
 
@@ -166,6 +178,38 @@ class DurableRunAdministrationView:
 
         if self.schema_version != 1:
             raise ValueError("unsupported durable administration view version")
+
+
+@dataclass(frozen=True, slots=True)
+class DurableReliabilityAdministrationView:
+    """Read-only RFC-0037 reliability status for one exact durable run."""
+
+    run_id: DurableAgentRunId
+    deadline_category: DurableDeadlineCategory
+    recovery_attempts: int | None
+    automatic_recovery_paused: bool
+    restore_category: DurableStoreFreshnessCategory | None
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, DurableAgentRunId):
+            raise TypeError("run_id must be DurableAgentRunId")
+        if not isinstance(self.deadline_category, DurableDeadlineCategory):
+            raise TypeError("deadline_category must be DurableDeadlineCategory")
+        if self.recovery_attempts is not None:
+            _require_bounded_count(
+                self.recovery_attempts,
+                label="recovery_attempts",
+            )
+        if type(self.automatic_recovery_paused) is not bool:
+            raise TypeError("automatic_recovery_paused must be bool")
+        if self.restore_category is not None and not isinstance(
+            self.restore_category,
+            DurableStoreFreshnessCategory,
+        ):
+            raise TypeError("restore_category must be DurableStoreFreshnessCategory or None")
+        if self.schema_version != 1:
+            raise ValueError("unsupported reliability administration view version")
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,6 +476,71 @@ class DurableRunAdministration:
                 lease=lease,
                 compatibility_category=compatibility.category,
                 now=now,
+            )
+        except AgentStateConflictError:
+            raise
+        except Exception:
+            raise AgentServiceUnavailableError() from None
+
+    async def reliability(
+        self,
+        run_id: DurableAgentRunId,
+        context: SecurityContext,
+    ) -> DurableReliabilityAdministrationView | None:
+        """Return bounded RFC-0037 status without persisted execution content."""
+
+        if not isinstance(run_id, DurableAgentRunId):
+            raise TypeError("run_id must be DurableAgentRunId")
+
+        await self._authorize(
+            context,
+            action=AGENT_DURABLE_READ_ACTION,
+            resource=durable_agent_run_resource(run_id),
+        )
+
+        now = self._now()
+        try:
+            checkpoint = await self._store.get_current(run_id)
+            if checkpoint is None:
+                return None
+            if checkpoint.durable_run_id != run_id or now < checkpoint.created_at:
+                raise AgentStateConflictError()
+
+            recovery_attempts: int | None = None
+            persistent_attempts_available = isinstance(
+                self._store,
+                DurableRecoveryAttemptStore,
+            )
+            attempts_exhausted = False
+            if persistent_attempts_available:
+                attempt_store = cast(DurableRecoveryAttemptStore, self._store)
+                recovery_attempts = _bounded_count(
+                    await attempt_store.get_recovery_attempt_count(run_id)
+                )
+                attempts_exhausted = recovery_attempts >= attempt_store.limits.max_recovery_attempts
+
+            restore_category: DurableStoreFreshnessCategory | None = None
+            restore_ambiguous = False
+            if isinstance(self._store, DurableStoreFreshnessSource):
+                freshness = await self._store.get_store_freshness()
+                restore_category = freshness.category
+                restore_ambiguous = not freshness.automatic_recovery_available
+
+            return DurableReliabilityAdministrationView(
+                run_id=run_id,
+                deadline_category=(
+                    DurableDeadlineCategory.EXPIRED
+                    if now >= checkpoint.metadata.budget.deadline
+                    else DurableDeadlineCategory.ACTIVE
+                ),
+                recovery_attempts=recovery_attempts,
+                automatic_recovery_paused=(
+                    not checkpoint.status.terminal
+                    and (
+                        not persistent_attempts_available or attempts_exhausted or restore_ambiguous
+                    )
+                ),
+                restore_category=restore_category,
             )
         except AgentStateConflictError:
             raise

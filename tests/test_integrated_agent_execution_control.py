@@ -401,3 +401,54 @@ def test_effect_ledger_never_re_records_the_same_effect_attempt() -> None:
     assert ledger.record(effectful, result) is IntegratedEffectDisposition.CONFIRMED_EFFECT
     with pytest.raises(IntegratedAgentStaleError):
         ledger.record(effectful, result)
+
+
+def test_integrated_budget_repeated_restore_preserves_all_consumed_dimensions() -> None:
+    from phoenix_os.integrated_agent.contracts import IntegratedBudgetUsage
+
+    extension = IntegratedBudgetExtension(
+        total_duration=timedelta(minutes=5),
+        max_plan_revisions=1,
+        max_integrated_steps=7,
+        max_browser_operations=1,
+        max_network_operations=1,
+        max_memory_operations=1,
+        max_workspace_operations=1,
+        max_workspace_mutation_bytes=8,
+        max_host_operations=1,
+    )
+    usage = IntegratedBudgetUsage(
+        plan_revisions=1,
+        integrated_steps=7,
+        browser_operations=1,
+        network_operations=1,
+        memory_operations=1,
+        workspace_operations=1,
+        workspace_mutation_bytes=8,
+        host_operations=1,
+    )
+    parent_deadline = _NOW + timedelta(minutes=2)
+
+    restored = IntegratedRunBudget.restore(
+        extension,
+        started_at=_NOW,
+        parent_deadline=parent_deadline,
+        usage=usage,
+    )
+    for _restart in range(3):
+        restored = IntegratedRunBudget.restore(
+            extension,
+            started_at=_NOW,
+            parent_deadline=parent_deadline,
+            usage=restored.usage,
+        )
+        assert restored.usage == usage
+        assert restored.deadline == parent_deadline
+
+    with pytest.raises(IntegratedAgentBudgetExhaustedError):
+        restored.require_step(
+            _network_binding(),
+            {},
+            now=_NOW + timedelta(seconds=1),
+        )
+    assert restored.usage == usage

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -9,6 +10,7 @@ from phoenix_os.agent.authorization import AgentRunAuthorityBinding
 from phoenix_os.agent.configuration import AgentServiceConfiguration
 from phoenix_os.agent.contracts import (
     AgentId,
+    AgentLimits,
     AgentMessage,
     AgentMessageRole,
     AgentRunId,
@@ -148,7 +150,11 @@ def _admission() -> IntegratedAgentAdmission:
     )
 
 
-def _checkpoint(request: AgentRunRequest) -> CheckpointEnvelope:
+def _checkpoint(
+    request: AgentRunRequest,
+    *,
+    steps: int = 0,
+) -> CheckpointEnvelope:
     return seal_checkpoint_envelope(
         CheckpointEnvelope(
             schema_version=CheckpointSchemaVersion(),
@@ -165,7 +171,7 @@ def _checkpoint(request: AgentRunRequest) -> CheckpointEnvelope:
                 actor_id="worker-1",
                 next_operation=CheckpointNextOperation.MODEL_TURN,
                 budget=AgentBudgetSnapshot(
-                    steps=0,
+                    steps=steps,
                     model_turns=0,
                     tool_calls=0,
                     model_output_bytes=0,
@@ -345,6 +351,312 @@ async def test_live_revalidator_denies_cancellation_authority_and_stale_browser_
     state["cancelled"] = False
     authorizer.allow = False
     assert not await live.revalidate_run(
+        checkpoint,
+        lease.binding,
+        lease.request,
+        now=_NOW,
+    )
+    await lease.release()
+
+
+@pytest.mark.asyncio
+async def test_live_revalidator_accepts_stricter_current_limits_without_extending_deadline() -> (
+    None
+):
+    original = _request()
+    strict_limits = AgentLimits(
+        max_steps=4,
+        approval_wait_timeout=timedelta(minutes=5),
+        total_duration=timedelta(minutes=5),
+    )
+    configuration = AgentServiceConfiguration(
+        agent_id=AgentId("assistant"),
+        provider_id=ModelProviderId("local"),
+        model_id=ModelId("chat"),
+        limits=strict_limits,
+    )
+    profile = _profile()
+    admission = IntegratedAgentAdmission(
+        IntegratedExecutionProfileCatalog((profile,)),
+        IntegratedExecutionProfileSelection(
+            profile_id=profile.profile_id,
+            generation=profile.generation,
+        ),
+        configuration,
+    )
+    lease = await admission.admit(_task(), original)
+    assert lease.request.limits.max_steps == 4
+    assert lease.request.deadline == original.created_at + timedelta(minutes=5)
+    assert lease.request.deadline < original.deadline
+
+    authorizer = _BoundRunAuthorizer()
+    freshness = _FreshnessValidator()
+    live = AgentLoopIntegratedDurableRecoveryLiveRevalidator(
+        loop=_loop(authorizer, freshness),
+        configuration=configuration,
+        context=_context(),
+        cancellation_probe=lambda _run_id: False,
+        context_freshness_probe=lambda _provenance: True,
+    )
+
+    assert await live.revalidate_run(
+        _checkpoint(original),
+        lease.binding,
+        lease.request,
+        now=_NOW,
+    )
+    await lease.release()
+
+
+@pytest.mark.asyncio
+async def test_live_revalidator_denies_when_stricter_current_budget_is_already_exhausted() -> None:
+    original = _request()
+    strict_limits = AgentLimits(max_steps=1)
+    configuration = AgentServiceConfiguration(
+        agent_id=AgentId("assistant"),
+        provider_id=ModelProviderId("local"),
+        model_id=ModelId("chat"),
+        limits=strict_limits,
+    )
+    profile = _profile()
+    admission = IntegratedAgentAdmission(
+        IntegratedExecutionProfileCatalog((profile,)),
+        IntegratedExecutionProfileSelection(
+            profile_id=profile.profile_id,
+            generation=profile.generation,
+        ),
+        configuration,
+    )
+    lease = await admission.admit(_task(), original)
+    live = AgentLoopIntegratedDurableRecoveryLiveRevalidator(
+        loop=_loop(_BoundRunAuthorizer(), _FreshnessValidator()),
+        configuration=configuration,
+        context=_context(),
+        cancellation_probe=lambda _run_id: False,
+        context_freshness_probe=lambda _provenance: True,
+    )
+
+    assert not await live.revalidate_run(
+        _checkpoint(original, steps=2),
+        lease.binding,
+        lease.request,
+        now=_NOW,
+    )
+    await lease.release()
+
+
+@pytest.mark.asyncio
+async def test_current_looser_configuration_cannot_enlarge_original_admitted_limits() -> None:
+    original_limits = AgentLimits(
+        max_steps=3,
+        max_model_turns=3,
+        max_tool_calls=3,
+    )
+    original = AgentRunRequest(
+        agent_id=AgentId("assistant"),
+        provider_id=ModelProviderId("local"),
+        model_id=ModelId("chat"),
+        messages=(AgentMessage(AgentMessageRole.USER, "continue"),),
+        limits=original_limits,
+        run_id=_RUN_ID,
+        created_at=_NOW - timedelta(minutes=2),
+        deadline=_NOW + timedelta(minutes=10),
+    )
+    admission = _admission()
+    lease = await admission.admit(_task(), original)
+
+    assert lease.request.limits.max_steps == 3
+    assert lease.request.limits.max_model_turns == 3
+    assert lease.request.limits.max_tool_calls == 3
+    assert lease.request.deadline <= original.deadline
+    await lease.release()
+
+
+def _strict_limits_for_zero_remaining_budget(limit_name: str) -> AgentLimits:
+    if limit_name == "max_steps":
+        return AgentLimits(max_steps=1)
+    if limit_name == "max_model_turns":
+        return AgentLimits(max_model_turns=1, max_tool_calls=1)
+    if limit_name == "max_model_output_bytes":
+        return AgentLimits(max_model_output_bytes=1)
+    if limit_name == "max_input_tokens":
+        return AgentLimits(max_input_tokens=1)
+    if limit_name == "max_output_tokens":
+        return AgentLimits(max_output_tokens=1)
+    if limit_name == "max_tool_calls":
+        return AgentLimits(max_tool_calls=1)
+    if limit_name == "max_tool_result_bytes":
+        return AgentLimits(max_tool_result_bytes=1)
+    raise AssertionError(f"unsupported limit: {limit_name}")
+
+
+def _budget_for_zero_remaining_budget(
+    budget: AgentBudgetSnapshot,
+    updates: dict[str, int],
+) -> AgentBudgetSnapshot:
+    if updates == {"steps": 1}:
+        return replace(budget, steps=1)
+    if updates == {"model_turns": 1}:
+        return replace(budget, model_turns=1)
+    if updates == {"model_output_bytes": 1}:
+        return replace(budget, model_output_bytes=1)
+    if updates == {"input_tokens": 1}:
+        return replace(budget, input_tokens=1)
+    if updates == {"output_tokens": 1}:
+        return replace(budget, output_tokens=1)
+    if updates == {"steps": 1, "model_turns": 1}:
+        return replace(budget, steps=1, model_turns=1)
+    if updates == {"model_turns": 1, "tool_calls": 1}:
+        return replace(budget, model_turns=1, tool_calls=1)
+    if updates == {"model_turns": 1, "tool_result_bytes": 1}:
+        return replace(budget, model_turns=1, tool_result_bytes=1)
+    raise AssertionError(f"unsupported budget update: {updates!r}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limit_name", "next_operation", "budget_updates"),
+    (
+        ("max_steps", CheckpointNextOperation.MODEL_TURN, {"steps": 1}),
+        (
+            "max_model_turns",
+            CheckpointNextOperation.MODEL_TURN,
+            {"model_turns": 1},
+        ),
+        (
+            "max_model_output_bytes",
+            CheckpointNextOperation.MODEL_TURN,
+            {"model_output_bytes": 1},
+        ),
+        (
+            "max_input_tokens",
+            CheckpointNextOperation.MODEL_TURN,
+            {"input_tokens": 1},
+        ),
+        (
+            "max_output_tokens",
+            CheckpointNextOperation.MODEL_TURN,
+            {"output_tokens": 1},
+        ),
+        (
+            "max_steps",
+            CheckpointNextOperation.TOOL_INVOCATION,
+            {"steps": 1, "model_turns": 1},
+        ),
+        (
+            "max_tool_calls",
+            CheckpointNextOperation.TOOL_INVOCATION,
+            {"model_turns": 1, "tool_calls": 1},
+        ),
+        (
+            "max_tool_result_bytes",
+            CheckpointNextOperation.TOOL_INVOCATION,
+            {"model_turns": 1, "tool_result_bytes": 1},
+        ),
+    ),
+)
+async def test_zero_remaining_budget_blocks_immediate_protected_recovery(
+    limit_name: str,
+    next_operation: CheckpointNextOperation,
+    budget_updates: dict[str, int],
+) -> None:
+    original = _request()
+    strict_limits = _strict_limits_for_zero_remaining_budget(limit_name)
+    configuration = AgentServiceConfiguration(
+        agent_id=AgentId("assistant"),
+        provider_id=ModelProviderId("local"),
+        model_id=ModelId("chat"),
+        limits=strict_limits,
+    )
+    profile = _profile()
+    admission = IntegratedAgentAdmission(
+        IntegratedExecutionProfileCatalog((profile,)),
+        IntegratedExecutionProfileSelection(
+            profile_id=profile.profile_id,
+            generation=profile.generation,
+        ),
+        configuration,
+    )
+    lease = await admission.admit(_task(), original)
+
+    checkpoint = _checkpoint(original)
+    budget = _budget_for_zero_remaining_budget(
+        checkpoint.metadata.budget,
+        budget_updates,
+    )
+    checkpoint = seal_checkpoint_envelope(
+        replace(
+            checkpoint,
+            metadata=replace(
+                checkpoint.metadata,
+                next_operation=next_operation,
+                budget=budget,
+            ),
+            digest=_digest("0"),
+        )
+    )
+    live = AgentLoopIntegratedDurableRecoveryLiveRevalidator(
+        loop=_loop(_BoundRunAuthorizer(), _FreshnessValidator()),
+        configuration=configuration,
+        context=_context(),
+        cancellation_probe=lambda _run_id: False,
+        context_freshness_probe=lambda _provenance: True,
+    )
+
+    assert not await live.revalidate_run(
+        checkpoint,
+        lease.binding,
+        lease.request,
+        now=_NOW,
+    )
+    await lease.release()
+
+
+@pytest.mark.asyncio
+async def test_exact_exhaustion_still_allows_local_complete_bookkeeping() -> None:
+    original = _request()
+    strict_limits = AgentLimits(max_model_output_bytes=1)
+    configuration = AgentServiceConfiguration(
+        agent_id=AgentId("assistant"),
+        provider_id=ModelProviderId("local"),
+        model_id=ModelId("chat"),
+        limits=strict_limits,
+    )
+    profile = _profile()
+    admission = IntegratedAgentAdmission(
+        IntegratedExecutionProfileCatalog((profile,)),
+        IntegratedExecutionProfileSelection(
+            profile_id=profile.profile_id,
+            generation=profile.generation,
+        ),
+        configuration,
+    )
+    lease = await admission.admit(_task(), original)
+
+    checkpoint = _checkpoint(original)
+    checkpoint = seal_checkpoint_envelope(
+        replace(
+            checkpoint,
+            metadata=replace(
+                checkpoint.metadata,
+                next_operation=CheckpointNextOperation.COMPLETE,
+                budget=replace(
+                    checkpoint.metadata.budget,
+                    model_output_bytes=1,
+                ),
+            ),
+            digest=_digest("0"),
+        )
+    )
+    live = AgentLoopIntegratedDurableRecoveryLiveRevalidator(
+        loop=_loop(_BoundRunAuthorizer(), _FreshnessValidator()),
+        configuration=configuration,
+        context=_context(),
+        cancellation_probe=lambda _run_id: False,
+        context_freshness_probe=lambda _provenance: True,
+    )
+
+    assert await live.revalidate_run(
         checkpoint,
         lease.binding,
         lease.request,

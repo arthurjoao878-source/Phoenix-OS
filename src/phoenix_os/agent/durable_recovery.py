@@ -52,6 +52,7 @@ from phoenix_os.agent.durable_metadata import (
 )
 from phoenix_os.agent.durable_reliability import (
     NOOP_RELIABILITY_FAULT_INJECTOR,
+    DurableRecoveryAttemptStore,
     ReliabilityFaultInjector,
     ReliabilityFaultPoint,
 )
@@ -292,6 +293,9 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         if not isinstance(selected_attempt_recorder, DurableExecutionAttemptRecorder):
             raise TypeError("attempt_recorder must implement DurableExecutionAttemptRecorder")
         self._store = store
+        self._recovery_attempt_store = (
+            store if isinstance(store, DurableRecoveryAttemptStore) else None
+        )
         self._lease_manager = lease_manager
         self._compatibility_validator = compatibility_validator
         self._approval_revalidator = approval_revalidator
@@ -335,6 +339,13 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             if checkpoint is None or checkpoint.status.terminal:
                 raise AgentStateConflictError()
 
+            recovery_attempts = await _claim_recovery_attempt(
+                self._recovery_attempt_store,
+                checkpoint,
+                lease=lease,
+                now=now,
+            )
+
             history = await self._store.list_history(
                 run_id,
                 limit=checkpoint.sequence.value,
@@ -372,6 +383,11 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                 checkpoint,
                 disposition=disposition,
                 now=now,
+            )
+            disposition = _bound_recovery_attempt_exhaustion(
+                self._recovery_attempt_store,
+                recovery_attempts,
+                disposition=disposition,
             )
             disposition = await _authorize_resume_disposition(
                 self._resume_authorizer,
@@ -423,6 +439,13 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             self._fault_injector.inject(ReliabilityFaultPoint.RECOVERY_AFTER_REREAD)
             if checkpoint is None or checkpoint.status.terminal:
                 raise AgentStateConflictError()
+
+            await _claim_recovery_attempt(
+                self._recovery_attempt_store,
+                checkpoint,
+                lease=lease,
+                now=now,
+            )
 
             history = await self._store.list_history(
                 run_id,
@@ -575,6 +598,49 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("durable recovery coordinator is closed")
+
+
+async def _claim_recovery_attempt(
+    store: DurableRecoveryAttemptStore | None,
+    checkpoint: CheckpointEnvelope,
+    *,
+    lease: DurableLease,
+    now: datetime,
+) -> int | None:
+    if store is None:
+        return None
+    attempts = await store.claim_recovery_attempt(
+        checkpoint.durable_run_id,
+        lease=lease,
+        now=now,
+    )
+    if (
+        isinstance(attempts, bool)
+        or not isinstance(attempts, int)
+        or attempts <= 0
+        or attempts > store.limits.max_recovery_attempts
+    ):
+        raise AgentStateConflictError()
+    return attempts
+
+
+def _bound_recovery_attempt_exhaustion(
+    store: DurableRecoveryAttemptStore | None,
+    attempts: int | None,
+    *,
+    disposition: RecoveryDisposition,
+) -> RecoveryDisposition:
+    """Never grant automatic RESUME on the final permitted recovery attempt."""
+
+    if store is None:
+        if attempts is not None:
+            raise AgentStateConflictError()
+        return disposition
+    if attempts is None:
+        raise AgentStateConflictError()
+    if attempts == store.limits.max_recovery_attempts and disposition is RecoveryDisposition.RESUME:
+        return RecoveryDisposition.PAUSE_OPERATOR
+    return disposition
 
 
 async def _revalidate_resume_disposition(

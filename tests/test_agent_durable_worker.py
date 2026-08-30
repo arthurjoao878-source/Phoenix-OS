@@ -19,6 +19,7 @@ from phoenix_os.agent.durable_contracts import (
     CheckpointSequence,
     DurableAgentRunId,
     DurableLease,
+    DurableRunLimits,
     DurableRunStatus,
     DurableRunStore,
     DurableRunVersion,
@@ -30,6 +31,7 @@ from phoenix_os.agent.durable_recovery import (
     DurableRecoveryAssessment,
     DurableRecoveryCoordinator,
 )
+from phoenix_os.agent.durable_reliability import DurableRecoveryAttemptStore
 from phoenix_os.agent.durable_worker import (
     MAX_RECOVERY_WORKER_CANCELLATION_GRACE,
     MAX_RECOVERY_WORKER_CANDIDATES,
@@ -90,6 +92,7 @@ class _FakeStore:
         self.candidates = candidates
         self.malformed_pages = [] if malformed_pages is None else malformed_pages
         self.failure = failure
+        self.limits = DurableRunLimits()
         self.list_calls: list[tuple[int, DurableAgentRunId | None]] = []
 
     async def create(self, checkpoint: CheckpointEnvelope) -> None:
@@ -133,8 +136,75 @@ class _FakeStore:
     ) -> CheckpointEnvelope:
         raise AssertionError("append is outside the recovery worker boundary")
 
+    async def claim_recovery_attempt(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        lease: DurableLease,
+        now: datetime,
+    ) -> int:
+        raise AssertionError("claim is owned by the recovery coordinator")
+
+    async def get_recovery_attempt_count(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> int:
+        return 0
+
     async def close(self) -> None:
         self.closed = True
+
+
+class _LegacyStore:
+    def __init__(self, delegate: _FakeStore) -> None:
+        self._delegate = delegate
+
+    @property
+    def closed(self) -> bool:
+        return self._delegate.closed
+
+    async def create(self, checkpoint: CheckpointEnvelope) -> None:
+        await self._delegate.create(checkpoint)
+
+    async def get_current(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> CheckpointEnvelope | None:
+        return await self._delegate.get_current(run_id)
+
+    async def list_history(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        limit: int,
+    ) -> tuple[CheckpointEnvelope, ...]:
+        return await self._delegate.list_history(run_id, limit=limit)
+
+    async def list_recovery_candidates(
+        self,
+        *,
+        limit: int,
+        after: DurableAgentRunId | None = None,
+    ) -> tuple[DurableAgentRunId, ...]:
+        return await self._delegate.list_recovery_candidates(limit=limit, after=after)
+
+    async def append(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+    ) -> CheckpointEnvelope:
+        return await self._delegate.append(
+            checkpoint,
+            expected_version=expected_version,
+            lease=lease,
+            now=now,
+        )
+
+    async def close(self) -> None:
+        await self._delegate.close()
 
 
 class _FakeCoordinator:
@@ -785,3 +855,30 @@ async def test_worker_uses_fresh_clock_and_exact_owner_for_each_candidate() -> N
         NOW + timedelta(seconds=1),
         NOW + timedelta(seconds=2),
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_without_persistent_attempt_store_fails_closed_before_enumeration() -> None:
+    backing = _FakeStore((_run_id(1),))
+    legacy = _LegacyStore(backing)
+    coordinator = _FakeCoordinator()
+
+    assert isinstance(backing, DurableRecoveryAttemptStore)
+    assert isinstance(legacy, DurableRunStore)
+    assert not isinstance(legacy, DurableRecoveryAttemptStore)
+
+    worker = BoundedDurableRecoveryWorker(
+        store=legacy,
+        coordinator=coordinator,
+        clock=lambda: NOW,
+    )
+    await worker.start()
+
+    with pytest.raises(AgentStateConflictError):
+        await worker.run_once()
+
+    assert backing.list_calls == []
+    assert coordinator.calls == []
+    snapshot = await worker.snapshot()
+    assert snapshot.passes_started == 0
+    assert snapshot.candidates_admitted == 0

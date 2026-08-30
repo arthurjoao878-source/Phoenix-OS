@@ -164,15 +164,15 @@ async def test_fresh_sqlite_database_uses_v3_tombstone_schema(
         ).DurableAgentRunId(__import__("uuid").UUID(int=1))
     )
 
-    assert DURABLE_SQLITE_SCHEMA_VERSION == 3
+    assert DURABLE_SQLITE_SCHEMA_VERSION == 5
 
     connection = _connect(path)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == DURABLE_SQLITE_SCHEMA_VERSION
     meta = connection.execute(
         "SELECT schema_version FROM durable_meta WHERE singleton = 1"
     ).fetchone()
     assert meta is not None
-    assert meta["schema_version"] == 3
+    assert meta["schema_version"] == DURABLE_SQLITE_SCHEMA_VERSION
     _assert_v3_tombstone_schema(connection)
     connection.close()
 
@@ -194,13 +194,13 @@ async def test_sqlite_schema_migrates_v2_database_to_v3_tombstones(
     )
 
     connection = _connect(path)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == DURABLE_SQLITE_SCHEMA_VERSION
 
     meta = connection.execute(
         "SELECT schema_version FROM durable_meta WHERE singleton = 1"
     ).fetchone()
     assert meta is not None
-    assert meta["schema_version"] == 3
+    assert meta["schema_version"] == DURABLE_SQLITE_SCHEMA_VERSION
 
     protected_table = connection.execute(
         """

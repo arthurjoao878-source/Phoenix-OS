@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
+
+from phoenix_os.agent.durable_contracts import (
+    DurableAgentRunId,
+    DurableLease,
+    DurableRunLimits,
+)
 
 
 class DurableMutationOutcome(StrEnum):
@@ -56,6 +65,73 @@ class ReliabilityFaultInjector(Protocol):
 
     def inject(self, point: ReliabilityFaultPoint, /) -> None:
         """Reach one fixed Phoenix-owned fault point."""
+
+
+MAX_DURABLE_STORE_GENERATION = (1 << 63) - 1
+
+
+class DurableStoreFreshnessCategory(StrEnum):
+    """Content-free classification of durable-store restore freshness."""
+
+    CURRENT = "current"
+    ROLLBACK_DETECTED = "rollback-detected"
+    STORE_IDENTITY_MISMATCH = "store-identity-mismatch"
+    WITNESS_UNAVAILABLE = "witness-unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class DurableStoreFreshnessSnapshot:
+    """Bounded restore-generation evidence safe for administration diagnostics."""
+
+    category: DurableStoreFreshnessCategory
+    store_generation: int | None
+    witness_generation: int | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.category, DurableStoreFreshnessCategory):
+            raise TypeError("category must be DurableStoreFreshnessCategory")
+        for label, value in (
+            ("store_generation", self.store_generation),
+            ("witness_generation", self.witness_generation),
+        ):
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{label} must be an integer or None")
+            if value < 0 or value > MAX_DURABLE_STORE_GENERATION:
+                raise ValueError(f"{label} is outside supported bounds")
+
+    @property
+    def automatic_recovery_available(self) -> bool:
+        return self.category is DurableStoreFreshnessCategory.CURRENT
+
+
+@runtime_checkable
+class DurableStoreFreshnessSource(Protocol):
+    "Read bounded restore-freshness evidence without exposing store identity."
+
+    def get_store_freshness(self) -> Awaitable[DurableStoreFreshnessSnapshot]: ...
+
+
+@runtime_checkable
+class DurableRecoveryAttemptStore(Protocol):
+    """Persist bounded per-run recovery-attempt bookkeeping outside checkpoints."""
+
+    @property
+    def limits(self) -> DurableRunLimits: ...
+
+    def claim_recovery_attempt(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        lease: DurableLease,
+        now: datetime,
+    ) -> Awaitable[int]: ...
+
+    def get_recovery_attempt_count(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> Awaitable[int]: ...
 
 
 class NoOpReliabilityFaultInjector:

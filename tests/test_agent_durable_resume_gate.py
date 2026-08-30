@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -24,6 +24,7 @@ from phoenix_os.agent.durable_contracts import (
     CompatibilityDigests,
     DurableAgentRunId,
     DurableLease,
+    DurableRunLimits,
     DurableRunStatus,
     DurableRunVersion,
     RecoveryDisposition,
@@ -37,7 +38,11 @@ from phoenix_os.agent.durable_recovery import (
     StartupDurableRecoveryCoordinator,
     classify_recovery_checkpoint,
 )
-from phoenix_os.agent.errors import AgentAuthorizationRejectedError
+from phoenix_os.agent.durable_reliability import DurableRecoveryAttemptStore
+from phoenix_os.agent.errors import (
+    AgentAuthorizationRejectedError,
+    AgentLimitExceededError,
+)
 from phoenix_os.agent.state import AgentBudgetSnapshot
 from phoenix_os.policy import PrincipalType, SecurityContext
 
@@ -296,3 +301,87 @@ async def test_indeterminate_entrypoint_applies_resume_gate_at_safe_boundary() -
     assert assessment.point is RecoveryPoint.SAFE_BOUNDARY
     assert assessment.disposition is RecoveryDisposition.PAUSE_OPERATOR
     assert gate.calls == 1
+
+
+def test_in_memory_store_implements_recovery_attempt_bookkeeping() -> None:
+    store = InMemoryDurableRunStore()
+    assert isinstance(store, DurableRecoveryAttemptStore)
+
+
+@pytest.mark.asyncio
+async def test_recovery_attempt_exhaustion_removes_in_memory_candidate() -> None:
+    limits = replace(DurableRunLimits(), max_recovery_attempts=2)
+    store = InMemoryDurableRunStore(limits=limits)
+    checkpoint = _checkpoint()
+    await store.create(checkpoint)
+    coordinator = StartupDurableRecoveryCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_validator(),
+    )
+
+    assert await store.list_recovery_candidates(limit=1) == (_DURABLE_RUN_ID,)
+
+    await coordinator.assess_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=_NOW + timedelta(minutes=1),
+    )
+    assert await store.get_recovery_attempt_count(_DURABLE_RUN_ID) == 1
+    assert await store.list_recovery_candidates(limit=1) == (_DURABLE_RUN_ID,)
+
+    await coordinator.assess_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=_NOW + timedelta(minutes=2),
+    )
+    assert await store.get_recovery_attempt_count(_DURABLE_RUN_ID) == 2
+    assert await store.list_recovery_candidates(limit=1) == ()
+
+    with pytest.raises(AgentLimitExceededError):
+        await coordinator.assess_candidate(
+            _DURABLE_RUN_ID,
+            owner_id="recovery-worker",
+            now=_NOW + timedelta(minutes=3),
+        )
+
+    assert await store.get_recovery_attempt_count(_DURABLE_RUN_ID) == 2
+
+
+@pytest.mark.asyncio
+async def test_final_recovery_attempt_cannot_resume_new_protected_work() -> None:
+    limits = replace(DurableRunLimits(), max_recovery_attempts=2)
+    store = InMemoryDurableRunStore(limits=limits)
+    checkpoint = _checkpoint()
+    await store.create(checkpoint)
+    gate = _ResumeGate(True)
+    authorizer = _ResumeAuthorizer()
+    coordinator = StartupDurableRecoveryCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_validator(),
+        resume_gate=gate,
+        resume_authorizer=authorizer,
+        resume_context=_resume_context(),
+    )
+
+    first = await coordinator.assess_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=_NOW + timedelta(minutes=1),
+    )
+    assert first.disposition is RecoveryDisposition.RESUME
+    assert len(authorizer.requests) == 1
+    assert await store.get_recovery_attempt_count(_DURABLE_RUN_ID) == 1
+
+    final = await coordinator.assess_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=_NOW + timedelta(minutes=2),
+    )
+    assert final.disposition is RecoveryDisposition.PAUSE_OPERATOR
+    assert gate.calls == 2
+    assert len(authorizer.requests) == 1
+    assert await store.get_recovery_attempt_count(_DURABLE_RUN_ID) == 2
+    assert await store.list_recovery_candidates(limit=1) == ()
+    assert await store.get_current(_DURABLE_RUN_ID) == checkpoint

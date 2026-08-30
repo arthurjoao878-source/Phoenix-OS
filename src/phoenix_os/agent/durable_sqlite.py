@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -10,10 +11,11 @@ from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from phoenix_os.agent.durable_codec import CanonicalCheckpointCodec
 from phoenix_os.agent.durable_contracts import (
+    MAX_RECOVERY_ATTEMPTS,
     MAX_RECOVERY_CANDIDATE_PAGE,
     CheckpointCodec,
     CheckpointDigest,
@@ -33,7 +35,10 @@ from phoenix_os.agent.durable_contracts import (
 from phoenix_os.agent.durable_lease import DurableLeaseManager
 from phoenix_os.agent.durable_payload import validate_protected_payload_for_checkpoint
 from phoenix_os.agent.durable_reliability import (
+    MAX_DURABLE_STORE_GENERATION,
     NOOP_RELIABILITY_FAULT_INJECTOR,
+    DurableStoreFreshnessCategory,
+    DurableStoreFreshnessSnapshot,
     ReliabilityFaultInjector,
     ReliabilityFaultPoint,
 )
@@ -47,8 +52,10 @@ from phoenix_os.agent.errors import (
 if TYPE_CHECKING:
     from sqlite3 import Connection, Row
 
-DURABLE_SQLITE_SCHEMA_VERSION: Final = 3
+DURABLE_SQLITE_SCHEMA_VERSION: Final = 5
 DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS: Final = 5_000
+_STORE_WITNESS_PREFIX: Final = "phoenix-durable-store-v1"
+_MAX_STORE_WITNESS_BYTES: Final = 192
 
 _RUN_COLUMNS: Final = """
     run_id,
@@ -57,6 +64,7 @@ _RUN_COLUMNS: Final = """
     current_checkpoint_id,
     current_digest,
     history_bytes,
+    recovery_attempts,
     terminal,
     updated_at
 """
@@ -178,6 +186,84 @@ def _blob_bytes(value: object) -> bytes:
     raise AgentCodecError("persisted durable checkpoint payload is invalid")
 
 
+def _store_freshness_meta(row: Row) -> tuple[UUID, int, bool]:
+    raw_epoch = row["store_epoch"]
+    if not isinstance(raw_epoch, str) or not raw_epoch:
+        raise AgentCodecError("persisted durable store epoch is invalid")
+    try:
+        epoch = UUID(raw_epoch)
+    except ValueError as exception:
+        raise AgentCodecError("persisted durable store epoch is invalid") from exception
+    if str(epoch) != raw_epoch:
+        raise AgentCodecError("persisted durable store epoch is not canonical")
+
+    generation = _row_int(row, "store_generation")
+    if generation < 0 or generation > MAX_DURABLE_STORE_GENERATION:
+        raise AgentCodecError("persisted durable store generation is invalid")
+
+    initialized = _row_int(row, "freshness_witness_initialized")
+    if initialized not in {0, 1}:
+        raise AgentCodecError("persisted durable freshness witness state is invalid")
+    return epoch, generation, bool(initialized)
+
+
+def _encode_store_witness(epoch: UUID, generation: int) -> bytes:
+    if not isinstance(epoch, UUID):
+        raise TypeError("store epoch must be UUID")
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+        or generation > MAX_DURABLE_STORE_GENERATION
+    ):
+        raise ValueError("store generation is outside supported bounds")
+    return f"{_STORE_WITNESS_PREFIX} {epoch} {generation}\n".encode("ascii")
+
+
+def _decode_store_witness(payload: bytes) -> tuple[UUID, int]:
+    if not isinstance(payload, bytes):
+        raise TypeError("store witness payload must be bytes")
+    if not payload or len(payload) > _MAX_STORE_WITNESS_BYTES:
+        raise ValueError("store witness payload is invalid")
+    try:
+        text = payload.decode("ascii")
+    except UnicodeDecodeError as exception:
+        raise ValueError("store witness payload is invalid") from exception
+    if not text.endswith("\n") or text.count("\n") != 1:
+        raise ValueError("store witness payload is not canonical")
+    parts = text[:-1].split(" ")
+    if len(parts) != 3 or parts[0] != _STORE_WITNESS_PREFIX:
+        raise ValueError("store witness payload is invalid")
+    try:
+        epoch = UUID(parts[1])
+    except ValueError as exception:
+        raise ValueError("store witness epoch is invalid") from exception
+    if str(epoch) != parts[1]:
+        raise ValueError("store witness epoch is not canonical")
+    if not parts[2].isdigit() or (parts[2] != "0" and parts[2].startswith("0")):
+        raise ValueError("store witness generation is not canonical")
+    generation = int(parts[2])
+    if generation < 0 or generation > MAX_DURABLE_STORE_GENERATION:
+        raise ValueError("store witness generation is outside supported bounds")
+    return epoch, generation
+
+
+def _write_store_witness(path: Path, epoch: UUID, generation: int) -> None:
+    payload = _encode_store_witness(epoch, generation)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _same_lease_identity(left: DurableLease, right: DurableLease) -> bool:
     return (
         left.run_id == right.run_id
@@ -256,6 +342,7 @@ class _SQLiteDurableDatabase:
         *,
         busy_timeout_ms: int,
         create_parent: bool,
+        freshness_witness_path: str | Path | None = None,
     ) -> None:
         _require_busy_timeout(busy_timeout_ms)
         database_path = Path(path).expanduser()
@@ -269,11 +356,48 @@ class _SQLiteDurableDatabase:
             raise ValueError("SQLite durable parent directory does not exist")
 
         self.path = database_path.resolve()
+
+        if freshness_witness_path is None:
+            self.freshness_witness_path: Path | None = None
+        else:
+            witness_path = Path(freshness_witness_path).expanduser()
+            if witness_path.exists() and witness_path.is_dir():
+                raise ValueError("SQLite freshness witness path must not be a directory")
+            if create_parent:
+                witness_path.parent.mkdir(parents=True, exist_ok=True)
+            elif not witness_path.parent.exists():
+                raise ValueError("SQLite freshness witness parent directory does not exist")
+            resolved_witness = witness_path.resolve()
+            if resolved_witness == self.path:
+                raise ValueError("SQLite freshness witness must not be the database file")
+            self.freshness_witness_path = resolved_witness
+
         self.busy_timeout_ms = busy_timeout_ms
         self.connection: Connection | None = None
         self.initialized = False
         self.closed = False
         self.lock = asyncio.Lock()
+        self._freshness = DurableStoreFreshnessSnapshot(
+            category=DurableStoreFreshnessCategory.WITNESS_UNAVAILABLE,
+            store_generation=None,
+            witness_generation=None,
+        )
+
+    @property
+    def freshness(self) -> DurableStoreFreshnessSnapshot:
+        if self.freshness_witness_path is None:
+            raise RuntimeError("durable SQLite freshness witness is not configured")
+        return self._freshness
+
+    @property
+    def automatic_recovery_available(self) -> bool:
+        return (
+            self.freshness_witness_path is not None and self._freshness.automatic_recovery_available
+        )
+
+    def require_current_freshness(self) -> None:
+        if not self.automatic_recovery_available:
+            raise AgentStateConflictError()
 
     def ensure_open(self) -> None:
         if self.closed:
@@ -293,6 +417,8 @@ class _SQLiteDurableDatabase:
         elif not self.initialized:
             self._initialize(self.connection)
             self.initialized = True
+        elif self.freshness_witness_path is not None:
+            self._refresh_freshness(self.connection)
         return self.connection
 
     async def close(self) -> None:
@@ -305,6 +431,202 @@ class _SQLiteDurableDatabase:
             self.initialized = False
             if connection is not None:
                 connection.close()
+
+    def _refresh_freshness(self, connection: Connection) -> None:
+        if self.freshness_witness_path is None:
+            return
+
+        row = connection.execute(
+            """
+            SELECT
+                schema_version,
+                store_epoch,
+                store_generation,
+                freshness_witness_initialized
+            FROM durable_meta
+            WHERE singleton = 1
+            """
+        ).fetchone()
+        if row is None:
+            raise AgentCodecError("durable SQLite freshness metadata is missing")
+        epoch, generation, initialized = _store_freshness_meta(row)
+
+        witness_generation: int | None = None
+        try:
+            payload = self.freshness_witness_path.read_bytes()
+        except FileNotFoundError:
+            if not initialized:
+                try:
+                    _write_store_witness(
+                        self.freshness_witness_path,
+                        epoch,
+                        generation,
+                    )
+                except OSError:
+                    self._freshness = DurableStoreFreshnessSnapshot(
+                        category=DurableStoreFreshnessCategory.WITNESS_UNAVAILABLE,
+                        store_generation=generation,
+                        witness_generation=None,
+                    )
+                    return
+                self._mark_witness_initialized(
+                    connection,
+                    epoch=epoch,
+                    generation=generation,
+                )
+                self._freshness = DurableStoreFreshnessSnapshot(
+                    category=DurableStoreFreshnessCategory.CURRENT,
+                    store_generation=generation,
+                    witness_generation=generation,
+                )
+                return
+
+            self._freshness = DurableStoreFreshnessSnapshot(
+                category=DurableStoreFreshnessCategory.WITNESS_UNAVAILABLE,
+                store_generation=generation,
+                witness_generation=None,
+            )
+            return
+        except OSError:
+            self._freshness = DurableStoreFreshnessSnapshot(
+                category=DurableStoreFreshnessCategory.WITNESS_UNAVAILABLE,
+                store_generation=generation,
+                witness_generation=None,
+            )
+            return
+
+        try:
+            witness_epoch, witness_generation = _decode_store_witness(payload)
+        except (TypeError, ValueError):
+            self._freshness = DurableStoreFreshnessSnapshot(
+                category=DurableStoreFreshnessCategory.WITNESS_UNAVAILABLE,
+                store_generation=generation,
+                witness_generation=None,
+            )
+            return
+
+        if witness_epoch != epoch:
+            self._freshness = DurableStoreFreshnessSnapshot(
+                category=DurableStoreFreshnessCategory.STORE_IDENTITY_MISMATCH,
+                store_generation=generation,
+                witness_generation=witness_generation,
+            )
+            return
+
+        if generation < witness_generation:
+            self._freshness = DurableStoreFreshnessSnapshot(
+                category=DurableStoreFreshnessCategory.ROLLBACK_DETECTED,
+                store_generation=generation,
+                witness_generation=witness_generation,
+            )
+            return
+
+        if generation > witness_generation:
+            try:
+                _write_store_witness(
+                    self.freshness_witness_path,
+                    epoch,
+                    generation,
+                )
+            except OSError:
+                self._freshness = DurableStoreFreshnessSnapshot(
+                    category=DurableStoreFreshnessCategory.WITNESS_UNAVAILABLE,
+                    store_generation=generation,
+                    witness_generation=witness_generation,
+                )
+                return
+            witness_generation = generation
+
+        if not initialized:
+            self._mark_witness_initialized(
+                connection,
+                epoch=epoch,
+                generation=generation,
+            )
+
+        self._freshness = DurableStoreFreshnessSnapshot(
+            category=DurableStoreFreshnessCategory.CURRENT,
+            store_generation=generation,
+            witness_generation=witness_generation,
+        )
+
+    @staticmethod
+    def _mark_witness_initialized(
+        connection: Connection,
+        *,
+        epoch: UUID,
+        generation: int,
+    ) -> None:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE durable_meta
+                SET freshness_witness_initialized = 1
+                WHERE singleton = 1
+                  AND store_epoch = ?
+                  AND store_generation = ?
+                  AND freshness_witness_initialized = 0
+                """,
+                (str(epoch), generation),
+            )
+            if cursor.rowcount not in {0, 1}:
+                raise AgentCodecError("durable SQLite freshness witness initialization conflicted")
+            connection.execute("COMMIT")
+        except sqlite3.Error:
+            _rollback(connection)
+            raise
+        except BaseException:
+            _rollback(connection)
+            raise
+
+    def publish_store_generation(self, generation: int) -> None:
+        if self.freshness_witness_path is None:
+            raise RuntimeError("durable SQLite freshness witness is not configured")
+        current = self._freshness
+        if (
+            not current.automatic_recovery_available
+            or current.store_generation is None
+            or generation <= current.store_generation
+            or generation > MAX_DURABLE_STORE_GENERATION
+        ):
+            raise AgentStateConflictError()
+
+        connection = self.connection
+        if connection is None:
+            raise RuntimeError("durable SQLite storage connection is not initialized")
+        row = connection.execute(
+            """
+            SELECT store_epoch, store_generation, freshness_witness_initialized
+            FROM durable_meta
+            WHERE singleton = 1
+            """
+        ).fetchone()
+        if row is None:
+            raise AgentCodecError("durable SQLite freshness metadata is missing")
+        epoch, persisted_generation, initialized = _store_freshness_meta(row)
+        if not initialized or persisted_generation != generation:
+            raise AgentStateConflictError()
+
+        try:
+            _write_store_witness(
+                self.freshness_witness_path,
+                epoch,
+                generation,
+            )
+        except OSError as exception:
+            self._freshness = DurableStoreFreshnessSnapshot(
+                category=DurableStoreFreshnessCategory.WITNESS_UNAVAILABLE,
+                store_generation=generation,
+                witness_generation=current.witness_generation,
+            )
+            raise AgentServiceUnavailableError() from exception
+
+        self._freshness = DurableStoreFreshnessSnapshot(
+            category=DurableStoreFreshnessCategory.CURRENT,
+            store_generation=generation,
+            witness_generation=generation,
+        )
 
     def _connect(self) -> Connection:
         try:
@@ -326,13 +648,25 @@ class _SQLiteDurableDatabase:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, 2, DURABLE_SQLITE_SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, DURABLE_SQLITE_SCHEMA_VERSION}:
                 raise AgentCodecError("unsupported durable SQLite schema version")
 
             connection.execute("BEGIN IMMEDIATE")
             self._create_schema(connection)
+            if version in {0, 1, 2, 3}:
+                self._ensure_recovery_attempts_column(connection)
+            if version in {0, 1, 2, 3, 4}:
+                self._ensure_store_freshness_columns(connection)
             meta = connection.execute(
-                "SELECT schema_version FROM durable_meta WHERE singleton = 1"
+                """
+                SELECT
+                    schema_version,
+                    store_epoch,
+                    store_generation,
+                    freshness_witness_initialized
+                FROM durable_meta
+                WHERE singleton = 1
+                """
             ).fetchone()
             now = datetime.now(UTC).isoformat()
 
@@ -341,10 +675,21 @@ class _SQLiteDurableDatabase:
                     connection.execute(
                         """
                         INSERT INTO durable_meta (
-                            singleton, schema_version, created_at, updated_at
-                        ) VALUES (1, ?, ?, ?)
+                            singleton,
+                            schema_version,
+                            store_epoch,
+                            store_generation,
+                            freshness_witness_initialized,
+                            created_at,
+                            updated_at
+                        ) VALUES (1, ?, ?, 0, 0, ?, ?)
                         """,
-                        (DURABLE_SQLITE_SCHEMA_VERSION, now, now),
+                        (
+                            DURABLE_SQLITE_SCHEMA_VERSION,
+                            str(uuid4()),
+                            now,
+                            now,
+                        ),
                     )
                 elif _row_int(meta, "schema_version", positive=True) != (
                     DURABLE_SQLITE_SCHEMA_VERSION
@@ -352,19 +697,64 @@ class _SQLiteDurableDatabase:
                     raise AgentCodecError(
                         "durable SQLite metadata is incompatible with an unversioned database"
                     )
+                else:
+                    _store_freshness_meta(meta)
                 connection.execute(f"PRAGMA user_version = {DURABLE_SQLITE_SCHEMA_VERSION}")
-            elif version in {1, 2}:
+            elif version in {1, 2, 3, 4}:
                 if meta is None or _row_int(meta, "schema_version", positive=True) != version:
                     raise AgentCodecError(
                         "durable SQLite migration metadata is missing or incompatible"
                     )
+
+                raw_epoch = meta["store_epoch"]
+                if raw_epoch is None:
+                    store_epoch = str(uuid4())
+                elif isinstance(raw_epoch, str):
+                    try:
+                        parsed_epoch = UUID(raw_epoch)
+                    except ValueError as exception:
+                        raise AgentCodecError(
+                            "durable SQLite migration store epoch is invalid"
+                        ) from exception
+                    if str(parsed_epoch) != raw_epoch:
+                        raise AgentCodecError(
+                            "durable SQLite migration store epoch is not canonical"
+                        )
+                    store_epoch = raw_epoch
+                else:
+                    raise AgentCodecError("durable SQLite migration store epoch is invalid")
+
+                store_generation = _row_int(meta, "store_generation")
+                witness_initialized = _row_int(
+                    meta,
+                    "freshness_witness_initialized",
+                )
+                if (
+                    store_generation < 0
+                    or store_generation > MAX_DURABLE_STORE_GENERATION
+                    or witness_initialized not in {0, 1}
+                ):
+                    raise AgentCodecError("durable SQLite migration freshness metadata is invalid")
+
                 cursor = connection.execute(
                     """
                     UPDATE durable_meta
-                    SET schema_version = ?, updated_at = ?
+                    SET
+                        schema_version = ?,
+                        store_epoch = ?,
+                        store_generation = ?,
+                        freshness_witness_initialized = ?,
+                        updated_at = ?
                     WHERE singleton = 1 AND schema_version = ?
                     """,
-                    (DURABLE_SQLITE_SCHEMA_VERSION, now, version),
+                    (
+                        DURABLE_SQLITE_SCHEMA_VERSION,
+                        store_epoch,
+                        store_generation,
+                        witness_initialized,
+                        now,
+                        version,
+                    ),
                 )
                 if cursor.rowcount != 1:
                     raise AgentCodecError("durable SQLite migration did not update metadata")
@@ -373,9 +763,13 @@ class _SQLiteDurableDatabase:
                 DURABLE_SQLITE_SCHEMA_VERSION
             ):
                 raise AgentCodecError("durable SQLite metadata is missing or incompatible")
+            else:
+                _store_freshness_meta(meta)
 
             connection.execute("COMMIT")
             self._validate_schema(connection)
+            if self.freshness_witness_path is not None:
+                self._refresh_freshness(connection)
         except AgentCodecError:
             _rollback(connection)
             raise
@@ -390,6 +784,14 @@ class _SQLiteDurableDatabase:
             CREATE TABLE IF NOT EXISTS durable_meta (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 schema_version INTEGER NOT NULL,
+                store_epoch TEXT NOT NULL,
+                store_generation INTEGER NOT NULL
+                    CHECK (
+                        store_generation >= 0
+                        AND store_generation <= 9223372036854775807
+                    ),
+                freshness_witness_initialized INTEGER NOT NULL
+                    CHECK (freshness_witness_initialized IN (0, 1)),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -404,6 +806,8 @@ class _SQLiteDurableDatabase:
                 current_checkpoint_id TEXT NOT NULL,
                 current_digest TEXT NOT NULL CHECK (length(current_digest) = 64),
                 history_bytes INTEGER NOT NULL CHECK (history_bytes >= 0),
+                recovery_attempts INTEGER NOT NULL DEFAULT 0
+                    CHECK (recovery_attempts >= 0),
                 terminal INTEGER NOT NULL CHECK (terminal IN (0, 1)),
                 updated_at TEXT NOT NULL
             )
@@ -499,17 +903,75 @@ class _SQLiteDurableDatabase:
         )
 
     @staticmethod
+    def _ensure_recovery_attempts_column(connection: Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(durable_runs)").fetchall()
+        }
+        if "recovery_attempts" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE durable_runs
+                ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0
+                    CHECK (recovery_attempts >= 0)
+                """
+            )
+
+    @staticmethod
+    def _ensure_store_freshness_columns(connection: Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(durable_meta)").fetchall()
+        }
+        if "store_epoch" not in columns:
+            connection.execute("ALTER TABLE durable_meta ADD COLUMN store_epoch TEXT")
+        if "store_generation" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE durable_meta
+                ADD COLUMN store_generation INTEGER NOT NULL DEFAULT 0
+                    CHECK (
+                        store_generation >= 0
+                        AND store_generation <= 9223372036854775807
+                    )
+                """
+            )
+        if "freshness_witness_initialized" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE durable_meta
+                ADD COLUMN freshness_witness_initialized INTEGER NOT NULL DEFAULT 0
+                    CHECK (freshness_witness_initialized IN (0, 1))
+                """
+            )
+
+    @staticmethod
     def _validate_schema(connection: Connection) -> None:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version != DURABLE_SQLITE_SCHEMA_VERSION:
             raise AgentCodecError("unsupported durable SQLite schema version")
         row = connection.execute(
-            "SELECT schema_version FROM durable_meta WHERE singleton = 1"
+            """
+            SELECT
+                schema_version,
+                store_epoch,
+                store_generation,
+                freshness_witness_initialized
+            FROM durable_meta
+            WHERE singleton = 1
+            """
         ).fetchone()
         if row is None or _row_int(row, "schema_version", positive=True) != (
             DURABLE_SQLITE_SCHEMA_VERSION
         ):
             raise AgentCodecError("durable SQLite metadata is missing or incompatible")
+        _store_freshness_meta(row)
+        columns = {
+            str(item["name"])
+            for item in connection.execute("PRAGMA table_info(durable_runs)").fetchall()
+        }
+        if "recovery_attempts" not in columns:
+            raise AgentCodecError("durable SQLite recovery bookkeeping is missing")
 
 
 class SQLiteDurableLeaseManager(DurableLeaseManager):
@@ -831,6 +1293,7 @@ class SQLiteDurableRunStore(DurableRunStore):
         lease_manager: SQLiteDurableLeaseManager | None = None,
         busy_timeout_ms: int = DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS,
         create_parent: bool = True,
+        freshness_witness_path: str | Path | None = None,
     ) -> None:
         selected_codec = CanonicalCheckpointCodec() if codec is None else codec
         selected_limits = DurableRunLimits() if limits is None else limits
@@ -841,10 +1304,17 @@ class SQLiteDurableRunStore(DurableRunStore):
 
         self._codec = selected_codec
         self._limits = selected_limits
+        database_path = Path(path).expanduser()
+        selected_witness_path = (
+            database_path.with_name(f"{database_path.name}.freshness")
+            if freshness_witness_path is None
+            else Path(freshness_witness_path).expanduser()
+        )
         self._database = _SQLiteDurableDatabase(
             path,
             busy_timeout_ms=busy_timeout_ms,
             create_parent=create_parent,
+            freshness_witness_path=selected_witness_path,
         )
         if lease_manager is None:
             self._lease_manager = SQLiteDurableLeaseManager(
@@ -874,12 +1344,28 @@ class SQLiteDurableRunStore(DurableRunStore):
         return self._limits
 
     @property
+    def freshness_witness_path(self) -> Path:
+        witness = self._database.freshness_witness_path
+        if witness is None:
+            raise RuntimeError("durable SQLite freshness witness is not configured")
+        return witness
+
+    @property
     def lease_manager(self) -> SQLiteDurableLeaseManager:
         return self._lease_manager
 
     @property
     def closed(self) -> bool:
         return self._closed or self._database.closed
+
+    async def get_store_freshness(self) -> DurableStoreFreshnessSnapshot:
+        """Return bounded content-free restore freshness evidence."""
+
+        self._ensure_open()
+        async with self._database.lock:
+            self._ensure_open()
+            self._database.writer_connection()
+            return self._database.freshness
 
     async def create(self, checkpoint: CheckpointEnvelope) -> None:
         """Create one metadata-only durable run checkpoint."""
@@ -920,8 +1406,10 @@ class SQLiteDurableRunStore(DurableRunStore):
         async with self._database.lock:
             self._ensure_open()
             connection = self._database.writer_connection()
+            self._database.require_current_freshness()
             try:
                 connection.execute("BEGIN IMMEDIATE")
+                freshness_generation: int | None = None
                 existing = connection.execute(
                     "SELECT 1 FROM durable_runs WHERE run_id = ?",
                     (str(decoded.durable_run_id),),
@@ -948,7 +1436,14 @@ class SQLiteDurableRunStore(DurableRunStore):
                     "UPDATE durable_leases SET active = 0 WHERE run_id = ? AND active = 1",
                     (str(decoded.durable_run_id),),
                 )
+                if decoded.status.terminal:
+                    freshness_generation = self._advance_store_generation(
+                        connection,
+                        now=decoded.created_at,
+                    )
                 connection.execute("COMMIT")
+                if freshness_generation is not None:
+                    self._database.publish_store_generation(freshness_generation)
             except sqlite3.IntegrityError as exception:
                 _rollback(connection)
                 raise AgentStateConflictError() from exception
@@ -1049,6 +1544,8 @@ class SQLiteDurableRunStore(DurableRunStore):
         async with self._database.lock:
             self._ensure_open()
             connection = self._database.writer_connection()
+            if not self._database.automatic_recovery_available:
+                return ()
             try:
                 connection.execute("BEGIN")
                 if after is None:
@@ -1056,22 +1553,24 @@ class SQLiteDurableRunStore(DurableRunStore):
                         f"""
                         SELECT {_RUN_COLUMNS}
                         FROM durable_runs
-                        WHERE terminal = 0
+                        WHERE terminal = 0 AND recovery_attempts < ?
                         ORDER BY run_id ASC
                         LIMIT ?
                         """,
-                        (limit,),
+                        (self._limits.max_recovery_attempts, limit),
                     ).fetchall()
                 else:
                     rows = connection.execute(
                         f"""
                         SELECT {_RUN_COLUMNS}
                         FROM durable_runs
-                        WHERE terminal = 0 AND run_id > ?
+                        WHERE terminal = 0
+                          AND recovery_attempts < ?
+                          AND run_id > ?
                         ORDER BY run_id ASC
                         LIMIT ?
                         """,
-                        (str(after), limit),
+                        (self._limits.max_recovery_attempts, str(after), limit),
                     ).fetchall()
 
                 candidates: list[DurableAgentRunId] = []
@@ -1088,6 +1587,95 @@ class SQLiteDurableRunStore(DurableRunStore):
                     candidates.append(run_id)
                 connection.execute("COMMIT")
                 return tuple(candidates)
+            except sqlite3.Error as exception:
+                _rollback(connection)
+                raise AgentServiceUnavailableError() from exception
+            except BaseException:
+                _rollback(connection)
+                raise
+
+    async def get_recovery_attempt_count(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> int:
+        """Return persisted recovery-attempt bookkeeping for one live run."""
+
+        self._ensure_open()
+        self._require_run_id(run_id)
+
+        async with self._database.lock:
+            self._ensure_open()
+            connection = self._database.writer_connection()
+            try:
+                connection.execute("BEGIN")
+                run_row = self._run_row(connection, run_id)
+                if run_row is None:
+                    raise AgentStateConflictError()
+                attempts = _row_int(run_row, "recovery_attempts")
+                if attempts < 0 or attempts > MAX_RECOVERY_ATTEMPTS:
+                    raise AgentCodecError("persisted recovery attempt count is invalid")
+                connection.execute("COMMIT")
+                return attempts
+            except sqlite3.Error as exception:
+                _rollback(connection)
+                raise AgentServiceUnavailableError() from exception
+            except BaseException:
+                _rollback(connection)
+                raise
+
+    async def claim_recovery_attempt(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        lease: DurableLease,
+        now: datetime,
+    ) -> int:
+        """Atomically consume one current fenced recovery attempt."""
+
+        self._ensure_open()
+        self._require_run_id(run_id)
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+        _require_timezone_aware(now, label="now")
+        if lease.run_id != run_id:
+            raise AgentStateConflictError()
+        if self._lease_manager.closed:
+            raise RuntimeError("durable SQLite lease manager is closed")
+
+        async with self._database.lock:
+            self._ensure_open()
+            connection = self._database.writer_connection()
+            self._database.require_current_freshness()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _require_current_lease(connection, lease, now=now)
+                run_row = self._run_row(connection, run_id)
+                if run_row is None:
+                    raise AgentStateConflictError()
+                current = self._current_checkpoint(connection, run_row)
+                if current.status.terminal:
+                    raise AgentStateConflictError()
+
+                attempts = _row_int(run_row, "recovery_attempts")
+                if attempts < 0 or attempts > MAX_RECOVERY_ATTEMPTS:
+                    raise AgentCodecError("persisted recovery attempt count is invalid")
+                if attempts >= self._limits.max_recovery_attempts:
+                    raise AgentLimitExceededError()
+
+                cursor = connection.execute(
+                    """
+                    UPDATE durable_runs
+                    SET recovery_attempts = recovery_attempts + 1
+                    WHERE run_id = ?
+                      AND terminal = 0
+                      AND recovery_attempts = ?
+                    """,
+                    (str(run_id), attempts),
+                )
+                if cursor.rowcount != 1:
+                    raise AgentStateConflictError()
+                connection.execute("COMMIT")
+                return attempts + 1
             except sqlite3.Error as exception:
                 _rollback(connection)
                 raise AgentServiceUnavailableError() from exception
@@ -1161,8 +1749,10 @@ class SQLiteDurableRunStore(DurableRunStore):
         async with self._database.lock:
             self._ensure_open()
             connection = self._database.writer_connection()
+            self._database.require_current_freshness()
             try:
                 connection.execute("BEGIN IMMEDIATE")
+                freshness_generation: int | None = None
                 _require_current_lease(connection, lease, now=now)
                 run_row = self._run_row(connection, decoded.durable_run_id)
                 if run_row is None:
@@ -1211,7 +1801,14 @@ class SQLiteDurableRunStore(DurableRunStore):
                 )
                 if cursor.rowcount != 1:
                     raise AgentStateConflictError()
+                if decoded.status.terminal and not current.status.terminal:
+                    freshness_generation = self._advance_store_generation(
+                        connection,
+                        now=decoded.created_at,
+                    )
                 connection.execute("COMMIT")
+                if freshness_generation is not None:
+                    self._database.publish_store_generation(freshness_generation)
                 return decoded
             except sqlite3.IntegrityError as exception:
                 _rollback(connection)
@@ -1349,6 +1946,7 @@ class SQLiteDurableRunStore(DurableRunStore):
         async with self._database.lock:
             self._ensure_open()
             connection = self._database.writer_connection()
+            self._database.require_current_freshness()
 
             try:
                 connection.execute("BEGIN IMMEDIATE")
@@ -1444,7 +2042,12 @@ class SQLiteDurableRunStore(DurableRunStore):
                 if cursor.rowcount != 1:
                     raise AgentStateConflictError()
 
+                freshness_generation = self._advance_store_generation(
+                    connection,
+                    now=now,
+                )
                 connection.execute("COMMIT")
+                self._database.publish_store_generation(freshness_generation)
                 return tombstone
 
             except sqlite3.IntegrityError as exception:
@@ -1518,6 +2121,8 @@ class SQLiteDurableRunStore(DurableRunStore):
         async with self._database.lock:
             self._ensure_open()
             connection = self._database.writer_connection()
+            if not self._database.automatic_recovery_available:
+                return ()
 
             try:
                 connection.execute("BEGIN")
@@ -1677,6 +2282,7 @@ class SQLiteDurableRunStore(DurableRunStore):
         async with self._database.lock:
             self._ensure_open()
             connection = self._database.writer_connection()
+            self._database.require_current_freshness()
 
             try:
                 connection.execute("BEGIN IMMEDIATE")
@@ -1761,6 +2367,7 @@ class SQLiteDurableRunStore(DurableRunStore):
         async with self._database.lock:
             self._ensure_open()
             connection = self._database.writer_connection()
+            self._database.require_current_freshness()
 
             try:
                 connection.execute("BEGIN IMMEDIATE")
@@ -1829,6 +2436,42 @@ class SQLiteDurableRunStore(DurableRunStore):
         await self._database.close()
         if self._owns_lease_manager:
             await self._lease_manager.close()
+
+    @staticmethod
+    def _advance_store_generation(
+        connection: Connection,
+        *,
+        now: datetime,
+    ) -> int:
+        row = connection.execute(
+            """
+            SELECT store_generation
+            FROM durable_meta
+            WHERE singleton = 1
+            """
+        ).fetchone()
+        if row is None:
+            raise AgentCodecError("durable SQLite freshness metadata is missing")
+        current = _row_int(row, "store_generation")
+        if current < 0 or current >= MAX_DURABLE_STORE_GENERATION:
+            raise AgentLimitExceededError()
+
+        next_generation = current + 1
+        cursor = connection.execute(
+            """
+            UPDATE durable_meta
+            SET store_generation = ?, updated_at = ?
+            WHERE singleton = 1 AND store_generation = ?
+            """,
+            (
+                next_generation,
+                now.isoformat(),
+                current,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise AgentStateConflictError()
+        return next_generation
 
     def _prepare_checkpoint(
         self,
@@ -1910,8 +2553,11 @@ class SQLiteDurableRunStore(DurableRunStore):
         checkpoint: CheckpointEnvelope,
     ) -> None:
         terminal = _row_int(run_row, "terminal")
+        recovery_attempts = _row_int(run_row, "recovery_attempts")
         if terminal not in {0, 1}:
             raise AgentCodecError("persisted durable terminal marker is invalid")
+        if recovery_attempts < 0 or recovery_attempts > MAX_RECOVERY_ATTEMPTS:
+            raise AgentCodecError("persisted recovery attempt count is invalid")
         if (
             _row_text(run_row, "run_id") != str(checkpoint.durable_run_id)
             or _row_int(run_row, "current_sequence", positive=True) != checkpoint.sequence.value
@@ -1963,9 +2609,10 @@ class SQLiteDurableRunStore(DurableRunStore):
                 current_checkpoint_id,
                 current_digest,
                 history_bytes,
+                recovery_attempts,
                 terminal,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(checkpoint.durable_run_id),
@@ -1974,6 +2621,7 @@ class SQLiteDurableRunStore(DurableRunStore):
                 str(checkpoint.checkpoint_id),
                 checkpoint.digest.value,
                 history_bytes,
+                0,
                 int(checkpoint.status.terminal),
                 checkpoint.created_at.isoformat(),
             ),
