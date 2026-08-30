@@ -2347,18 +2347,38 @@ class RuntimeAssembler:
             if self._agent_durable_enabled:
                 from phoenix_os.agent import (
                     ContentFreeDurableRunObserver,
+                    DurableRecoveryWorkerConfiguration,
                     ToolApprovalDurableRevalidator,
                     ToolApprovalStateService,
                     create_durable_agent_runtime_stack,
                 )
                 from phoenix_os.agent.durable_authorization import (
                     PolicyEngineDurableReconciliationAuthorizer,
+                    PolicyEngineDurableResumeAuthorizer,
                 )
+                from phoenix_os.policy import PrincipalType
 
                 assert self._agent_configuration is not None
                 assert self._agent_durable_store is not None
                 assert self._agent_durable_lease_manager is not None
                 assert self._agent_durable_compatibility_validator is not None
+                assert self._policy is not None
+
+                selected_recovery_configuration = (
+                    self._agent_durable_recovery_configuration
+                    if self._agent_durable_recovery_configuration is not None
+                    else DurableRecoveryWorkerConfiguration()
+                )
+                resume_authorizer = PolicyEngineDurableResumeAuthorizer(
+                    self._policy,
+                    self._agent_durable_lease_manager,
+                )
+                resume_context = SecurityContext(
+                    principal=selected_recovery_configuration.owner_id,
+                    principal_type=PrincipalType.SERVICE,
+                    authenticated=True,
+                    correlation_id="durable-recovery",
+                )
 
                 approval_revalidator = self._agent_durable_approval_revalidator
                 if approval_revalidator is None and isinstance(
@@ -2387,8 +2407,10 @@ class RuntimeAssembler:
                     store=self._agent_durable_store,
                     lease_manager=self._agent_durable_lease_manager,
                     compatibility_validator=self._agent_durable_compatibility_validator,
-                    recovery_configuration=self._agent_durable_recovery_configuration,
+                    recovery_configuration=selected_recovery_configuration,
                     approval_revalidator=approval_revalidator,
+                    resume_authorizer=resume_authorizer,
+                    resume_context=resume_context,
                     observer=durable_observer,
                     administration_configuration=(self._agent_durable_administration_configuration),
                     machine_guard=self._agent_durable_machine_administration_guard,

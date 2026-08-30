@@ -43,6 +43,7 @@ from phoenix_os.agent import (
     StaticDurableCompatibilityValidator,
     create_durable_agent_runtime_stack,
 )
+from phoenix_os.agent.durable_authorization import PolicyEngineDurableResumeAuthorizer
 from phoenix_os.agent.durable_contracts import (
     CheckpointEnvelope,
     DurableAgentRunId,
@@ -51,6 +52,7 @@ from phoenix_os.agent.durable_contracts import (
     DurableRunVersion,
     RetentionPolicy,
 )
+from phoenix_os.agent.durable_recovery import StartupDurableRecoveryCoordinator
 from phoenix_os.agent.durable_retention import DurableRetentionStore
 from phoenix_os.agent.durable_retention_worker import (
     BoundedDurableRetentionWorker,
@@ -359,6 +361,13 @@ async def test_runtime_assembler_composes_and_owns_durable_services() -> None:
     agent = runtime.service("agent")
     assert isinstance(stack, DurableAgentRuntimeStack)
     assert isinstance(agent, AgentService)
+    coordinator = stack.recovery_coordinator
+    assert isinstance(coordinator, StartupDurableRecoveryCoordinator)
+    assert isinstance(coordinator._resume_authorizer, PolicyEngineDurableResumeAuthorizer)
+    assert coordinator._resume_context is not None
+    assert coordinator._resume_context.principal == "phoenix-recovery"
+    assert coordinator._resume_context.principal_type is PrincipalType.SERVICE
+    assert coordinator._resume_context.authenticated
     assert runtime.service("agent.durable.storage") is selected_store
     assert runtime.service("agent.durable.leases") is selected_leases
     assert runtime.service("agent.durable.compatibility") is stack.compatibility_validator

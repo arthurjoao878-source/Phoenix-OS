@@ -11,7 +11,10 @@ from phoenix_os.agent.durable_administration import (
     DurableRunAdministration,
 )
 from phoenix_os.agent.durable_approval import DurableApprovalRevalidator
-from phoenix_os.agent.durable_authorization import DurableReconciliationAuthorizer
+from phoenix_os.agent.durable_authorization import (
+    DurableReconciliationAuthorizer,
+    DurableResumeAuthorizer,
+)
 from phoenix_os.agent.durable_cleanup_administration import DurableCleanupAdministration
 from phoenix_os.agent.durable_compatibility import DurableCompatibilityValidator
 from phoenix_os.agent.durable_contracts import (
@@ -53,6 +56,7 @@ from phoenix_os.agent.durable_worker import (
     DurableRecoveryWorkerConfiguration,
 )
 from phoenix_os.audit import AuditLedger
+from phoenix_os.policy import SecurityContext
 from phoenix_os.runtime import RuntimeContext
 
 
@@ -250,6 +254,8 @@ def create_durable_agent_runtime_stack(
     metadata_projector: DurableCheckpointMetadataProjector | None = None,
     history_validator: DurableCheckpointHistoryValidator | None = None,
     resume_gate: DurableRecoveryResumeGate | None = None,
+    resume_authorizer: DurableResumeAuthorizer | None = None,
+    resume_context: SecurityContext | None = None,
     observer: DurableRunObserver | None = None,
     administration_configuration: DurableAdministrationConfiguration | None = None,
     machine_guard: DurableMachineAdministrationGuard | None = None,
@@ -289,6 +295,15 @@ def create_durable_agent_runtime_stack(
         DurableRecoveryResumeGate,
     ):
         raise TypeError("resume_gate must implement DurableRecoveryResumeGate")
+    if resume_authorizer is not None and not isinstance(
+        resume_authorizer,
+        DurableResumeAuthorizer,
+    ):
+        raise TypeError("resume_authorizer must implement DurableResumeAuthorizer")
+    if resume_context is not None and not isinstance(resume_context, SecurityContext):
+        raise TypeError("resume_context must be SecurityContext")
+    if (resume_authorizer is None) != (resume_context is None):
+        raise ValueError("resume authorization requires authorizer and context")
     if observer is not None and not isinstance(observer, DurableRunObserver):
         raise TypeError("observer must implement DurableRunObserver")
     if administration_configuration is not None and not isinstance(
@@ -367,6 +382,8 @@ def create_durable_agent_runtime_stack(
         metadata_projector=metadata_projector,
         history_validator=history_validator,
         resume_gate=resume_gate,
+        resume_authorizer=resume_authorizer,
+        resume_context=resume_context,
     )
     worker = BoundedDurableRecoveryWorker(
         store=store,
