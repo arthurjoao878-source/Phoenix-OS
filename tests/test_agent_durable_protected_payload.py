@@ -521,12 +521,12 @@ async def test_sqlite_schema_migrates_v1_database_to_current_schema(
 
     connection = _connect(path)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == DURABLE_SQLITE_SCHEMA_VERSION
-    assert DURABLE_SQLITE_SCHEMA_VERSION == 3
+    assert DURABLE_SQLITE_SCHEMA_VERSION == 5
     row = connection.execute(
         "SELECT schema_version FROM durable_meta WHERE singleton = 1"
     ).fetchone()
     assert row is not None
-    assert row["schema_version"] == 3
+    assert row["schema_version"] == DURABLE_SQLITE_SCHEMA_VERSION
     table = connection.execute(
         """
         SELECT name FROM sqlite_master

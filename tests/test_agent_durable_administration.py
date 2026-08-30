@@ -12,6 +12,7 @@ from phoenix_os.agent.durable_administration import (
     MAX_DURABLE_ADMINISTRATION_AGE_SECONDS,
     MAX_DURABLE_ADMINISTRATION_COUNT,
     DurableAdministrationConfiguration,
+    DurableDeadlineCategory,
     DurableIndeterminateCategory,
     DurableMachineAdministrationGuard,
     DurablePauseCategory,
@@ -37,7 +38,10 @@ from phoenix_os.agent.durable_contracts import (
     CheckpointSequence,
     CompatibilityDigests,
     DurableAgentRunId,
+    DurableLease,
+    DurableRunLimits,
     DurableRunStatus,
+    DurableRunStore,
     DurableRunVersion,
     ExecutionAttempt,
     ExecutionAttemptId,
@@ -48,6 +52,11 @@ from phoenix_os.agent.durable_contracts import (
 from phoenix_os.agent.durable_lease import InMemoryDurableLeaseManager
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
 from phoenix_os.agent.durable_observer import NullDurableRunObserver
+from phoenix_os.agent.durable_reliability import (
+    DurableRecoveryAttemptStore,
+    DurableStoreFreshnessCategory,
+    DurableStoreFreshnessSnapshot,
+)
 from phoenix_os.agent.durable_retention_worker import (
     DurableRetentionWorkerReport,
     DurableRetentionWorkerSnapshot,
@@ -716,3 +725,217 @@ def test_enabling_machine_administration_without_guard_fails_closed() -> None:
             ),
             clock=lambda: NOW,
         )
+
+
+class _LegacyAdministrationStore:
+    def __init__(self, delegate: InMemoryDurableRunStore) -> None:
+        self._delegate = delegate
+
+    @property
+    def closed(self) -> bool:
+        return self._delegate.closed
+
+    async def create(self, checkpoint: CheckpointEnvelope) -> None:
+        await self._delegate.create(checkpoint)
+
+    async def get_current(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> CheckpointEnvelope | None:
+        return await self._delegate.get_current(run_id)
+
+    async def list_history(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        limit: int,
+    ) -> tuple[CheckpointEnvelope, ...]:
+        return await self._delegate.list_history(run_id, limit=limit)
+
+    async def list_recovery_candidates(
+        self,
+        *,
+        limit: int,
+        after: DurableAgentRunId | None = None,
+    ) -> tuple[DurableAgentRunId, ...]:
+        return await self._delegate.list_recovery_candidates(
+            limit=limit,
+            after=after,
+        )
+
+    async def append(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+    ) -> CheckpointEnvelope:
+        return await self._delegate.append(
+            checkpoint,
+            expected_version=expected_version,
+            lease=lease,
+            now=now,
+        )
+
+    async def close(self) -> None:
+        await self._delegate.close()
+
+
+class _RollbackFreshnessStore(InMemoryDurableRunStore):
+    async def get_store_freshness(self) -> DurableStoreFreshnessSnapshot:
+        return DurableStoreFreshnessSnapshot(
+            category=DurableStoreFreshnessCategory.ROLLBACK_DETECTED,
+            store_generation=0,
+            witness_generation=2,
+        )
+
+
+@pytest.mark.asyncio
+async def test_reliability_status_reports_deadline_attempt_exhaustion() -> None:
+    limits = DurableRunLimits(max_recovery_attempts=1)
+    lease_manager = InMemoryDurableLeaseManager(limits=limits)
+    store = InMemoryDurableRunStore(
+        limits=limits,
+        lease_manager=lease_manager,
+    )
+    await store.create(_checkpoint())
+
+    recovery_lease = await lease_manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=NOW,
+    )
+    assert (
+        await store.claim_recovery_attempt(
+            DURABLE_RUN_ID,
+            lease=recovery_lease,
+            now=NOW,
+        )
+        == 1
+    )
+    await lease_manager.release(recovery_lease, now=NOW)
+
+    administration = _administration(
+        store=store,
+        lease_manager=lease_manager,
+    )
+    status = await administration.reliability(
+        DURABLE_RUN_ID,
+        _maintainer_context(AGENT_DURABLE_READ_ACTION),
+    )
+
+    assert status is not None
+    assert status.run_id == DURABLE_RUN_ID
+    assert status.deadline_category is DurableDeadlineCategory.ACTIVE
+    assert status.recovery_attempts == 1
+    assert status.automatic_recovery_paused is True
+    assert status.restore_category is None
+    assert SECRET not in repr(status)
+    assert "durable-worker" not in repr(status)
+
+
+@pytest.mark.asyncio
+async def test_reliability_status_reports_expired_original_deadline() -> None:
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    checkpoint = _checkpoint()
+    await store.create(checkpoint)
+
+    administration = DurableRunAdministration(
+        store=store,
+        lease_manager=lease_manager,
+        compatibility_validator=_validator(),
+        observer=NullDurableRunObserver(),
+        clock=lambda: checkpoint.metadata.budget.deadline,
+    )
+    status = await administration.reliability(
+        DURABLE_RUN_ID,
+        _maintainer_context(AGENT_DURABLE_READ_ACTION),
+    )
+
+    assert status is not None
+    assert status.deadline_category is DurableDeadlineCategory.EXPIRED
+    assert status.recovery_attempts == 0
+    assert status.automatic_recovery_paused is False
+    assert status.restore_category is None
+
+
+@pytest.mark.asyncio
+async def test_reliability_status_reports_restore_ambiguity_without_store_identity() -> None:
+    lease_manager = InMemoryDurableLeaseManager()
+    store = _RollbackFreshnessStore(lease_manager=lease_manager)
+    await store.create(_checkpoint())
+
+    administration = DurableRunAdministration(
+        store=store,
+        lease_manager=lease_manager,
+        compatibility_validator=_validator(),
+        observer=NullDurableRunObserver(),
+        clock=lambda: NOW,
+    )
+    status = await administration.reliability(
+        DURABLE_RUN_ID,
+        _maintainer_context(AGENT_DURABLE_READ_ACTION),
+    )
+
+    assert status is not None
+    assert status.restore_category is DurableStoreFreshnessCategory.ROLLBACK_DETECTED
+    assert status.automatic_recovery_paused is True
+    assert status.recovery_attempts == 0
+    assert "store_generation" not in {item.name for item in fields(status)}
+    assert "witness_generation" not in {item.name for item in fields(status)}
+    assert SECRET not in repr(status)
+
+
+@pytest.mark.asyncio
+async def test_reliability_status_authorizes_before_revealing_run_existence() -> None:
+    lease_manager = InMemoryDurableLeaseManager()
+    store = InMemoryDurableRunStore(lease_manager=lease_manager)
+    administration = _administration(
+        store=store,
+        lease_manager=lease_manager,
+    )
+    unknown = DurableAgentRunId(UUID("90000000-0000-0000-0000-000000000019"))
+
+    with pytest.raises(AgentAdministrationAccessDeniedError):
+        await administration.reliability(
+            unknown,
+            _maintainer_context(),
+        )
+
+    assert (
+        await administration.reliability(
+            unknown,
+            _maintainer_context(AGENT_DURABLE_READ_ACTION),
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_reliability_status_pauses_automatic_recovery_without_persistent_attempts() -> None:
+    lease_manager = InMemoryDurableLeaseManager()
+    backing = InMemoryDurableRunStore(lease_manager=lease_manager)
+    await backing.create(_checkpoint())
+    store = _LegacyAdministrationStore(backing)
+
+    assert isinstance(store, DurableRunStore)
+    assert not isinstance(store, DurableRecoveryAttemptStore)
+
+    administration = DurableRunAdministration(
+        store=store,
+        lease_manager=lease_manager,
+        compatibility_validator=_validator(),
+        observer=NullDurableRunObserver(),
+        clock=lambda: NOW,
+    )
+    status = await administration.reliability(
+        DURABLE_RUN_ID,
+        _maintainer_context(AGENT_DURABLE_READ_ACTION),
+    )
+
+    assert status is not None
+    assert status.recovery_attempts is None
+    assert status.automatic_recovery_paused is True
+    assert SECRET not in repr(status)

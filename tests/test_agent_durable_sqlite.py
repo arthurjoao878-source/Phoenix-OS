@@ -32,6 +32,10 @@ from phoenix_os.agent.durable_contracts import (
     RetentionPolicy,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
+from phoenix_os.agent.durable_reliability import (
+    DurableRecoveryAttemptStore,
+    DurableStoreFreshnessCategory,
+)
 from phoenix_os.agent.durable_retention import DurableRetentionStore
 from phoenix_os.agent.durable_sqlite import (
     DURABLE_SQLITE_SCHEMA_VERSION,
@@ -191,6 +195,7 @@ def test_reference_adapter_matches_public_protocols_and_rejects_memory_path(
     store = SQLiteDurableRunStore(_path(tmp_path))
 
     assert isinstance(store, DurableRunStore)
+    assert isinstance(store, DurableRecoveryAttemptStore)
     assert isinstance(store, DurableRetentionStore)
     assert isinstance(store.lease_manager, DurableLeaseManager)
     assert store.path == _path(tmp_path).resolve()
@@ -1323,3 +1328,464 @@ async def test_sqlite_cleanup_candidate_pagination_is_deterministic_and_bounded(
     assert first_page == expected[:2]
     assert second_page == expected[2:]
     assert first_page + second_page == expected
+
+
+async def test_sqlite_recovery_attempts_persist_and_exhaust_candidates(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    limits = replace(DurableRunLimits(), max_recovery_attempts=2)
+    store = SQLiteDurableRunStore(path, limits=limits)
+    first = _checkpoint(1)
+    await store.create(first)
+
+    first_lease = await _lease(store, now=NOW)
+    assert (
+        await store.claim_recovery_attempt(
+            DURABLE_RUN_ID,
+            lease=first_lease,
+            now=NOW,
+        )
+        == 1
+    )
+    await store.lease_manager.release(first_lease, now=NOW + timedelta(seconds=1))
+    await store.close()
+
+    reopened = SQLiteDurableRunStore(path, limits=limits)
+    assert await reopened.get_recovery_attempt_count(DURABLE_RUN_ID) == 1
+    assert await reopened.list_recovery_candidates(limit=1) == (DURABLE_RUN_ID,)
+
+    second_lease = await _lease(
+        reopened,
+        owner_id="recovery-worker",
+        now=NOW + timedelta(seconds=2),
+    )
+    assert (
+        await reopened.claim_recovery_attempt(
+            DURABLE_RUN_ID,
+            lease=second_lease,
+            now=NOW + timedelta(seconds=2),
+        )
+        == 2
+    )
+    await reopened.lease_manager.release(
+        second_lease,
+        now=NOW + timedelta(seconds=3),
+    )
+
+    assert await reopened.get_recovery_attempt_count(DURABLE_RUN_ID) == 2
+    assert await reopened.list_recovery_candidates(limit=1) == ()
+    await reopened.close()
+
+    final = SQLiteDurableRunStore(path, limits=limits)
+    assert await final.get_recovery_attempt_count(DURABLE_RUN_ID) == 2
+    assert await final.list_recovery_candidates(limit=1) == ()
+    await final.close()
+
+
+async def test_sqlite_stale_lease_cannot_claim_recovery_attempt(
+    tmp_path: Path,
+) -> None:
+    limits = replace(
+        DurableRunLimits(),
+        lease_duration=timedelta(seconds=2),
+        lease_renewal_interval=timedelta(seconds=1),
+    )
+    store = SQLiteDurableRunStore(_path(tmp_path), limits=limits)
+    await store.create(_checkpoint(1))
+    stale = await _lease(store, owner_id="stale-worker", now=NOW)
+    current = await store.lease_manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="current-worker",
+        now=stale.expires_at,
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await store.claim_recovery_attempt(
+            DURABLE_RUN_ID,
+            lease=stale,
+            now=current.acquired_at,
+        )
+
+    assert await store.get_recovery_attempt_count(DURABLE_RUN_ID) == 0
+    assert (
+        await store.claim_recovery_attempt(
+            DURABLE_RUN_ID,
+            lease=current,
+            now=current.acquired_at,
+        )
+        == 1
+    )
+
+
+async def test_sqlite_schema_three_migrates_recovery_attempts_to_zero(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    connection = _connect(path)
+    connection.execute(
+        """
+        CREATE TABLE durable_meta (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            schema_version INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO durable_meta (
+            singleton, schema_version, created_at, updated_at
+        ) VALUES (1, 3, ?, ?)
+        """,
+        (NOW.isoformat(), NOW.isoformat()),
+    )
+    connection.execute(
+        """
+        CREATE TABLE durable_runs (
+            run_id TEXT PRIMARY KEY,
+            current_sequence INTEGER NOT NULL CHECK (current_sequence > 0),
+            current_version INTEGER NOT NULL CHECK (current_version > 0),
+            current_checkpoint_id TEXT NOT NULL,
+            current_digest TEXT NOT NULL CHECK (length(current_digest) = 64),
+            history_bytes INTEGER NOT NULL CHECK (history_bytes >= 0),
+            terminal INTEGER NOT NULL CHECK (terminal IN (0, 1)),
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute("PRAGMA user_version = 3")
+    connection.close()
+
+    store = SQLiteDurableRunStore(path)
+    assert await store.list_recovery_candidates(limit=1) == ()
+    await store.close()
+
+    migrated = _connect(path)
+    try:
+        assert (
+            migrated.execute("PRAGMA user_version").fetchone()[0] == DURABLE_SQLITE_SCHEMA_VERSION
+        )
+        assert (
+            migrated.execute(
+                "SELECT schema_version FROM durable_meta WHERE singleton = 1"
+            ).fetchone()[0]
+            == DURABLE_SQLITE_SCHEMA_VERSION
+        )
+        columns = {row[1] for row in migrated.execute("PRAGMA table_info(durable_runs)").fetchall()}
+        assert "recovery_attempts" in columns
+    finally:
+        migrated.close()
+
+
+def _backup_sqlite_database(source: Path, destination: Path) -> None:
+    source_connection = sqlite3.connect(source)
+    destination_connection = sqlite3.connect(destination)
+    try:
+        source_connection.backup(destination_connection)
+    finally:
+        destination_connection.close()
+        source_connection.close()
+
+
+async def test_sqlite_restored_stale_active_backup_blocks_automatic_recovery(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    stale_backup = _path(tmp_path, "stale-active.sqlite3")
+
+    store = SQLiteDurableRunStore(path)
+    first = _checkpoint(1)
+    await store.create(first)
+
+    initial_freshness = await store.get_store_freshness()
+    assert initial_freshness.category is DurableStoreFreshnessCategory.CURRENT
+    assert initial_freshness.store_generation == 0
+    assert initial_freshness.witness_generation == 0
+
+    await store.close()
+    _backup_sqlite_database(path, stale_backup)
+
+    current_store = SQLiteDurableRunStore(path)
+    assert await current_store.get_current(DURABLE_RUN_ID) == first
+    lease = await _lease(current_store)
+    terminal = _next(
+        first,
+        status=DurableRunStatus.FAILED,
+        next_operation=CheckpointNextOperation.NONE,
+    )
+    await current_store.append(
+        terminal,
+        expected_version=first.run_version,
+        lease=lease,
+        now=WRITE_TIME,
+    )
+    await current_store.tombstone_terminal_run(
+        DURABLE_RUN_ID,
+        policy=RETENTION_POLICY,
+        lease=lease,
+        now=terminal.created_at + RETENTION_POLICY.metadata_retention,
+    )
+
+    terminal_freshness = await current_store.get_store_freshness()
+    assert terminal_freshness.category is DurableStoreFreshnessCategory.CURRENT
+    assert terminal_freshness.store_generation == 2
+    assert terminal_freshness.witness_generation == 2
+    await current_store.close()
+
+    _backup_sqlite_database(stale_backup, path)
+
+    restored = SQLiteDurableRunStore(path)
+    freshness = await restored.get_store_freshness()
+    assert freshness.category is DurableStoreFreshnessCategory.ROLLBACK_DETECTED
+    assert freshness.store_generation == 0
+    assert freshness.witness_generation == 2
+
+    assert await restored.get_current(DURABLE_RUN_ID) == first
+    assert await restored.list_recovery_candidates(limit=10) == ()
+
+    recovery_lease = await restored.lease_manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="restore-review",
+        now=NOW + timedelta(minutes=1),
+    )
+    with pytest.raises(AgentStateConflictError):
+        await restored.claim_recovery_attempt(
+            DURABLE_RUN_ID,
+            lease=recovery_lease,
+            now=NOW + timedelta(minutes=1),
+        )
+    assert await restored.get_recovery_attempt_count(DURABLE_RUN_ID) == 0
+    await restored.close()
+
+
+async def test_sqlite_missing_initialized_freshness_witness_pauses_automatic_recovery(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    store = SQLiteDurableRunStore(path)
+    first = _checkpoint(1)
+    await store.create(first)
+
+    freshness = await store.get_store_freshness()
+    assert freshness.category is DurableStoreFreshnessCategory.CURRENT
+    witness_path = store.freshness_witness_path
+    assert witness_path.is_file()
+    await store.close()
+
+    witness_path.unlink()
+
+    reopened = SQLiteDurableRunStore(path)
+    missing = await reopened.get_store_freshness()
+    assert missing.category is DurableStoreFreshnessCategory.WITNESS_UNAVAILABLE
+    assert missing.store_generation == 0
+    assert missing.witness_generation is None
+    assert await reopened.get_current(DURABLE_RUN_ID) == first
+    assert await reopened.list_recovery_candidates(limit=10) == ()
+
+    lease = await reopened.lease_manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="restore-review",
+        now=NOW + timedelta(minutes=1),
+    )
+    with pytest.raises(AgentStateConflictError):
+        await reopened.claim_recovery_attempt(
+            DURABLE_RUN_ID,
+            lease=lease,
+            now=NOW + timedelta(minutes=1),
+        )
+    await reopened.close()
+
+
+async def test_sqlite_database_ahead_of_witness_repairs_commit_before_witness_crash(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    store = SQLiteDurableRunStore(path)
+    first = _checkpoint(1)
+    await store.create(first)
+
+    initial = await store.get_store_freshness()
+    assert initial.category is DurableStoreFreshnessCategory.CURRENT
+    witness_path = store.freshness_witness_path
+    old_witness = witness_path.read_bytes()
+
+    lease = await _lease(store)
+    terminal = _next(
+        first,
+        status=DurableRunStatus.FAILED,
+        next_operation=CheckpointNextOperation.NONE,
+    )
+    await store.append(
+        terminal,
+        expected_version=first.run_version,
+        lease=lease,
+        now=WRITE_TIME,
+    )
+    committed = await store.get_store_freshness()
+    assert committed.store_generation == 1
+    assert committed.witness_generation == 1
+    await store.close()
+
+    witness_path.write_bytes(old_witness)
+
+    reopened = SQLiteDurableRunStore(path)
+    repaired = await reopened.get_store_freshness()
+    assert repaired.category is DurableStoreFreshnessCategory.CURRENT
+    assert repaired.store_generation == 1
+    assert repaired.witness_generation == 1
+    assert witness_path.read_bytes() != old_witness
+    assert await reopened.get_current(DURABLE_RUN_ID) == terminal
+    await reopened.close()
+
+
+@pytest.mark.parametrize(
+    "counter",
+    (
+        "steps",
+        "model_turns",
+        "tool_calls",
+        "model_output_bytes",
+        "tool_result_bytes",
+        "input_tokens",
+        "output_tokens",
+    ),
+)
+async def test_sqlite_repeated_restart_preserves_all_budget_dimensions(
+    tmp_path: Path,
+    counter: str,
+) -> None:
+    path = _path(tmp_path)
+    base = _checkpoint(1)
+    budget = replace(
+        base.metadata.budget,
+        steps=6,
+        model_turns=4,
+        tool_calls=2,
+        model_output_bytes=101,
+        tool_result_bytes=202,
+        input_tokens=303,
+        output_tokens=404,
+    )
+    first = seal_checkpoint_envelope(
+        replace(
+            base,
+            metadata=replace(base.metadata, budget=budget),
+            digest=_digest("0"),
+        )
+    )
+
+    store = SQLiteDurableRunStore(path)
+    await store.create(first)
+    await store.close()
+
+    for _restart in range(2):
+        reopened = SQLiteDurableRunStore(path)
+        current = await reopened.get_current(DURABLE_RUN_ID)
+        assert current is not None
+        assert current.metadata.budget == budget
+        await reopened.close()
+
+    final = SQLiteDurableRunStore(path)
+    current = await final.get_current(DURABLE_RUN_ID)
+    assert current is not None
+    lease = await _lease(final, now=WRITE_TIME)
+
+    current_value = getattr(current.metadata.budget, counter)
+    assert current_value > 0
+    regressed_budget = replace(
+        current.metadata.budget,
+        **{counter: current_value - 1},
+    )
+    candidate = seal_checkpoint_envelope(
+        replace(
+            current,
+            checkpoint_id=_checkpoint_id(2, variant=90),
+            sequence=current.sequence.next(),
+            previous_digest=current.digest,
+            run_version=current.run_version.next(),
+            metadata=replace(current.metadata, budget=regressed_budget),
+            created_at=WRITE_TIME,
+            digest=_digest("0"),
+        )
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await final.append(
+            candidate,
+            expected_version=current.run_version,
+            lease=lease,
+            now=WRITE_TIME,
+        )
+
+    assert await final.get_current(DURABLE_RUN_ID) == current
+    await final.close()
+
+
+async def test_sqlite_repeated_restart_preserves_original_deadline_and_expiry_boundary(
+    tmp_path: Path,
+) -> None:
+    from phoenix_os.agent.durable_contracts import RecoveryDisposition, RecoveryPoint
+    from phoenix_os.agent.durable_recovery import classify_recovery_checkpoint
+
+    path = _path(tmp_path)
+    first = _checkpoint(1)
+    original_deadline = first.metadata.budget.deadline
+
+    store = SQLiteDurableRunStore(path)
+    await store.create(first)
+    await store.close()
+
+    current = first
+    for _restart in range(3):
+        reopened = SQLiteDurableRunStore(path)
+        restored = await reopened.get_current(DURABLE_RUN_ID)
+        assert restored is not None
+        assert restored.metadata.budget.deadline == original_deadline
+        current = restored
+        await reopened.close()
+
+    assert classify_recovery_checkpoint(
+        current,
+        now=original_deadline,
+    ) == (
+        RecoveryPoint.EXPIRED,
+        RecoveryDisposition.TERMINATE_EXPIRED,
+    )
+
+    final = SQLiteDurableRunStore(path)
+    final_current = await final.get_current(DURABLE_RUN_ID)
+    assert final_current is not None
+    lease = await _lease(final, now=WRITE_TIME)
+    extended = seal_checkpoint_envelope(
+        replace(
+            final_current,
+            checkpoint_id=_checkpoint_id(2, variant=91),
+            sequence=final_current.sequence.next(),
+            previous_digest=final_current.digest,
+            run_version=final_current.run_version.next(),
+            metadata=replace(
+                final_current.metadata,
+                budget=replace(
+                    final_current.metadata.budget,
+                    deadline=original_deadline + timedelta(minutes=1),
+                ),
+            ),
+            created_at=WRITE_TIME,
+            digest=_digest("0"),
+        )
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await final.append(
+            extended,
+            expected_version=final_current.run_version,
+            lease=lease,
+            now=WRITE_TIME,
+        )
+
+    authoritative = await final.get_current(DURABLE_RUN_ID)
+    assert authoritative is not None
+    assert authoritative.metadata.budget.deadline == original_deadline
+    await final.close()

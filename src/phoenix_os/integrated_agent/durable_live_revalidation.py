@@ -8,7 +8,10 @@ from typing import Protocol, runtime_checkable
 
 from phoenix_os.agent.configuration import AgentServiceConfiguration
 from phoenix_os.agent.contracts import AgentRunId, AgentRunRequest
-from phoenix_os.agent.durable_contracts import CheckpointEnvelope
+from phoenix_os.agent.durable_contracts import (
+    CheckpointEnvelope,
+    CheckpointNextOperation,
+)
 from phoenix_os.agent.errors import AgentAuthorizationRejectedError
 from phoenix_os.agent.loop import AgentLoop
 from phoenix_os.integrated_agent.admission import IntegratedAgentRunBinding
@@ -105,10 +108,13 @@ class AgentLoopIntegratedDurableRecoveryLiveRevalidator:
             or request.model_id != configuration.model_id
             or request.limits != binding.effective_limits
             or checkpoint.metadata.budget.started_at != request.created_at
-            or checkpoint.metadata.budget.deadline != request.deadline
+            or request.deadline > checkpoint.metadata.budget.deadline
             or now < request.created_at
             or now >= request.deadline
         ):
+            return False
+
+        if not _budget_within_current_limits(checkpoint, request):
             return False
 
         cancelled = self._cancellation_probe(request.run_id)
@@ -152,6 +158,41 @@ class AgentLoopIntegratedDurableRecoveryLiveRevalidator:
         if type(current) is not bool:
             raise TypeError("context_freshness_probe must return bool")
         return current
+
+
+def _budget_within_current_limits(
+    checkpoint: CheckpointEnvelope,
+    request: AgentRunRequest,
+) -> bool:
+    budget = checkpoint.metadata.budget
+    limits = request.limits
+    if not (
+        budget.steps <= limits.max_steps
+        and budget.model_turns <= limits.max_model_turns
+        and budget.tool_calls <= limits.max_tool_calls
+        and budget.model_output_bytes <= limits.max_model_output_bytes
+        and budget.tool_result_bytes <= limits.max_tool_result_bytes
+        and budget.input_tokens <= limits.max_input_tokens
+        and budget.output_tokens <= limits.max_output_tokens
+    ):
+        return False
+
+    next_operation = checkpoint.metadata.next_operation
+    if next_operation is CheckpointNextOperation.MODEL_TURN:
+        return (
+            budget.steps < limits.max_steps
+            and budget.model_turns < limits.max_model_turns
+            and budget.model_output_bytes < limits.max_model_output_bytes
+            and budget.input_tokens < limits.max_input_tokens
+            and budget.output_tokens < limits.max_output_tokens
+        )
+    if next_operation is CheckpointNextOperation.TOOL_INVOCATION:
+        return (
+            budget.steps < limits.max_steps
+            and budget.tool_calls < limits.max_tool_calls
+            and budget.tool_result_bytes < limits.max_tool_result_bytes
+        )
+    return True
 
 
 def _require_timezone_aware(value: datetime) -> None:

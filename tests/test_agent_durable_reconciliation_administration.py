@@ -950,3 +950,37 @@ def test_direct_runtime_factory_requires_authorizer_and_audit_together() -> None
             compatibility_validator=StaticDurableCompatibilityValidator(()),
             reconciliation_authorizer=_AllowAuthorizer(),
         )
+
+
+@pytest.mark.asyncio
+async def test_prepared_reconciliation_blocks_cleanup_lease_until_discard() -> None:
+    store, leases, _authorizer, _audit, administration = await _services()
+
+    preparation = await administration.prepare(
+        DURABLE_RUN_ID,
+        ATTEMPT_ID,
+        DurableRunVersion(1),
+        ReconciliationDecision.REMAIN_INDETERMINATE,
+        _context(AGENT_RECONCILE_ACTION),
+    )
+
+    with pytest.raises(AgentStateConflictError):
+        await leases.acquire(
+            DURABLE_RUN_ID,
+            owner_id="phoenix-retention",
+            now=preparation.prepared_at,
+        )
+
+    await administration.discard(preparation.id)
+
+    cleanup_lease = await leases.acquire(
+        DURABLE_RUN_ID,
+        owner_id="phoenix-retention",
+        now=preparation.prepared_at,
+    )
+    assert cleanup_lease.run_id == DURABLE_RUN_ID
+    assert cleanup_lease.owner_id == "phoenix-retention"
+
+    await leases.release(cleanup_lease, now=preparation.prepared_at)
+    await administration.close()
+    await store.close()

@@ -1095,3 +1095,72 @@ async def test_cancel_reconciliation_requires_current_fenced_lease(
     assert current is not None
     assert current.status.indeterminate
     assert len(await store.list_history(request.run_id, limit=1)) == 1
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (ExecutionAttemptKind.MODEL_TURN, ExecutionAttemptKind.TOOL_INVOCATION),
+)
+async def test_cancellation_recorded_by_new_owner_blocks_stale_worker(
+    kind: ExecutionAttemptKind,
+) -> None:
+    checkpoint = _checkpoint(next_operation=_operation(kind))
+    store, manager = await _store_with_checkpoint(checkpoint)
+
+    stale = await manager.acquire(
+        checkpoint.durable_run_id,
+        owner_id="stale-worker",
+        now=LEASE_TIME,
+    )
+    takeover_time = stale.expires_at
+    replacement = await manager.acquire(
+        checkpoint.durable_run_id,
+        owner_id="cancelling-worker",
+        now=takeover_time,
+    )
+
+    cancelled = seal_checkpoint_envelope(
+        replace(
+            _next_checkpoint(
+                checkpoint,
+                status=DurableRunStatus.CANCELLED,
+                next_operation=CheckpointNextOperation.NONE,
+                created_at=takeover_time,
+            ),
+            checkpoint_id=CheckpointId(UUID("80000000-0000-0000-0000-000000000001")),
+            digest=_digest("0"),
+        )
+    )
+    persisted = await store.append(
+        cancelled,
+        expected_version=checkpoint.run_version,
+        lease=replacement,
+        now=takeover_time,
+    )
+    assert persisted.status is DurableRunStatus.CANCELLED
+
+    recorder = StoreBackedDurableExecutionAttemptRecorder(store=store)
+    stale_time = takeover_time + timedelta(seconds=1)
+
+    with pytest.raises(AgentStateConflictError):
+        if kind is ExecutionAttemptKind.MODEL_TURN:
+            await recorder.prepare_model_attempt(
+                checkpoint.durable_run_id,
+                expected_version=checkpoint.run_version,
+                lease=stale,
+                external_request_digest=_digest("f"),
+                now=stale_time,
+            )
+        else:
+            await recorder.prepare_tool_attempt(
+                checkpoint.durable_run_id,
+                expected_version=checkpoint.run_version,
+                lease=stale,
+                tool_call_id=TOOL_CALL_ID,
+                tool_effect=ToolEffect.IRREVERSIBLE_WRITE,
+                external_request_digest=_digest("f"),
+                now=stale_time,
+            )
+
+    assert await store.get_current(checkpoint.durable_run_id) == cancelled
+    assert await store.list_recovery_candidates(limit=1) == ()

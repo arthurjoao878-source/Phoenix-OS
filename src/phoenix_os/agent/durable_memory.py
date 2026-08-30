@@ -42,6 +42,7 @@ class _StoredRun:
     checkpoint_ids: frozenset[CheckpointId]
     total_bytes: int
     protected_payloads: tuple[bytes | None, ...]
+    recovery_attempts: int
 
 
 @runtime_checkable
@@ -143,6 +144,7 @@ class InMemoryDurableRunStore(DurableRetentionStore):
             checkpoint_ids=frozenset({decoded.checkpoint_id}),
             total_bytes=len(encoded),
             protected_payloads=(protected,),
+            recovery_attempts=0,
         )
 
         async with self._incarnation_manager.guard_new_incarnation(
@@ -211,13 +213,73 @@ class InMemoryDurableRunStore(DurableRetentionStore):
             for run_id in sorted(self._runs):
                 if after is not None and run_id <= after:
                     continue
-                current = self._decode_stored(self._runs[run_id].payloads[-1])
-                if current.status.terminal:
+                stored = self._runs[run_id]
+                current = self._decode_stored(stored.payloads[-1])
+                if (
+                    current.status.terminal
+                    or stored.recovery_attempts >= self._limits.max_recovery_attempts
+                ):
                     continue
                 candidates.append(run_id)
                 if len(candidates) == limit:
                     break
             return tuple(candidates)
+
+    async def get_recovery_attempt_count(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> int:
+        """Return bounded store-owned recovery attempts for one live durable run."""
+
+        self._require_run_id(run_id)
+        async with self._lock:
+            self._ensure_open()
+            if run_id in self._runs and run_id in self._tombstones:
+                raise AgentCodecError("durable run exists alongside its tombstone")
+            stored = self._runs.get(run_id)
+            if stored is None:
+                raise AgentStateConflictError()
+            return stored.recovery_attempts
+
+    async def claim_recovery_attempt(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        lease: DurableLease,
+        now: datetime,
+    ) -> int:
+        """Consume one fenced automatic recovery attempt without changing checkpoints."""
+
+        self._require_run_id(run_id)
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+        self._require_now(now)
+        if lease.run_id != run_id:
+            raise AgentStateConflictError()
+
+        async with self._lease_manager.guard_current(lease, now=now):
+            async with self._lock:
+                self._ensure_open()
+                if run_id in self._runs and run_id in self._tombstones:
+                    raise AgentCodecError("durable run exists alongside its tombstone")
+                stored = self._runs.get(run_id)
+                if stored is None:
+                    raise AgentStateConflictError()
+                current = self._decode_stored(stored.payloads[-1])
+                if current.status.terminal:
+                    raise AgentStateConflictError()
+                if stored.recovery_attempts >= self._limits.max_recovery_attempts:
+                    raise AgentLimitExceededError()
+
+                next_attempts = stored.recovery_attempts + 1
+                self._runs[run_id] = _StoredRun(
+                    payloads=stored.payloads,
+                    checkpoint_ids=stored.checkpoint_ids,
+                    total_bytes=stored.total_bytes,
+                    protected_payloads=stored.protected_payloads,
+                    recovery_attempts=next_attempts,
+                )
+                return next_attempts
 
     async def append(
         self,
@@ -305,6 +367,7 @@ class InMemoryDurableRunStore(DurableRetentionStore):
                     checkpoint_ids=stored.checkpoint_ids | {decoded.checkpoint_id},
                     total_bytes=next_total_bytes,
                     protected_payloads=(*stored.protected_payloads, protected),
+                    recovery_attempts=stored.recovery_attempts,
                 )
                 return decoded
 
@@ -470,6 +533,7 @@ class InMemoryDurableRunStore(DurableRetentionStore):
                     checkpoint_ids=stored.checkpoint_ids,
                     total_bytes=stored.total_bytes,
                     protected_payloads=tuple(None for _ in stored.protected_payloads),
+                    recovery_attempts=stored.recovery_attempts,
                 )
                 return True
 

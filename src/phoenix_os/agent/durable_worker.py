@@ -21,6 +21,7 @@ from phoenix_os.agent.durable_recovery import (
 )
 from phoenix_os.agent.durable_reliability import (
     NOOP_RELIABILITY_FAULT_INJECTOR,
+    DurableRecoveryAttemptStore,
     ReliabilityFaultInjector,
     ReliabilityFaultPoint,
 )
@@ -329,6 +330,10 @@ class BoundedDurableRecoveryWorker(DurableRecoveryWorker):
         self._store = store
         self._coordinator = coordinator
         self._configuration = selected_configuration
+        self._persistent_recovery_attempts_available = isinstance(
+            store,
+            DurableRecoveryAttemptStore,
+        )
         self._clock: Callable[[], datetime] = selected_clock
         self._fault_injector = selected_fault_injector
         self._state = DurableRecoveryWorkerState.CREATED
@@ -380,6 +385,8 @@ class BoundedDurableRecoveryWorker(DurableRecoveryWorker):
             if self._state is not DurableRecoveryWorkerState.RUNNING:
                 raise RuntimeError("durable recovery worker is not running")
             if self._active_pass is not None:
+                raise AgentStateConflictError()
+            if not self._persistent_recovery_attempts_available:
                 raise AgentStateConflictError()
             self._active_pass = cast(asyncio.Task[object], task)
             self._passes_started += 1
