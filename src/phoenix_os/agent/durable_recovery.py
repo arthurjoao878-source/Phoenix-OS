@@ -18,6 +18,7 @@ from phoenix_os.agent.durable_attempts import (
     DurableExecutionAttemptRecorder,
     StoreBackedDurableExecutionAttemptRecorder,
 )
+from phoenix_os.agent.durable_authorization import DurableResumeAuthorizer
 from phoenix_os.agent.durable_compatibility import (
     DurableCompatibilityAssessment,
     DurableCompatibilityValidator,
@@ -39,6 +40,8 @@ from phoenix_os.agent.durable_contracts import (
     IndeterminateReason,
     RecoveryDisposition,
     RecoveryPoint,
+    ResumeReason,
+    ResumeRequest,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
 from phoenix_os.agent.durable_metadata import (
@@ -52,7 +55,12 @@ from phoenix_os.agent.durable_reliability import (
     ReliabilityFaultInjector,
     ReliabilityFaultPoint,
 )
-from phoenix_os.agent.errors import AgentCodecError, AgentStateConflictError
+from phoenix_os.agent.errors import (
+    AgentAuthorizationRejectedError,
+    AgentCodecError,
+    AgentStateConflictError,
+)
+from phoenix_os.policy import SecurityContext
 
 _OWNER_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
 
@@ -229,6 +237,8 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         metadata_projector: DurableCheckpointMetadataProjector | None = None,
         history_validator: DurableCheckpointHistoryValidator | None = None,
         resume_gate: DurableRecoveryResumeGate | None = None,
+        resume_authorizer: DurableResumeAuthorizer | None = None,
+        resume_context: SecurityContext | None = None,
         fault_injector: ReliabilityFaultInjector | None = None,
     ) -> None:
         if not isinstance(store, DurableRunStore):
@@ -257,6 +267,15 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             DurableRecoveryResumeGate,
         ):
             raise TypeError("resume_gate must implement DurableRecoveryResumeGate")
+        if resume_authorizer is not None and not isinstance(
+            resume_authorizer,
+            DurableResumeAuthorizer,
+        ):
+            raise TypeError("resume_authorizer must implement DurableResumeAuthorizer")
+        if resume_context is not None and not isinstance(resume_context, SecurityContext):
+            raise TypeError("resume_context must be SecurityContext")
+        if (resume_authorizer is None) != (resume_context is None):
+            raise ValueError("resume authorization requires authorizer and context")
         selected_fault_injector = (
             NOOP_RELIABILITY_FAULT_INJECTOR if fault_injector is None else fault_injector
         )
@@ -280,6 +299,8 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         self._metadata_projector = metadata_projector
         self._history_validator = history_validator
         self._resume_gate = resume_gate
+        self._resume_authorizer = resume_authorizer
+        self._resume_context = resume_context
         self._fault_injector = selected_fault_injector
         self._closed = False
 
@@ -349,6 +370,14 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             disposition = await _revalidate_resume_disposition(
                 self._resume_gate,
                 checkpoint,
+                disposition=disposition,
+                now=now,
+            )
+            disposition = await _authorize_resume_disposition(
+                self._resume_authorizer,
+                self._resume_context,
+                checkpoint,
+                lease,
                 disposition=disposition,
                 now=now,
             )
@@ -430,6 +459,14 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             disposition = await _revalidate_resume_disposition(
                 self._resume_gate,
                 checkpoint,
+                disposition=disposition,
+                now=now,
+            )
+            disposition = await _authorize_resume_disposition(
+                self._resume_authorizer,
+                self._resume_context,
+                checkpoint,
+                lease,
                 disposition=disposition,
                 now=now,
             )
@@ -555,6 +592,35 @@ async def _revalidate_resume_disposition(
     if allowed:
         return RecoveryDisposition.RESUME
     return RecoveryDisposition.PAUSE_OPERATOR
+
+
+async def _authorize_resume_disposition(
+    authorizer: DurableResumeAuthorizer | None,
+    context: SecurityContext | None,
+    checkpoint: CheckpointEnvelope,
+    lease: DurableLease,
+    *,
+    disposition: RecoveryDisposition,
+    now: datetime,
+) -> RecoveryDisposition:
+    if disposition is not RecoveryDisposition.RESUME:
+        return disposition
+    if authorizer is None or context is None:
+        return RecoveryDisposition.PAUSE_OPERATOR
+
+    request = ResumeRequest(
+        run_id=checkpoint.durable_run_id,
+        actor_id=lease.owner_id,
+        reason=ResumeReason.STARTUP_RECOVERY,
+        expected_version=checkpoint.run_version,
+        generation=lease.generation,
+        requested_at=now,
+    )
+    try:
+        await authorizer.authorize(request, checkpoint, lease, context)
+    except AgentAuthorizationRejectedError:
+        return RecoveryDisposition.PAUSE_OPERATOR
+    return RecoveryDisposition.RESUME
 
 
 def classify_recovery_checkpoint(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -23,10 +23,13 @@ from phoenix_os.agent.durable_contracts import (
     CheckpointSequence,
     CompatibilityDigests,
     DurableAgentRunId,
+    DurableLease,
     DurableRunStatus,
     DurableRunVersion,
     RecoveryDisposition,
     RecoveryPoint,
+    ResumeReason,
+    ResumeRequest,
 )
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
 from phoenix_os.agent.durable_recovery import (
@@ -34,7 +37,9 @@ from phoenix_os.agent.durable_recovery import (
     StartupDurableRecoveryCoordinator,
     classify_recovery_checkpoint,
 )
+from phoenix_os.agent.errors import AgentAuthorizationRejectedError
 from phoenix_os.agent.state import AgentBudgetSnapshot
+from phoenix_os.policy import PrincipalType, SecurityContext
 
 _NOW = datetime(2026, 8, 28, 21, 0, tzinfo=UTC)
 _DURABLE_RUN_ID = DurableAgentRunId(UUID(int=601))
@@ -125,6 +130,32 @@ class _ResumeGate:
         return self.allowed
 
 
+@dataclass
+class _ResumeAuthorizer:
+    allowed: bool = True
+    requests: list[ResumeRequest] = field(default_factory=list)
+
+    async def authorize(
+        self,
+        request: ResumeRequest,
+        checkpoint: CheckpointEnvelope,
+        lease: DurableLease,
+        context: SecurityContext,
+    ) -> None:
+        del checkpoint, lease, context
+        self.requests.append(request)
+        if not self.allowed:
+            raise AgentAuthorizationRejectedError()
+
+
+def _resume_context() -> SecurityContext:
+    return SecurityContext(
+        principal="recovery-worker",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+    )
+
+
 def test_resume_gate_structurally_implements_generic_protocol() -> None:
     assert isinstance(_ResumeGate(True), DurableRecoveryResumeGate)
 
@@ -160,6 +191,43 @@ async def test_startup_resume_gate_can_only_restrict_structural_resume(
     store = InMemoryDurableRunStore()
     await store.create(checkpoint)
     gate = _ResumeGate(allowed)
+    authorizer = _ResumeAuthorizer()
+    coordinator = StartupDurableRecoveryCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_validator(),
+        resume_gate=gate,
+        resume_authorizer=authorizer,
+        resume_context=_resume_context(),
+    )
+
+    assessment = await coordinator.assess_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=_NOW + timedelta(minutes=1),
+    )
+
+    assert assessment.point is RecoveryPoint.SAFE_BOUNDARY
+    assert assessment.disposition is expected
+    assert gate.calls == 1
+    if allowed:
+        assert len(authorizer.requests) == 1
+        request = authorizer.requests[0]
+        assert request.run_id == _DURABLE_RUN_ID
+        assert request.actor_id == "recovery-worker"
+        assert request.reason is ResumeReason.STARTUP_RECOVERY
+        assert request.expected_version == checkpoint.run_version
+        assert request.generation == assessment.generation
+    else:
+        assert authorizer.requests == []
+
+
+@pytest.mark.asyncio
+async def test_startup_resume_fails_closed_without_current_resume_authority() -> None:
+    checkpoint = _checkpoint()
+    store = InMemoryDurableRunStore()
+    await store.create(checkpoint)
+    gate = _ResumeGate(True)
     coordinator = StartupDurableRecoveryCoordinator(
         store=store,
         lease_manager=store.lease_manager,
@@ -174,8 +242,36 @@ async def test_startup_resume_gate_can_only_restrict_structural_resume(
     )
 
     assert assessment.point is RecoveryPoint.SAFE_BOUNDARY
-    assert assessment.disposition is expected
+    assert assessment.disposition is RecoveryDisposition.PAUSE_OPERATOR
     assert gate.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_resume_denial_from_current_policy_pauses_operator() -> None:
+    checkpoint = _checkpoint()
+    store = InMemoryDurableRunStore()
+    await store.create(checkpoint)
+    gate = _ResumeGate(True)
+    authorizer = _ResumeAuthorizer(allowed=False)
+    coordinator = StartupDurableRecoveryCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_validator(),
+        resume_gate=gate,
+        resume_authorizer=authorizer,
+        resume_context=_resume_context(),
+    )
+
+    assessment = await coordinator.assess_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=_NOW + timedelta(minutes=1),
+    )
+
+    assert assessment.point is RecoveryPoint.SAFE_BOUNDARY
+    assert assessment.disposition is RecoveryDisposition.PAUSE_OPERATOR
+    assert len(authorizer.requests) == 1
+    assert authorizer.requests[0].reason is ResumeReason.STARTUP_RECOVERY
 
 
 @pytest.mark.asyncio

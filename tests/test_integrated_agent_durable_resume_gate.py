@@ -32,8 +32,13 @@ from phoenix_os.agent.durable_contracts import (
     CheckpointSequence,
     CompatibilityDigests,
     DurableAgentRunId,
+    DurableLease,
     DurableRunStatus,
     DurableRunVersion,
+    RecoveryDisposition,
+    RecoveryPoint,
+    ResumeReason,
+    ResumeRequest,
 )
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
 from phoenix_os.agent.durable_recovery import (
@@ -81,6 +86,7 @@ from phoenix_os.integrated_agent.profiles import (
     IntegratedExecutionProfileCatalog,
     IntegratedLocalTransformBinding,
 )
+from phoenix_os.policy import PrincipalType, SecurityContext
 
 _NOW = datetime(2026, 8, 28, 21, 30, tzinfo=UTC)
 _DURABLE_RUN_ID = DurableAgentRunId(UUID(int=701))
@@ -103,6 +109,34 @@ class _DenyContextLiveRevalidator(_AllowLiveRevalidator):
     async def revalidate_context(self, *args: object, **kwargs: object) -> bool:
         del args, kwargs
         return False
+
+
+class _RecordingResumeAuthorizer:
+    def __init__(self) -> None:
+        self.requests: list[ResumeRequest] = []
+
+    async def authorize(
+        self,
+        request: ResumeRequest,
+        checkpoint: CheckpointEnvelope,
+        lease: DurableLease,
+        context: SecurityContext,
+    ) -> None:
+        assert request.run_id == checkpoint.durable_run_id
+        assert request.expected_version == checkpoint.run_version
+        assert request.actor_id == lease.owner_id
+        assert request.generation == lease.generation
+        assert context.authenticated
+        assert context.principal == "recovery-worker"
+        self.requests.append(request)
+
+
+def _resume_context() -> SecurityContext:
+    return SecurityContext(
+        principal="recovery-worker",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+    )
 
 
 def _digest(character: str) -> CheckpointDigest:
@@ -346,6 +380,64 @@ async def test_missing_live_admission_binding_denies_integrated_resume() -> None
     await lease.release()
 
     assert await gate.revalidate_resume(checkpoint, now=_NOW) is False
+
+
+@pytest.mark.asyncio
+async def test_integrated_recovery_requires_live_state_and_fresh_resume_authority() -> None:
+    admission, guard, lease, task, profile = await _live_state()
+    provenance = guard.current_provenance(_AGENT_RUN_ID)
+    assert provenance is not None
+
+    checkpoint = _checkpoint(
+        _projection(
+            task,
+            profile,
+            context_digest=integrated_data_flow_context_digest(provenance),
+        )
+    )
+    store = InMemoryDurableRunStore()
+    await store.create(checkpoint)
+
+    authorizer = _RecordingResumeAuthorizer()
+    gate = IntegratedDurableRecoveryResumeGate(
+        admission,
+        guard,
+        live_revalidator=_AllowLiveRevalidator(),
+    )
+    coordinator = StartupDurableRecoveryCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility_validator(),
+        resume_gate=gate,
+        resume_authorizer=authorizer,
+        resume_context=_resume_context(),
+    )
+
+    assessment = await coordinator.assess_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=_NOW,
+    )
+
+    assert assessment.point is RecoveryPoint.SAFE_BOUNDARY
+    assert assessment.disposition is RecoveryDisposition.RESUME
+    assert len(authorizer.requests) == 1
+    assert authorizer.requests[0].reason is ResumeReason.STARTUP_RECOVERY
+    assert authorizer.requests[0].generation == assessment.generation
+
+    guard.release_run(_AGENT_RUN_ID)
+
+    denied = await coordinator.assess_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-worker",
+        now=_NOW + timedelta(seconds=1),
+    )
+
+    assert denied.point is RecoveryPoint.SAFE_BOUNDARY
+    assert denied.disposition is RecoveryDisposition.PAUSE_OPERATOR
+    assert len(authorizer.requests) == 1
+
+    await lease.release()
 
 
 @pytest.mark.asyncio

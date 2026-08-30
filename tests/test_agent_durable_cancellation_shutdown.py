@@ -603,7 +603,7 @@ async def test_shutdown_recovery_assessment_releases_its_lease() -> None:
     )
 
     assert assessment.point is RecoveryPoint.SHUTDOWN_PAUSE
-    assert assessment.disposition is RecoveryDisposition.RESUME
+    assert assessment.disposition is RecoveryDisposition.PAUSE_OPERATOR
     assert manager.active_count == 0
     assert await manager.get_current(checkpoint.durable_run_id, now=SHUTDOWN_TIME) is None
     assert await store.get_current(checkpoint.durable_run_id) == checkpoint

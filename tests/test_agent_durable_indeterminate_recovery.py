@@ -404,7 +404,7 @@ async def test_started_attempt_is_marked_before_budget_expiry_disposition() -> N
                     status=ExecutionAttemptStatus.PREPARED,
                 )
             ),
-            RecoveryDisposition.RESUME,
+            RecoveryDisposition.PAUSE_OPERATOR,
         ),
         (
             _checkpoint(
@@ -414,7 +414,7 @@ async def test_started_attempt_is_marked_before_budget_expiry_disposition() -> N
                     status=ExecutionAttemptStatus.SUCCEEDED,
                 ),
             ),
-            RecoveryDisposition.RESUME,
+            RecoveryDisposition.PAUSE_OPERATOR,
         ),
     ),
 )
