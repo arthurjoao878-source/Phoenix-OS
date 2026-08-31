@@ -1345,15 +1345,21 @@ classified separately, but must not be converted into a passing Phoenix result.
 
 ### Slice 3 - Real agent turns and provider-native translation
 
-- [ ] Run real structured model turns through the inference-backed path
-- [ ] Translate admitted tool descriptors into bounded model context
-- [ ] Decode one final output or one tool proposal
-- [ ] Reject mixed outcomes and multiple tool proposals
-- [ ] Validate unknown/malformed tool data before authorization
-- [ ] Evaluate native Ollama tool-calling only after the structured path is green
-- [ ] If native tool calling is added, prove semantic equivalence to RFC-0027
-- [ ] Add cancellation, timeout, malformed-result, and budget tests
-- [ ] Keep package version at 0.37.0
+Slice 3 decision: the Phoenix-owned structured envelope remains the only real
+agent-turn tool encoding enabled for v0.38.0 in this slice. Native Ollama tool
+calling is deferred. Any future native path must first prove an exact reversible
+mapping to the admitted tool set, reject parallel/mixed outcomes, and preserve the
+normal RFC-0027 validation, authorization, approval, and execution path.
+
+- [x] Run real structured model turns through the inference-backed path
+- [x] Translate admitted tool descriptors into bounded model context
+- [x] Decode one final output or one tool proposal
+- [x] Reject mixed outcomes and multiple tool proposals
+- [x] Validate unknown/malformed tool data before authorization
+- [x] Evaluate native Ollama tool-calling only after the structured path is green
+- [x] Keep native Ollama tool calling disabled until RFC-0027 semantic equivalence is proven
+- [x] Add cancellation, timeout, malformed-result, and budget tests
+- [x] Keep package version at 0.37.0
 
 ### Slice 4 - Minimal real-task dogfood profiles
 

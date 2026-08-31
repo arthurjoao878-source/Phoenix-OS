@@ -11,8 +11,10 @@ from typing import Protocol, runtime_checkable
 
 from phoenix_os.agent.contracts import (
     MAX_AGENT_FINAL_OUTPUT_CHARS,
+    MAX_AGENT_INPUT_TOKENS,
     MAX_AGENT_MESSAGE_COUNT,
     MAX_AGENT_MODEL_TURN_TIMEOUT,
+    MAX_AGENT_OUTPUT_TOKENS,
     AgentJsonInput,
     AgentJsonValue,
     AgentMessage,
@@ -106,6 +108,8 @@ class AgentModelTurnResult:
     kind: AgentModelTurnKind
     final_output: str | None = None
     proposal: ToolCallProposal | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, AgentRunId):
@@ -114,6 +118,14 @@ class AgentModelTurnResult:
             raise TypeError("step_id must be AgentStepId")
         if not isinstance(self.kind, AgentModelTurnKind):
             raise TypeError("kind must be AgentModelTurnKind")
+        for label, value, maximum in (
+            ("input_tokens", self.input_tokens, MAX_AGENT_INPUT_TOKENS),
+            ("output_tokens", self.output_tokens, MAX_AGENT_OUTPUT_TOKENS),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{label} must be an integer")
+            if value < 0 or value > maximum:
+                raise ValueError(f"{label} is outside the supported range")
         if self.kind is AgentModelTurnKind.FINAL_OUTPUT:
             if not isinstance(self.final_output, str):
                 raise ValueError("final model turns require final_output")
