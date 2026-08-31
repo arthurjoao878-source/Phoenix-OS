@@ -1363,14 +1363,24 @@ normal RFC-0027 validation, authorization, approval, and execution path.
 
 ### Slice 4 - Minimal real-task dogfood profiles
 
-- [ ] Add/reuse a bounded development profile
-- [ ] Add only narrow repository/test tools proven necessary by dogfood
-- [ ] Keep unrestricted shell and filesystem access excluded
-- [ ] Keep commit/push/merge/tag/release outside the initial autonomous tool set
-- [ ] Add/reuse a research profile using existing browser/network/workspace/memory boundaries
-- [ ] Add/reuse a desktop/integrated profile using existing host/orchestration boundaries
-- [ ] Prove profiles do not alter core provider-neutral semantics
-- [ ] Keep package version at 0.37.0
+Slice 4 decision: deployment profiles narrow the existing server-owned
+`IntegratedExecutionProfile` authority rather than creating a second profile,
+provider, model, or tool runtime. Development initially reuses only advisory plan
+updates plus bounded workspace list/read. No new repository writer, test-process,
+shell, PowerShell, filesystem, Git lifecycle, or release-publication tool is added;
+such tools remain deferred until real dogfood demonstrates a narrow general need.
+Research reuses memory/workspace reads, one exact read-only network operation, and
+browser open/navigate/read/close with exact profile generation and configured
+navigation targets. Desktop/integrated reuses host process/window observation only.
+
+- [x] Add/reuse a bounded development profile
+- [x] Add only narrow repository/test tools proven necessary by dogfood
+- [x] Keep unrestricted shell and filesystem access excluded
+- [x] Keep commit/push/merge/tag/release outside the initial autonomous tool set
+- [x] Add/reuse a research profile using existing browser/network/workspace/memory boundaries
+- [x] Add/reuse a desktop/integrated profile using existing host/orchestration boundaries
+- [x] Prove profiles do not alter core provider-neutral semantics
+- [x] Keep package version at 0.37.0
 
 ### Slice 5 - Durable real-provider dogfood and failure matrix
 
