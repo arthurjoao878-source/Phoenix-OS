@@ -14,7 +14,9 @@ from phoenix_os.agent.contracts import (
     canonical_agent_json_bytes,
 )
 from phoenix_os.agent.errors import (
+    AgentAuthorizationRejectedError,
     AgentCancelledError,
+    AgentLimitExceededError,
     AgentMalformedProposalError,
     AgentServiceUnavailableError,
     AgentTimeoutError,
@@ -26,6 +28,10 @@ from phoenix_os.agent.fake import (
     AgentModelTurnRequest,
     AgentModelTurnResult,
 )
+from phoenix_os.agent.model_turn import (
+    InferenceContextualAgentModelTurnAdapter,
+    validate_agent_model_turn_inference_binding,
+)
 from phoenix_os.agent.schemas import validate_tool_output
 from phoenix_os.agent.state import AgentCancellationToken
 from phoenix_os.agent.tools import (
@@ -35,6 +41,7 @@ from phoenix_os.agent.tools import (
     ToolDescriptor,
     ToolFinalAdmissionValidator,
 )
+from phoenix_os.inference.contracts import InferenceRequest
 from phoenix_os.policy import SecurityContext
 
 
@@ -165,6 +172,8 @@ class BoundedAgentExecutor:
         adapter: AgentModelTurnAdapter,
         request: AgentModelTurnRequest,
         *,
+        inference_request: InferenceRequest | None = None,
+        context: SecurityContext | None = None,
         timeout_seconds: float,
         cancellation_grace: float,
         cancellation: AgentCancellationToken,
@@ -175,6 +184,13 @@ class BoundedAgentExecutor:
             raise TypeError("adapter must implement AgentModelTurnAdapter")
         if not isinstance(request, AgentModelTurnRequest):
             raise TypeError("request must be AgentModelTurnRequest")
+        if inference_request is not None and not isinstance(
+            inference_request,
+            InferenceRequest,
+        ):
+            raise TypeError("inference_request must be InferenceRequest or None")
+        if context is not None and not isinstance(context, SecurityContext):
+            raise TypeError("context must be SecurityContext or None")
         if not isinstance(cancellation, AgentCancellationToken):
             raise TypeError("cancellation must be AgentCancellationToken")
         timeout = _require_positive_seconds(timeout_seconds, "timeout_seconds")
@@ -187,13 +203,30 @@ class BoundedAgentExecutor:
         effective_timeout = min(timeout, remaining)
 
         try:
+            if isinstance(adapter, InferenceContextualAgentModelTurnAdapter):
+                if inference_request is None or context is None:
+                    raise AgentServiceUnavailableError()
+                validate_agent_model_turn_inference_binding(request, inference_request)
+                operation = adapter.complete_turn_with_inference(
+                    request,
+                    inference_request,
+                    context,
+                )
+            else:
+                operation = adapter.complete_turn(request)
             result = await _await_controlled(
-                adapter.complete_turn(request),
+                operation,
                 timeout_seconds=effective_timeout,
                 cancellation_grace=grace,
                 cancellation=cancellation,
             )
-        except (AgentCancelledError, AgentTimeoutError, AgentMalformedProposalError):
+        except (
+            AgentAuthorizationRejectedError,
+            AgentCancelledError,
+            AgentLimitExceededError,
+            AgentMalformedProposalError,
+            AgentTimeoutError,
+        ):
             raise
         except asyncio.CancelledError:
             raise

@@ -65,6 +65,10 @@ from phoenix_os.agent.memory_retrieval import (
     AgentMemoryContextProvider,
     memory_context_messages,
 )
+from phoenix_os.agent.model_turn import (
+    agent_message_to_inference_message,
+    validate_agent_run_model_turn_inference_binding,
+)
 from phoenix_os.agent.observer import (
     AgentObserver,
     AgentOperation,
@@ -92,11 +96,7 @@ from phoenix_os.authority import (
     AuthorityFreshnessRejectedError,
     AuthorityFreshnessValidator,
 )
-from phoenix_os.inference import (
-    InferenceMessage,
-    InferenceRequest,
-    InferenceRole,
-)
+from phoenix_os.inference import InferenceRequest
 from phoenix_os.policy import SecurityContext
 
 
@@ -139,7 +139,9 @@ class DefaultAgentInferenceRequestFactory:
         return InferenceRequest(
             provider_id=request.provider_id,
             model_id=request.model_id,
-            messages=tuple(_to_inference_message(message) for message in turn.messages),
+            messages=tuple(
+                agent_message_to_inference_message(message) for message in turn.messages
+            ),
             max_output_tokens=request.limits.max_output_tokens,
             metadata={
                 "agent_run_id": str(turn.run_id),
@@ -452,6 +454,11 @@ class AgentLoop:
                         token,
                     )
                 inference_request = self._inference_requests.create(request, turn)
+                validate_agent_run_model_turn_inference_binding(
+                    request,
+                    turn,
+                    inference_request,
+                )
                 await self._authorize_observed(
                     self._model_authorizer.authorize(inference_request, context),
                     AgentOperationObservation(
@@ -504,6 +511,8 @@ class AgentLoop:
                         model_result = await self._executor.complete_model_turn(
                             self._model_adapter,
                             turn,
+                            inference_request=inference_request,
+                            context=context,
                             timeout_seconds=state.budget.model_timeout_seconds(now=self._now()),
                             cancellation_grace=request.limits.cancellation_grace.total_seconds(),
                             cancellation=token,
@@ -1211,19 +1220,6 @@ def _operation_failure(exception: BaseException) -> tuple[AgentOperationOutcome,
         )
         return outcome, exception.code.value
     return AgentOperationOutcome.FAILED, AgentErrorCode.SERVICE_UNAVAILABLE.value
-
-
-def _to_inference_message(message: AgentMessage) -> InferenceMessage:
-    role = {
-        AgentMessageRole.SYSTEM: InferenceRole.SYSTEM,
-        AgentMessageRole.USER: InferenceRole.USER,
-        AgentMessageRole.ASSISTANT: InferenceRole.ASSISTANT,
-        AgentMessageRole.TOOL: InferenceRole.USER,
-    }[message.role]
-    metadata = {"agent_role": message.role.value}
-    if message.tool_call_id is not None:
-        metadata["tool_call_id"] = str(message.tool_call_id)
-    return InferenceMessage(role=role, content=message.content, metadata=metadata)
 
 
 def _tool_message(result: ToolInvocationResult) -> AgentMessage:

@@ -1180,6 +1180,13 @@ Provider integrations MAY be:
 Slice 1 must decide the packaging model before adding a new unconditional runtime
 dependency.
 
+Slice 1 decision: the provider-neutral core remains dependency-free. Real-provider
+adapters are provider-scoped integrations composed explicitly through RFC-0026. If
+Slice 2 requires a third-party transport dependency, it must remain behind an
+optional provider-specific installation boundary rather than becoming an
+unconditional `phoenix-os` runtime dependency. Slice 1 itself adds no provider SDK
+or transport dependency.
+
 Provider discovery never implies automatic package installation.
 
 The Plugin System may be used as an installation/composition boundary only when
