@@ -22,6 +22,7 @@ from phoenix_os.inference.contracts import (
 )
 from phoenix_os.inference.errors import (
     InferenceCancelledError,
+    InferenceEndpointRejectedError,
     InferenceLimitExceededError,
     InferenceMalformedOutputError,
     InferenceTimeoutError,
@@ -164,7 +165,13 @@ class InferenceRuntime:
                     timeout_seconds=timeout,
                     cancellation_grace=self._execution_limits.cancellation_grace.total_seconds(),
                 )
-            except InferenceTimeoutError:
+            except (
+                InferenceCancelledError,
+                InferenceEndpointRejectedError,
+                InferenceLimitExceededError,
+                InferenceMalformedOutputError,
+                InferenceTimeoutError,
+            ):
                 raise
             except asyncio.CancelledError:
                 raise
@@ -195,6 +202,14 @@ class InferenceRuntime:
             total_deadline = asyncio.get_running_loop().time() + total_timeout
             try:
                 iterator = provider.stream(request)
+            except (
+                InferenceCancelledError,
+                InferenceEndpointRejectedError,
+                InferenceLimitExceededError,
+                InferenceMalformedOutputError,
+                InferenceTimeoutError,
+            ):
+                raise
             except Exception as exception:
                 raise ModelProviderExecutionError() from exception
             if not hasattr(iterator, "__anext__"):
@@ -223,7 +238,13 @@ class InferenceRuntime:
                         )
                     except StopAsyncIteration as exception:
                         raise InferenceMalformedOutputError() from exception
-                    except InferenceTimeoutError:
+                    except (
+                        InferenceCancelledError,
+                        InferenceEndpointRejectedError,
+                        InferenceLimitExceededError,
+                        InferenceMalformedOutputError,
+                        InferenceTimeoutError,
+                    ):
                         raise
                     except asyncio.CancelledError:
                         raise
@@ -270,7 +291,13 @@ class InferenceRuntime:
                         )
                     except StopAsyncIteration:
                         pass
-                    except InferenceTimeoutError:
+                    except (
+                        InferenceCancelledError,
+                        InferenceEndpointRejectedError,
+                        InferenceLimitExceededError,
+                        InferenceMalformedOutputError,
+                        InferenceTimeoutError,
+                    ):
                         raise
                     except asyncio.CancelledError:
                         raise

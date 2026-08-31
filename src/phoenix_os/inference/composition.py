@@ -4,14 +4,22 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from phoenix_os.audit import AuditLedger
 from phoenix_os.events import EventBus
 from phoenix_os.inference.administration import InferenceAdministration
 from phoenix_os.inference.admission import InferenceAdmissionController
 from phoenix_os.inference.authorization import PolicyEngineInferenceAuthorizer
-from phoenix_os.inference.configuration import InferenceServiceConfiguration
-from phoenix_os.inference.contracts import ModelProvider, ModelProviderId
+from phoenix_os.inference.configuration import (
+    InferenceProviderConfiguration,
+    InferenceServiceConfiguration,
+)
+from phoenix_os.inference.contracts import (
+    ModelDescriptor,
+    ModelProvider,
+    ModelProviderId,
+)
 from phoenix_os.inference.execution import InferenceRuntime
 from phoenix_os.inference.registry import ModelProviderRegistry
 from phoenix_os.inference.service import InferenceService
@@ -29,6 +37,64 @@ class InferenceRuntimeStack:
     runtime: InferenceRuntime
     service: InferenceService
     administration: InferenceAdministration
+
+
+@runtime_checkable
+class InferenceConfigurationBoundProvider(ModelProvider, Protocol):
+    """Installed adapter bound to the exact reviewed provider/model configuration."""
+
+    @property
+    def provider_configuration(self) -> InferenceProviderConfiguration: ...
+
+    @property
+    def model_descriptors(self) -> tuple[ModelDescriptor, ...]: ...
+
+
+def _validate_configuration_bound_provider(
+    provider: ModelProvider,
+    configuration: InferenceServiceConfiguration,
+) -> None:
+    if not isinstance(provider, InferenceConfigurationBoundProvider):
+        return
+
+    provider_configuration = provider.provider_configuration
+    if not isinstance(provider_configuration, InferenceProviderConfiguration):
+        raise TypeError(
+            "configuration-bound inference provider must expose InferenceProviderConfiguration"
+        )
+
+    expected_provider_configuration = next(
+        (item for item in configuration.providers if item.provider_id == provider.provider_id),
+        None,
+    )
+    if provider_configuration != expected_provider_configuration:
+        raise ValueError("configuration-bound inference provider configuration mismatch")
+
+    descriptors = provider.model_descriptors
+    if not isinstance(descriptors, tuple):
+        raise TypeError("configuration-bound inference provider model_descriptors must be a tuple")
+    if any(not isinstance(item, ModelDescriptor) for item in descriptors):
+        raise TypeError(
+            "configuration-bound inference provider descriptors must be ModelDescriptor values"
+        )
+
+    provider_models: dict[object, ModelDescriptor] = {}
+    for descriptor in descriptors:
+        if descriptor.provider_id != provider.provider_id:
+            raise ValueError("configuration-bound inference provider descriptor provider mismatch")
+        if descriptor.model_id in provider_models:
+            raise ValueError(
+                "configuration-bound inference provider contains duplicate model descriptors"
+            )
+        provider_models[descriptor.model_id] = descriptor
+
+    configured_models = {
+        descriptor.model_id: descriptor
+        for descriptor in configuration.models
+        if descriptor.provider_id == provider.provider_id
+    }
+    if provider_models != configured_models:
+        raise ValueError("configuration-bound inference provider model descriptor mismatch")
 
 
 def create_inference_runtime_stack(
@@ -76,6 +142,9 @@ def create_inference_runtime_stack(
     configured_ids = set(configuration.provider_ids)
     if set(installed) != configured_ids:
         raise ValueError("installed inference providers must exactly match configuration")
+
+    for provider in installed.values():
+        _validate_configuration_bound_provider(provider, configuration)
 
     registry = ModelProviderRegistry()
     try:
