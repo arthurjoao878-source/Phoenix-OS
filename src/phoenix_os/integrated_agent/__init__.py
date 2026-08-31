@@ -40,6 +40,8 @@ from phoenix_os.integrated_agent.composition import (
     IntegratedToolRegistration,
     integrated_browser_profile_binding_id,
     integrated_browser_tool_registration,
+    integrated_desktop_dogfood_profile,
+    integrated_development_dogfood_profile,
     integrated_host_application_close_registration,
     integrated_host_application_launch_registration,
     integrated_host_binding_id,
@@ -52,6 +54,7 @@ from phoenix_os.integrated_agent.composition import (
     integrated_network_http_registration,
     integrated_network_profile_binding_id,
     integrated_plan_update_registration,
+    integrated_research_dogfood_profile,
     integrated_workspace_tool_registration,
 )
 from phoenix_os.integrated_agent.configuration import (
@@ -107,6 +110,12 @@ from phoenix_os.integrated_agent.data_flow import (
     IntegratedDataFlowGuard,
     integrated_provenance_union,
     integrated_result_audience,
+)
+from phoenix_os.integrated_agent.dogfood_profiles import (
+    MAX_DOGFOOD_PROFILE_COUNT,
+    DogfoodTaskClass,
+    IntegratedDogfoodProfile,
+    IntegratedDogfoodProfileCatalog,
 )
 from phoenix_os.integrated_agent.errors import (
     IntegratedAgentBudgetExhaustedError,
@@ -166,6 +175,7 @@ __all__ = [
     "INTEGRATED_AGENT_INSPECTION_READ_PERMISSION",
     "INTEGRATED_PLAN_UPDATE_TOOL_ID",
     "INTEGRATED_PLAN_UPDATE_TRANSFORM_ID",
+    "MAX_DOGFOOD_PROFILE_COUNT",
     "MAX_INTEGRATED_BINDING_LENGTH",
     "MAX_INTEGRATED_CAPABILITY_BINDINGS",
     "MAX_INTEGRATED_DATA_FLOW_ROUTES",
@@ -192,6 +202,7 @@ __all__ = [
     "MAX_INTEGRATED_TASK_OBJECTIVE_CHARS",
     "MAX_INTEGRATED_TOOL_BINDINGS",
     "ContentFreeIntegratedAgentObserver",
+    "DogfoodTaskClass",
     "IntegratedAgentAdministration",
     "IntegratedAgentAdministrationAccessDeniedError",
     "IntegratedAgentAdministrationSnapshot",
@@ -232,6 +243,8 @@ __all__ = [
     "IntegratedDataProvenanceAtom",
     "IntegratedDataSink",
     "IntegratedDataSourceKind",
+    "IntegratedDogfoodProfile",
+    "IntegratedDogfoodProfileCatalog",
     "IntegratedDownstreamBoundary",
     "IntegratedDownstreamBridgeBinding",
     "IntegratedEffectDisposition",
@@ -279,6 +292,8 @@ __all__ = [
     "integrated_agent_inspection_resource",
     "integrated_browser_profile_binding_id",
     "integrated_browser_tool_registration",
+    "integrated_desktop_dogfood_profile",
+    "integrated_development_dogfood_profile",
     "integrated_effect_disposition",
     "integrated_host_application_close_registration",
     "integrated_host_application_launch_registration",
@@ -293,6 +308,7 @@ __all__ = [
     "integrated_network_profile_binding_id",
     "integrated_plan_update_registration",
     "integrated_provenance_union",
+    "integrated_research_dogfood_profile",
     "integrated_result_audience",
     "integrated_workspace_tool_registration",
     "most_restrictive_agent_limits",

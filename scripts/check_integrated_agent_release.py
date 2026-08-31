@@ -30,6 +30,7 @@ _REQUIRED_INTEGRATED_MODULES = frozenset(
         "phoenix_os/integrated_agent/configuration.py",
         "phoenix_os/integrated_agent/contracts.py",
         "phoenix_os/integrated_agent/data_flow.py",
+        "phoenix_os/integrated_agent/dogfood_profiles.py",
         "phoenix_os/integrated_agent/durable_context_resupply.py",
         "phoenix_os/integrated_agent/durable_live_revalidation.py",
         "phoenix_os/integrated_agent/durable_projection.py",
@@ -73,6 +74,8 @@ _REQUIRED_INTEGRATED_TESTS = frozenset(
         "tests/test_integrated_agent_configuration.py",
         "tests/test_integrated_agent_contracts.py",
         "tests/test_integrated_agent_data_flow.py",
+        "tests/test_integrated_agent_dogfood_factories.py",
+        "tests/test_integrated_agent_dogfood_profiles.py",
         "tests/test_integrated_agent_downstream_bridges.py",
         "tests/test_integrated_agent_durable_context_resupply.py",
         "tests/test_integrated_agent_durable_live_projection.py",
@@ -100,6 +103,7 @@ _REQUIRED_INTEGRATED_TESTS = frozenset(
 
 _REQUIRED_HARDENING_FILES = (
     "docs/rfcs/RFC-0036-secure-integrated-agent-execution-and-end-to-end-orchestration.md",
+    "docs/rfcs/RFC-0038-secure-real-model-provider-execution-and-integrated-agent-dogfood.md",
     "docs/migrations/v0.35.0-to-v0.36.0-secure-integrated-agent-execution.md",
     "docs/releases/v0.36.0.md",
     "docs/security/RFC-0036-secure-integrated-agent-execution-threat-model-review.md",
@@ -156,6 +160,17 @@ _SECURITY_REQUIREMENT_FILES: dict[str, tuple[str, ...]] = {
     "every_exposed_tool_exact_binding": (
         "tests/test_integrated_agent_composition.py",
         "tests/test_integrated_agent_profiles.py",
+    ),
+    "dogfood_profiles_narrow_existing_authority": (
+        "tests/test_integrated_agent_dogfood_profiles.py",
+        "tests/test_integrated_agent_dogfood_factories.py",
+    ),
+    "dogfood_research_network_read_only_and_exact_browser_target": (
+        "tests/test_integrated_agent_dogfood_factories.py",
+    ),
+    "dogfood_profiles_preserve_provider_neutral_semantics": (
+        "tests/test_integrated_agent_dogfood_profiles.py",
+        "tests/test_integrated_agent_dogfood_factories.py",
     ),
     "bridge_substitution_rejected": (
         "tests/test_integrated_agent_downstream_bridges.py",
@@ -706,10 +721,15 @@ import phoenix_os
 from phoenix_os.integrated_agent import (
     INTEGRATED_AGENT_HEALTH_READ_PERMISSION,
     INTEGRATED_AGENT_INSPECTION_READ_PERMISSION,
+    DogfoodTaskClass,
     IntegratedAgentObservation,
     IntegratedAgentRuntime,
+    IntegratedDogfoodProfileCatalog,
     IntegratedTaskId,
     IntegratedTaskRequest,
+    integrated_desktop_dogfood_profile,
+    integrated_development_dogfood_profile,
+    integrated_research_dogfood_profile,
 )
 
 assert distribution_version("phoenix-os") == {version!r}
@@ -722,6 +742,11 @@ task = IntegratedTaskRequest(
 )
 assert str(task.task_id)
 assert IntegratedAgentRuntime is not None
+assert DogfoodTaskClass.DESKTOP_INTEGRATED.value == "desktop/integrated"
+assert IntegratedDogfoodProfileCatalog is not None
+assert callable(integrated_development_dogfood_profile)
+assert callable(integrated_research_dogfood_profile)
+assert callable(integrated_desktop_dogfood_profile)
 field_names = tuple(field.name for field in fields(IntegratedAgentObservation))
 assert "metadata" not in field_names
 assert "content" not in field_names

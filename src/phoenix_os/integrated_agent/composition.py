@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import InitVar, dataclass, field
 
 from phoenix_os.agent.configuration import AgentServiceConfiguration
-from phoenix_os.agent.contracts import ToolId
+from phoenix_os.agent.contracts import AgentId, AgentLimits, ToolId
 from phoenix_os.agent.errors import AgentError
 from phoenix_os.agent.memory_agent_tools import (
     MemoryAgentToolBinding,
@@ -14,6 +14,7 @@ from phoenix_os.agent.memory_agent_tools import (
     memory_tool_descriptor,
     memory_tool_resolver,
 )
+from phoenix_os.agent.memory_authorization import MEMORY_READ_ACTION, MEMORY_SEARCH_ACTION
 from phoenix_os.agent.memory_retrieval import AgentMemoryService
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.tools import ToolAdapter, ToolDescriptor, ToolResourceResolver
@@ -23,6 +24,7 @@ from phoenix_os.agent.workspace_agent_tools import (
     workspace_tool_descriptor,
     workspace_tool_resolver,
 )
+from phoenix_os.agent.workspace_authorization import WORKSPACE_LIST_ACTION, WORKSPACE_READ_ACTION
 from phoenix_os.agent.workspace_service import AgentWorkspaceService
 from phoenix_os.authority.catalog import NETWORK_HTTP_REQUEST_ACTION
 from phoenix_os.browser_automation.agent_tools import (
@@ -30,6 +32,12 @@ from phoenix_os.browser_automation.agent_tools import (
     BrowserToolBinding,
     browser_tool_descriptor,
     browser_tool_resolver,
+)
+from phoenix_os.browser_automation.authorization import (
+    BROWSER_PAGE_NAVIGATE_ACTION,
+    BROWSER_PAGE_READ_ACTION,
+    BROWSER_SESSION_CLOSE_ACTION,
+    BROWSER_SESSION_OPEN_ACTION,
 )
 from phoenix_os.browser_automation.profiles import BrowserProfile
 from phoenix_os.browser_automation.service import BrowserAutomationService
@@ -74,11 +82,22 @@ from phoenix_os.host_automation.contracts import (
     HostId,
 )
 from phoenix_os.host_automation.service import HostAutomationService
+from phoenix_os.integrated_agent.contracts import (
+    IntegratedBudgetExtension,
+    IntegratedDataFlowPolicy,
+    IntegratedExecutionProfileGeneration,
+    IntegratedExecutionProfileId,
+)
+from phoenix_os.integrated_agent.dogfood_profiles import (
+    DogfoodTaskClass,
+    IntegratedDogfoodProfile,
+)
 from phoenix_os.integrated_agent.errors import IntegratedAgentConfigurationError
 from phoenix_os.integrated_agent.planning import IntegratedPlanner
 from phoenix_os.integrated_agent.profiles import (
     INTEGRATED_PLAN_UPDATE_TOOL_ID,
     INTEGRATED_PLAN_UPDATE_TRANSFORM_ID,
+    IntegratedCapabilityProfileBinding,
     IntegratedDownstreamBoundary,
     IntegratedDownstreamBridgeBinding,
     IntegratedExecutionProfile,
@@ -91,7 +110,10 @@ from phoenix_os.network_egress.agent_tools import (
     network_http_tool_descriptor,
     network_http_tool_resolver,
 )
-from phoenix_os.network_egress.profiles import NetworkEgressProfile
+from phoenix_os.network_egress.profiles import (
+    NetworkEgressProfile,
+    NetworkOperationEffect,
+)
 from phoenix_os.network_egress.service import NetworkEgressService
 
 _INTEGRATED_TOOL_REGISTRATION_ISSUER = object()
@@ -662,4 +684,316 @@ def _require_downstream_bridge(
         or binding.tool_id != tool_id
         or binding.action_family != action_family
     ):
+        raise IntegratedAgentConfigurationError()
+
+
+def integrated_development_dogfood_profile(
+    *,
+    profile_id: IntegratedExecutionProfileId,
+    generation: IntegratedExecutionProfileGeneration,
+    agent_id: AgentId,
+    data_flow_policy: IntegratedDataFlowPolicy,
+    workspace_list_binding: WorkspaceAgentToolBinding,
+    workspace_read_binding: WorkspaceAgentToolBinding,
+    limits: AgentLimits | None = None,
+    budget_extension: IntegratedBudgetExtension | None = None,
+    durability_profile: str | None = None,
+) -> IntegratedDogfoodProfile:
+    """Compose the minimal development deployment profile from exact workspace authority."""
+
+    _require_workspace_dogfood_binding(
+        workspace_list_binding,
+        agent_id=agent_id,
+        action=WORKSPACE_LIST_ACTION,
+    )
+    _require_workspace_dogfood_binding(
+        workspace_read_binding,
+        agent_id=agent_id,
+        action=WORKSPACE_READ_ACTION,
+    )
+    if workspace_list_binding.binding_id != workspace_read_binding.binding_id:
+        raise IntegratedAgentConfigurationError()
+
+    workspace = IntegratedCapabilityProfileBinding(
+        boundary=IntegratedDownstreamBoundary.WORKSPACE,
+        binding_id=workspace_list_binding.binding_id,
+    )
+    execution = IntegratedExecutionProfile(
+        profile_id=profile_id,
+        generation=generation,
+        agent_id=agent_id,
+        tool_bindings=(
+            _dogfood_plan_binding(),
+            _dogfood_bridge(
+                workspace_list_binding.tool_id,
+                workspace,
+                WORKSPACE_LIST_ACTION,
+            ),
+            _dogfood_bridge(
+                workspace_read_binding.tool_id,
+                workspace,
+                WORKSPACE_READ_ACTION,
+            ),
+        ),
+        data_flow_policy=data_flow_policy,
+        limits=AgentLimits() if limits is None else limits,
+        budget_extension=(
+            IntegratedBudgetExtension() if budget_extension is None else budget_extension
+        ),
+        workspace_binding=workspace,
+        durability_profile=durability_profile,
+    )
+    return IntegratedDogfoodProfile(DogfoodTaskClass.DEVELOPMENT, execution)
+
+
+def integrated_research_dogfood_profile(
+    *,
+    profile_id: IntegratedExecutionProfileId,
+    generation: IntegratedExecutionProfileGeneration,
+    agent_id: AgentId,
+    data_flow_policy: IntegratedDataFlowPolicy,
+    memory_search_binding: MemoryAgentToolBinding,
+    memory_read_binding: MemoryAgentToolBinding,
+    workspace_list_binding: WorkspaceAgentToolBinding,
+    workspace_read_binding: WorkspaceAgentToolBinding,
+    network_http_binding: NetworkEgressToolBinding,
+    browser_profile: BrowserProfile,
+    browser_open_binding: BrowserToolBinding,
+    browser_navigate_binding: BrowserToolBinding,
+    browser_read_binding: BrowserToolBinding,
+    browser_close_binding: BrowserToolBinding,
+    limits: AgentLimits | None = None,
+    budget_extension: IntegratedBudgetExtension | None = None,
+    durability_profile: str | None = None,
+) -> IntegratedDogfoodProfile:
+    """Compose the minimal research profile from reviewed existing Phoenix authorities."""
+
+    _require_memory_dogfood_binding(
+        memory_search_binding,
+        agent_id=agent_id,
+        action=MEMORY_SEARCH_ACTION,
+    )
+    _require_memory_dogfood_binding(
+        memory_read_binding,
+        agent_id=agent_id,
+        action=MEMORY_READ_ACTION,
+    )
+    if memory_search_binding.binding_id != memory_read_binding.binding_id:
+        raise IntegratedAgentConfigurationError()
+
+    _require_workspace_dogfood_binding(
+        workspace_list_binding,
+        agent_id=agent_id,
+        action=WORKSPACE_LIST_ACTION,
+    )
+    _require_workspace_dogfood_binding(
+        workspace_read_binding,
+        agent_id=agent_id,
+        action=WORKSPACE_READ_ACTION,
+    )
+    if workspace_list_binding.binding_id != workspace_read_binding.binding_id:
+        raise IntegratedAgentConfigurationError()
+
+    if not isinstance(network_http_binding, NetworkEgressToolBinding):
+        raise TypeError("network_http_binding must be NetworkEgressToolBinding")
+    if network_http_binding.agent_id != agent_id:
+        raise IntegratedAgentConfigurationError()
+    network_operation = network_http_binding.profile.require_operation(
+        network_http_binding.operation_id
+    )
+    if network_operation.effect is not NetworkOperationEffect.READ_ONLY:
+        raise IntegratedAgentConfigurationError()
+
+    if not isinstance(browser_profile, BrowserProfile):
+        raise TypeError("browser_profile must be BrowserProfile")
+    for binding, action in (
+        (browser_open_binding, BROWSER_SESSION_OPEN_ACTION),
+        (browser_navigate_binding, BROWSER_PAGE_NAVIGATE_ACTION),
+        (browser_read_binding, BROWSER_PAGE_READ_ACTION),
+        (browser_close_binding, BROWSER_SESSION_CLOSE_ACTION),
+    ):
+        _require_browser_dogfood_binding(
+            binding,
+            agent_id=agent_id,
+            profile=browser_profile,
+            action=action,
+        )
+
+    memory = IntegratedCapabilityProfileBinding(
+        boundary=IntegratedDownstreamBoundary.MEMORY,
+        binding_id=memory_search_binding.binding_id,
+    )
+    workspace = IntegratedCapabilityProfileBinding(
+        boundary=IntegratedDownstreamBoundary.WORKSPACE,
+        binding_id=workspace_list_binding.binding_id,
+    )
+    network = IntegratedCapabilityProfileBinding(
+        boundary=IntegratedDownstreamBoundary.NETWORK,
+        binding_id=integrated_network_profile_binding_id(network_http_binding.profile),
+        generation=network_http_binding.profile.generation,
+    )
+    browser = IntegratedCapabilityProfileBinding(
+        boundary=IntegratedDownstreamBoundary.BROWSER,
+        binding_id=integrated_browser_profile_binding_id(browser_profile),
+        generation=browser_profile.generation,
+    )
+
+    execution = IntegratedExecutionProfile(
+        profile_id=profile_id,
+        generation=generation,
+        agent_id=agent_id,
+        tool_bindings=(
+            _dogfood_plan_binding(),
+            _dogfood_bridge(memory_search_binding.tool_id, memory, MEMORY_SEARCH_ACTION),
+            _dogfood_bridge(memory_read_binding.tool_id, memory, MEMORY_READ_ACTION),
+            _dogfood_bridge(workspace_list_binding.tool_id, workspace, WORKSPACE_LIST_ACTION),
+            _dogfood_bridge(workspace_read_binding.tool_id, workspace, WORKSPACE_READ_ACTION),
+            _dogfood_bridge(
+                network_http_binding.tool_id,
+                network,
+                NETWORK_HTTP_REQUEST_ACTION,
+            ),
+            _dogfood_bridge(
+                browser_open_binding.tool_id,
+                browser,
+                BROWSER_SESSION_OPEN_ACTION,
+            ),
+            _dogfood_bridge(
+                browser_navigate_binding.tool_id,
+                browser,
+                BROWSER_PAGE_NAVIGATE_ACTION,
+            ),
+            _dogfood_bridge(
+                browser_read_binding.tool_id,
+                browser,
+                BROWSER_PAGE_READ_ACTION,
+            ),
+            _dogfood_bridge(
+                browser_close_binding.tool_id,
+                browser,
+                BROWSER_SESSION_CLOSE_ACTION,
+            ),
+        ),
+        data_flow_policy=data_flow_policy,
+        limits=AgentLimits() if limits is None else limits,
+        budget_extension=(
+            IntegratedBudgetExtension() if budget_extension is None else budget_extension
+        ),
+        memory_binding=memory,
+        workspace_binding=workspace,
+        network_profile_binding=network,
+        browser_profile_binding=browser,
+        durability_profile=durability_profile,
+    )
+    return IntegratedDogfoodProfile(DogfoodTaskClass.RESEARCH, execution)
+
+
+def integrated_desktop_dogfood_profile(
+    *,
+    profile_id: IntegratedExecutionProfileId,
+    generation: IntegratedExecutionProfileGeneration,
+    agent_id: AgentId,
+    data_flow_policy: IntegratedDataFlowPolicy,
+    host_id: HostId,
+    limits: AgentLimits | None = None,
+    budget_extension: IntegratedBudgetExtension | None = None,
+    durability_profile: str | None = None,
+) -> IntegratedDogfoodProfile:
+    """Compose the minimal desktop/integrated profile with observation-only host tools."""
+
+    host = IntegratedCapabilityProfileBinding(
+        boundary=IntegratedDownstreamBoundary.HOST,
+        binding_id=integrated_host_binding_id(host_id),
+    )
+    execution = IntegratedExecutionProfile(
+        profile_id=profile_id,
+        generation=generation,
+        agent_id=agent_id,
+        tool_bindings=(
+            _dogfood_plan_binding(),
+            _dogfood_bridge(ToolId(HOST_PROCESS_LIST_ACTION), host, HOST_PROCESS_LIST_ACTION),
+            _dogfood_bridge(ToolId(HOST_WINDOW_LIST_ACTION), host, HOST_WINDOW_LIST_ACTION),
+        ),
+        data_flow_policy=data_flow_policy,
+        limits=AgentLimits() if limits is None else limits,
+        budget_extension=(
+            IntegratedBudgetExtension() if budget_extension is None else budget_extension
+        ),
+        host_profile_binding=host,
+        durability_profile=durability_profile,
+    )
+    return IntegratedDogfoodProfile(DogfoodTaskClass.DESKTOP_INTEGRATED, execution)
+
+
+def _dogfood_plan_binding() -> IntegratedLocalTransformBinding:
+    return IntegratedLocalTransformBinding(
+        tool_id=INTEGRATED_PLAN_UPDATE_TOOL_ID,
+        transform_id=INTEGRATED_PLAN_UPDATE_TRANSFORM_ID,
+        advisory_state_keys=("plan",),
+    )
+
+
+def _dogfood_bridge(
+    tool_id: ToolId,
+    capability: IntegratedCapabilityProfileBinding,
+    action_family: str,
+) -> IntegratedDownstreamBridgeBinding:
+    return IntegratedDownstreamBridgeBinding(
+        tool_id=tool_id,
+        boundary=capability.boundary,
+        binding_id=capability.binding_id,
+        generation=capability.generation,
+        action_family=action_family,
+    )
+
+
+def _require_memory_dogfood_binding(
+    binding: MemoryAgentToolBinding,
+    *,
+    agent_id: AgentId,
+    action: str,
+) -> None:
+    if not isinstance(binding, MemoryAgentToolBinding):
+        raise TypeError("memory dogfood binding must be MemoryAgentToolBinding")
+    if binding.agent_id != agent_id or binding.action != action:
+        raise IntegratedAgentConfigurationError()
+
+
+def _require_workspace_dogfood_binding(
+    binding: WorkspaceAgentToolBinding,
+    *,
+    agent_id: AgentId,
+    action: str,
+) -> None:
+    if not isinstance(binding, WorkspaceAgentToolBinding):
+        raise TypeError("workspace dogfood binding must be WorkspaceAgentToolBinding")
+    if binding.agent_id != agent_id or binding.action != action:
+        raise IntegratedAgentConfigurationError()
+
+
+def _require_browser_dogfood_binding(
+    binding: BrowserToolBinding,
+    *,
+    agent_id: AgentId,
+    profile: BrowserProfile,
+    action: str,
+) -> None:
+    if not isinstance(binding, BrowserToolBinding):
+        raise TypeError("browser dogfood binding must be BrowserToolBinding")
+    if (
+        binding.agent_id != agent_id
+        or binding.browser_action != action
+        or binding.profile_id != profile.profile_id
+        or binding.profile_generation != profile.generation
+    ):
+        raise IntegratedAgentConfigurationError()
+    target = binding.navigation_target_id
+    if action == BROWSER_PAGE_NAVIGATE_ACTION:
+        if target is None:
+            raise IntegratedAgentConfigurationError()
+        try:
+            profile.require_target(target)
+        except KeyError as exception:
+            raise IntegratedAgentConfigurationError() from exception
+    elif target is not None:
         raise IntegratedAgentConfigurationError()
