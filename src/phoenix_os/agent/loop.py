@@ -66,7 +66,7 @@ from phoenix_os.agent.memory_retrieval import (
     memory_context_messages,
 )
 from phoenix_os.agent.model_turn import (
-    agent_message_to_inference_message,
+    agent_model_turn_inference_messages,
     validate_agent_run_model_turn_inference_binding,
 )
 from phoenix_os.agent.observer import (
@@ -139,9 +139,7 @@ class DefaultAgentInferenceRequestFactory:
         return InferenceRequest(
             provider_id=request.provider_id,
             model_id=request.model_id,
-            messages=tuple(
-                agent_message_to_inference_message(message) for message in turn.messages
-            ),
+            messages=agent_model_turn_inference_messages(turn),
             max_output_tokens=request.limits.max_output_tokens,
             metadata={
                 "agent_run_id": str(turn.run_id),
@@ -553,7 +551,11 @@ class AgentLoop:
                             context,
                             token,
                         )
-                    state.budget.record_model_usage(len(model_result.final_output.encode("utf-8")))
+                    state.budget.record_model_usage(
+                        len(model_result.final_output.encode("utf-8")),
+                        input_tokens=model_result.input_tokens,
+                        output_tokens=model_result.output_tokens,
+                    )
                     state.complete(now=self._now())
                     return self._result(
                         request,
@@ -563,7 +565,11 @@ class AgentLoop:
 
                 assert model_result.proposal is not None
                 proposal = model_result.proposal
-                state.budget.record_model_usage(len(canonical_tool_call_proposal_bytes(proposal)))
+                state.budget.record_model_usage(
+                    len(canonical_tool_call_proposal_bytes(proposal)),
+                    input_tokens=model_result.input_tokens,
+                    output_tokens=model_result.output_tokens,
+                )
                 state.start_proposal_validation(now=self._now())
                 try:
                     resolution = self._registry.admit_tool_call(

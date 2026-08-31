@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -26,6 +27,7 @@ from phoenix_os.agent import (
     BoundedAgentExecutor,
     DefaultAgentInferenceRequestFactory,
     InferenceBackedAgentModelTurnAdapter,
+    ToolCallId,
     ToolDescriptor,
     ToolEffect,
     ToolId,
@@ -223,10 +225,111 @@ def test_structured_model_turn_envelope_decodes_exact_final_or_one_tool() -> Non
         '{"version":1,"kind":"tool","tool":"unknown","arguments":{}}',
         '{"version":1,"kind":"tool","tool":"lookup","arguments":[]}',
         '{"version":2,"kind":"final","content":"wrong version"}',
+        '{"version":1,"kind":"tool","tool":["lookup","other"],"arguments":{}}',
+        '{"version":1,"kind":"tool","tool":"lookup","arguments":{},"tools":["lookup"]}',
     )
     for value in malformed:
         with pytest.raises(AgentMalformedProposalError):
             decode_agent_model_turn_envelope(value, turn)
+
+
+def test_inference_factory_prepends_bounded_phoenix_context_for_admitted_tools() -> None:
+    now = datetime.now(UTC)
+    run = _run_request(now)
+    descriptor = _descriptor()
+    turn = _turn(run, now, descriptor)
+
+    inference = DefaultAgentInferenceRequestFactory().create(run, turn)
+
+    assert inference.messages[0].role.value == "system"
+    assert inference.messages[0].metadata == {"phoenix_model_turn_protocol": "1"}
+    context = json.loads(inference.messages[0].content)
+    assert context["version"] == 1
+    assert context["kind"] == "phoenix.agent.model-turn-context"
+    assert context["tool_outcome_allowed"] is True
+    assert context["result_contract"]["final"] == {
+        "version": 1,
+        "kind": "final",
+        "content": "string",
+    }
+    assert context["result_contract"]["tool"] == {
+        "version": 1,
+        "kind": "tool",
+        "tool": "tool_id",
+        "arguments": {},
+    }
+    assert len(context["tools"]) == 1
+    tool = context["tools"][0]
+    assert set(tool) == {
+        "tool_id",
+        "name",
+        "description",
+        "input_schema",
+        "effect",
+        "approval_may_be_required",
+    }
+    assert tool["tool_id"] == "lookup"
+    assert tool["input_schema"]["type"] == "object"
+    assert tool["input_schema"]["required"] == ["key"]
+    assert tool["input_schema"]["additionalProperties"] is False
+    assert "resolver_id" not in tool
+    assert "adapter_id" not in tool
+    assert "output_schema" not in tool
+    assert "metadata" not in tool
+    assert inference.messages[1].content == "perform the task"
+
+
+def test_inference_factory_wraps_tool_results_as_untrusted_model_data() -> None:
+    now = datetime.now(UTC)
+    run = _run_request(now)
+    call_id = ToolCallId()
+    tool_message = AgentMessage(
+        AgentMessageRole.TOOL,
+        '{"key":"value"}',
+        tool_call_id=call_id,
+        metadata={"tool_id": "lookup"},
+    )
+    turn = AgentModelTurnRequest(
+        run_id=run.run_id,
+        step_id=AgentStepId(),
+        messages=(*run.messages, tool_message),
+        tools=(_descriptor(),),
+        created_at=now,
+        deadline=now + timedelta(seconds=30),
+    )
+
+    inference = DefaultAgentInferenceRequestFactory().create(run, turn)
+    translated = inference.messages[-1]
+
+    assert translated.role.value == "user"
+    assert translated.metadata["agent_role"] == "tool"
+    assert translated.metadata["trust"] == "untrusted_tool_output"
+    wrapped = json.loads(translated.content)
+    assert wrapped == {
+        "version": 1,
+        "kind": "phoenix.agent.tool-result",
+        "tool_call_id": str(call_id),
+        "tool_id": "lookup",
+        "trust": "untrusted_tool_output",
+        "content": '{"key":"value"}',
+    }
+
+
+def test_inference_factory_fails_closed_when_tool_context_exceeds_bound() -> None:
+    now = datetime.now(UTC)
+    run = _run_request(now)
+    tools = tuple(
+        replace(
+            _descriptor(),
+            tool_id=ToolId(f"lookup-{index}"),
+            description="x" * 2_048,
+        )
+        for index in range(20)
+    )
+    turn = _turn(run, now, *tools)
+
+    with pytest.raises(AgentLimitExceededError):
+        DefaultAgentInferenceRequestFactory().create(run, turn)
 
 
 def test_run_turn_inference_binding_rejects_model_or_message_redirection() -> None:

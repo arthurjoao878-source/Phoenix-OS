@@ -28,6 +28,8 @@ _SECURITY_TESTS = (
     "tests/test_agent_admission.py",
     "tests/test_agent_state.py",
     "tests/test_agent_execution.py",
+    "tests/test_agent_model_turn_bridge.py",
+    "tests/test_agent_real_model_turns.py",
     "tests/test_agent_loop.py",
     "tests/test_agent_configuration.py",
     "tests/test_agent_composition.py",
@@ -50,6 +52,7 @@ _REQUIRED_SDIST_DOCUMENTS = (
     "pyproject.toml",
     "docs/releases/v0.27.0.md",
     "docs/rfcs/RFC-0027-secure-agent-loop-and-tool-calling.md",
+    "docs/rfcs/RFC-0038-secure-real-model-provider-execution-and-integrated-agent-dogfood.md",
     "docs/migrations/v0.26.0-to-v0.27.0-agent.md",
     "docs/security/RFC-0027-agent-threat-model-review.md",
     "docs/adrs/README.md",
@@ -539,7 +542,7 @@ def main() -> int:
             label="sdist-wheel",
         )
 
-    print("RFC-0027 agent release gate passed.", flush=True)
+    print("RFC-0027/RFC-0038 agent release gate passed.", flush=True)
     return 0
 
 
