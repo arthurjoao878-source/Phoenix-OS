@@ -54,6 +54,7 @@ from phoenix_os.inference.codec import (
     encode_inference_response,
 )
 from phoenix_os.inference.composition import (
+    InferenceConfigurationBoundProvider,
     InferenceRuntimeStack,
     create_inference_runtime_stack,
 )
@@ -222,6 +223,7 @@ __all__ = [
     "InferenceCancelledError",
     "InferenceChunk",
     "InferenceCodecError",
+    "InferenceConfigurationBoundProvider",
     "InferenceCredentialBroker",
     "InferenceCredentialLease",
     "InferenceCredentialUnavailableError",

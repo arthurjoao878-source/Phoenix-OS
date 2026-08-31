@@ -617,6 +617,15 @@ The provider instance SHOULD be constructed from the same immutable reviewed mod
 descriptors used by inference composition so the adapter does not maintain an
 independent mutable model-name registry.
 
+Slice 2 decision: a real provider may implement the
+`InferenceConfigurationBoundProvider` composition contract. Runtime composition
+then requires the provider's exact `InferenceProviderConfiguration` and exact
+`ModelDescriptor` set to match the reviewed `InferenceServiceConfiguration`
+before registry construction. The Ollama provider uses this contract so its
+provider-native model binding cannot drift from the model identity reviewed by
+RFC-0026. Provider-specific digest evidence remains additional immutable
+deployment evidence rather than universal model identity.
+
 Unknown Phoenix model IDs fail closed.
 
 A provider response cannot replace the configured Phoenix model ID.
@@ -1308,31 +1317,31 @@ classified separately, but must not be converted into a passing Phoenix result.
 
 ### Slice 1 - Real-provider model-turn execution seam
 
-- [ ] Freeze the exact RFC-0027 turn to RFC-0026 inference binding
-- [ ] Ensure one real model turn executes through RFC-0026 rather than a parallel provider path
-- [ ] Bind exact provider/model/deadline/security context across the seam
-- [ ] Add a strict versioned structured model-turn envelope
-- [ ] Add deterministic inference-backed agent-turn adapter/executor tests
-- [ ] Preserve the deterministic `AgentModelTurnAdapter` test path
-- [ ] Prove no agent model-turn path gains endpoint or credential authority
-- [ ] Decide provider-integration packaging/dependency boundary
-- [ ] Keep package version at 0.37.0
+- [x] Freeze the exact RFC-0027 turn to RFC-0026 inference binding
+- [x] Ensure one real model turn executes through RFC-0026 rather than a parallel provider path
+- [x] Bind exact provider/model/deadline/security context across the seam
+- [x] Add a strict versioned structured model-turn envelope
+- [x] Add deterministic inference-backed agent-turn adapter/executor tests
+- [x] Preserve the deterministic `AgentModelTurnAdapter` test path
+- [x] Prove no agent model-turn path gains endpoint or credential authority
+- [x] Decide provider-integration packaging/dependency boundary
+- [x] Keep package version at 0.37.0
 
 ### Slice 2 - Ollama loopback provider
 
-- [ ] Add reviewed `OllamaModelProvider`
-- [ ] Add immutable trusted model binding configuration
-- [ ] Use explicit RFC-0026 loopback endpoint policy and port 11434
-- [ ] Add complete inference translation
-- [ ] Add bounded streaming translation
-- [ ] Add finish and usage normalization
-- [ ] Add provider/model availability diagnostics
-- [ ] Add optional reviewed model revision/digest validation
-- [ ] Reject model-management operations and dynamic model authority
-- [ ] Reject ambient proxy/redirect behavior
-- [ ] Reject unreviewed provider-native request options
-- [ ] Add deterministic fake-server protocol tests
-- [ ] Keep package version at 0.37.0
+- [x] Add reviewed `OllamaModelProvider`
+- [x] Add immutable trusted model binding configuration
+- [x] Use explicit RFC-0026 loopback endpoint policy and port 11434
+- [x] Add complete inference translation
+- [x] Add bounded streaming translation
+- [x] Add finish and usage normalization
+- [x] Add provider/model availability diagnostics
+- [x] Add optional reviewed model revision/digest validation
+- [x] Reject model-management operations and dynamic model authority
+- [x] Reject ambient proxy/redirect behavior
+- [x] Reject unreviewed provider-native request options
+- [x] Add deterministic fake-server protocol tests
+- [x] Keep package version at 0.37.0
 
 ### Slice 3 - Real agent turns and provider-native translation
 

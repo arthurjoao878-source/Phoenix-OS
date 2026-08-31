@@ -26,6 +26,7 @@ _SECURITY_TESTS = (
     "tests/test_inference_endpoints.py",
     "tests/test_inference_admission.py",
     "tests/test_inference_execution.py",
+    "tests/test_inference_ollama.py",
     "tests/test_inference_streaming.py",
     "tests/test_inference_configuration.py",
     "tests/test_inference_service.py",
@@ -47,6 +48,7 @@ _REQUIRED_SDIST_DOCUMENTS = (
     "pyproject.toml",
     "docs/releases/v0.26.0.md",
     "docs/rfcs/RFC-0026-secure-model-providers-and-inference-runtime.md",
+    "docs/rfcs/RFC-0038-secure-real-model-provider-execution-and-integrated-agent-dogfood.md",
     "docs/migrations/v0.25.0-to-v0.26.0-inference.md",
     "docs/adrs/README.md",
     "docs/adrs/ADR-0011-provider-neutral-contracts-and-reviewed-inference-registry.md",
@@ -320,6 +322,11 @@ from phoenix_os.inference import (
     ModelProviderId,
     inference_model_resource,
 )
+from phoenix_os.inference.ollama import (
+    OLLAMA_ENDPOINT_URL,
+    OLLAMA_PROVIDER_ID,
+    OllamaTransportLimits,
+)
 from phoenix_os.secrets import SecretRef
 
 
@@ -328,6 +335,11 @@ async def main() -> None:
     assert Path(phoenix_os.__file__).resolve().is_relative_to(
         Path(sys.prefix).resolve()
     )
+    assert OLLAMA_PROVIDER_ID == ModelProviderId("ollama-local")
+    assert OLLAMA_ENDPOINT_URL == "http://127.0.0.1:11434/"
+    ollama_limits = OllamaTransportLimits()
+    assert ollama_limits.max_request_bytes == 1_048_576
+    assert ollama_limits.max_response_bytes == 1_048_576
 
     provider_id = ModelProviderId("release-fake")
     model_id = ModelId("chat")
@@ -497,8 +509,8 @@ def main() -> int:
     project_name, version, requires_python = _project_metadata()
 
     print(
-        "Running RFC-0026 security, endpoint, limits, "
-        "streaming, cancellation, administration, and "
+        "Running RFC-0026/RFC-0038 inference security, endpoint, limits, "
+        "streaming, provider, cancellation, administration, and "
         "compatibility suites.",
         flush=True,
     )

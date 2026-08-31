@@ -10,6 +10,8 @@ from phoenix_os.inference import (
     InferenceAuthorizationRejectedError,
     InferenceCancelledError,
     InferenceChunk,
+    InferenceEndpointRejectedError,
+    InferenceEndpointRejectionCode,
     InferenceExecutionLimits,
     InferenceFinishReason,
     InferenceLimitExceededError,
@@ -170,6 +172,46 @@ class FailingProvider:
                 terminal=True,
                 finish_reason=InferenceFinishReason.ERROR,
                 usage=InferenceUsage(input_tokens=0, output_tokens=0),
+            )
+
+
+class SafeRejectingProvider:
+    def __init__(
+        self,
+        exception_factory: Callable[[], Exception],
+        *,
+        provider_id: str,
+    ) -> None:
+        self._exception_factory = exception_factory
+        self._provider_id = ModelProviderId(provider_id)
+        self.calls = 0
+
+    @property
+    def provider_id(self) -> ModelProviderId:
+        return self._provider_id
+
+    @property
+    def capabilities(self) -> ModelCapabilities:
+        return ModelCapabilities(complete=True, streaming=True)
+
+    async def infer(self, request: InferenceRequest) -> InferenceResponse:
+        del request
+        self.calls += 1
+        raise self._exception_factory()
+
+    async def stream(
+        self,
+        request: InferenceRequest,
+    ) -> AsyncIterator[InferenceChunk]:
+        del request
+        self.calls += 1
+        raise self._exception_factory()
+        if False:  # pragma: no cover
+            yield InferenceChunk(
+                request_id=uuid4(),
+                provider_id=self.provider_id,
+                model_id=ModelId("chat"),
+                index=0,
             )
 
 
@@ -392,6 +434,96 @@ async def test_provider_failure_is_generic_and_not_retried() -> None:
 
     assert "private" not in str(captured.value)
     assert "secret" not in str(captured.value)
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exception_factory", "expected_type", "provider_id"),
+    [
+        (InferenceCancelledError, InferenceCancelledError, "safe-cancelled"),
+        (
+            lambda: InferenceEndpointRejectedError(
+                InferenceEndpointRejectionCode.LOOPBACK_RESOLUTION_MISMATCH
+            ),
+            InferenceEndpointRejectedError,
+            "safe-endpoint",
+        ),
+        (InferenceLimitExceededError, InferenceLimitExceededError, "safe-limit"),
+        (InferenceMalformedOutputError, InferenceMalformedOutputError, "safe-malformed"),
+    ],
+)
+async def test_provider_safe_complete_failures_preserve_public_category(
+    exception_factory: Callable[[], Exception],
+    expected_type: type[Exception],
+    provider_id: str,
+) -> None:
+    provider = SafeRejectingProvider(exception_factory, provider_id=provider_id)
+    runtime = InferenceRuntime(_register(provider), AllowAuthorizer())
+
+    with pytest.raises(expected_type):
+        await runtime.infer(_request(provider_id), _context())
+
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exception_factory", "expected_type", "provider_id"),
+    [
+        (InferenceCancelledError, InferenceCancelledError, "stream-cancelled"),
+        (
+            lambda: InferenceEndpointRejectedError(
+                InferenceEndpointRejectionCode.LOOPBACK_RESOLUTION_MISMATCH
+            ),
+            InferenceEndpointRejectedError,
+            "stream-endpoint",
+        ),
+        (InferenceLimitExceededError, InferenceLimitExceededError, "stream-limit"),
+        (InferenceMalformedOutputError, InferenceMalformedOutputError, "stream-malformed"),
+    ],
+)
+async def test_provider_safe_stream_failures_preserve_public_category(
+    exception_factory: Callable[[], Exception],
+    expected_type: type[Exception],
+    provider_id: str,
+) -> None:
+    provider = SafeRejectingProvider(exception_factory, provider_id=provider_id)
+    runtime = InferenceRuntime(_register(provider), AllowAuthorizer())
+
+    with pytest.raises(expected_type):
+        async for _chunk in runtime.stream(_request(provider_id), _context()):
+            pass
+
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_cannot_impersonate_complete_authorization_rejection() -> None:
+    provider = SafeRejectingProvider(
+        InferenceAuthorizationRejectedError,
+        provider_id="provider-auth-complete",
+    )
+    runtime = InferenceRuntime(_register(provider), AllowAuthorizer())
+
+    with pytest.raises(ModelProviderExecutionError):
+        await runtime.infer(_request("provider-auth-complete"), _context())
+
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_cannot_impersonate_stream_authorization_rejection() -> None:
+    provider = SafeRejectingProvider(
+        InferenceAuthorizationRejectedError,
+        provider_id="provider-auth-stream",
+    )
+    runtime = InferenceRuntime(_register(provider), AllowAuthorizer())
+
+    with pytest.raises(ModelProviderExecutionError):
+        async for _chunk in runtime.stream(_request("provider-auth-stream"), _context()):
+            pass
+
     assert provider.calls == 1
 
 
