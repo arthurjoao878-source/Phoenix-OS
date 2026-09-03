@@ -84,7 +84,7 @@ _REQUIRED_SDIST_DOCUMENTS = (
 )
 _FORBIDDEN_ARCHIVE_COMPONENTS = frozenset({".env", ".git", "__pycache__"})
 _FORBIDDEN_ARCHIVE_SUFFIXES = frozenset({".key", ".p12", ".pem", ".pfx", ".pyc", ".pyo"})
-_SUPPORTED_RELEASE_VERSIONS = frozenset({"0.34.0", "0.35.0", "0.36.0", "0.37.0"})
+_SUPPORTED_RELEASE_VERSIONS = frozenset({"0.34.0", "0.35.0", "0.36.0", "0.37.0", "0.38.0"})
 
 
 def _run(

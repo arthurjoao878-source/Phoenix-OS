@@ -65,23 +65,23 @@ Environment readiness is not real task evidence.
 Do not check these boxes until a real configured local model has executed through
 Phoenix.
 
-- [ ] Multi-turn development task completed under the bounded development profile.
-- [ ] Multi-step research task exercised existing browser/network/workspace/memory
+- [x] Multi-turn development task completed under the bounded development profile.
+- [x] Multi-step research task exercised existing browser/network/workspace/memory
       boundaries.
-- [ ] Controlled desktop/integrated task exercised existing host boundaries.
-- [ ] At least one malformed or unauthorized tool proposal was rejected.
-- [ ] Provider/model unavailability produced controlled bounded failure.
-- [ ] Cancellation during real inference followed bounded cancellation semantics.
-- [ ] Restart around a model attempt produced controlled recovery evidence.
-- [ ] An indeterminate model attempt was not silently replayed.
-- [ ] Current provider/model/profile/tool/schema/policy state was revalidated before
+- [x] Controlled desktop/integrated task exercised existing host boundaries.
+- [x] At least one malformed or unauthorized tool proposal was rejected.
+- [x] Provider/model unavailability produced controlled bounded failure.
+- [x] Cancellation during real inference followed bounded cancellation semantics.
+- [x] Restart around a model attempt produced controlled recovery evidence.
+- [x] An indeterminate model attempt was not silently replayed.
+- [x] Current provider/model/profile/tool/schema/policy state was revalidated before
       fresh protected work.
-- [ ] Model revision drift failed closed when configured immutable evidence was
+- [x] Model revision drift failed closed when configured immutable evidence was
       available.
-- [ ] Existing deadline remained continuous across restart.
-- [ ] Existing budget remained continuous across restart.
-- [ ] Provider restoration after restart did not automatically resume protected work.
-- [ ] Content-free evidence was recorded for deliberate failure/restart scenarios.
+- [x] Existing deadline remained continuous across restart.
+- [x] Existing budget remained continuous across restart.
+- [x] Provider restoration after restart did not automatically resume protected work.
+- [x] Content-free evidence was recorded for deliberate failure/restart scenarios.
 
 ## Deliberate failure matrix
 

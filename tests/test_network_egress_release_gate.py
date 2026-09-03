@@ -119,18 +119,18 @@ def test_network_release_gate_artifact_names_are_exact_and_s8_compatible(tmp_pat
     release_artifact_names = namespace["_release_artifact_names"]
     exact_artifacts = namespace["_exact_artifacts"]
 
-    for version in ("0.34.0", "0.35.0", "0.36.0", "0.37.0"):
+    for version in ("0.34.0", "0.35.0", "0.36.0", "0.37.0", "0.38.0"):
         expected = (
             f"phoenix_os-{version}-py3-none-any.whl",
             f"phoenix_os-{version}.tar.gz",
         )
         assert release_artifact_names(version) == expected
 
-    for unsupported in ("0.37.0.dev1", "0.37.1", "0.38.0", "1.0.0"):
+    for unsupported in ("0.37.0.dev1", "0.37.1", "0.38.0.dev1", "0.38.1", "0.39.0", "1.0.0"):
         with pytest.raises(RuntimeError, match="unsupported network-egress release version"):
             release_artifact_names(unsupported)
 
-    expected = release_artifact_names("0.37.0")
+    expected = release_artifact_names("0.38.0")
     for name in expected:
         (tmp_path / name).write_bytes(b"release-test")
 
@@ -145,7 +145,10 @@ def test_network_release_gate_artifact_names_are_exact_and_s8_compatible(tmp_pat
 def test_network_release_gate_main_uses_exact_artifact_names_without_wildcards() -> None:
     text = _GATE.read_text(encoding="utf-8")
     for phrase in (
-        '_SUPPORTED_RELEASE_VERSIONS = frozenset({"0.34.0", "0.35.0", "0.36.0", "0.37.0"})',
+        (
+            '_SUPPORTED_RELEASE_VERSIONS = frozenset({"0.34.0", "0.35.0", '
+            '"0.36.0", "0.37.0", "0.38.0"})'
+        ),
         'f"phoenix_os-{version}-py3-none-any.whl"',
         'f"phoenix_os-{version}.tar.gz"',
         "wheel_name, sdist_name = _release_artifact_names(version)",

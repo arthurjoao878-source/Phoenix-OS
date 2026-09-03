@@ -1,9 +1,9 @@
 # RFC-0038: Secure Real-Model Provider Execution and Integrated Agent Dogfood
 
-- Status: Draft
+- Status: Accepted
 - Target release: Phoenix OS v0.38.0
 - Owners: Phoenix OS maintainers
-- Architecture freeze: pending dogfood-planning review
+- Architecture freeze: 2026-09-03
 - Depends on: RFC-0004, RFC-0005, RFC-0006, RFC-0008, RFC-0009, RFC-0011,
   RFC-0012, RFC-0021, RFC-0026, RFC-0027, RFC-0028, RFC-0030, RFC-0031,
   RFC-0032, RFC-0033, RFC-0034, RFC-0035, RFC-0036, and RFC-0037
@@ -1425,17 +1425,17 @@ Slice 6 closed with targeted hardening only:
 
 ### Slice 7 - v0.38.0 release gate and finalization
 
-- [ ] Run the complete existing quality gate
-- [ ] Run RFC-0038 deterministic provider and model-turn gates
-- [ ] Run RFC-0037 adversarial reliability gate
-- [ ] Complete real development/research/desktop dogfood checklist
-- [ ] Review all dogfood-discovered security and reliability issues
-- [ ] Build wheel and sdist
-- [ ] Validate isolated offline installation
-- [ ] Verify no provider/model/API is required by package import or normal tests
-- [ ] Write release notes and migration/dogfood guidance
-- [ ] Change package version from 0.37.0 to 0.38.0 only here
-- [ ] Mark RFC-0038 Accepted only after all required evidence is green
+- [x] Run the complete existing quality gate
+- [x] Run RFC-0038 deterministic provider and model-turn gates
+- [x] Run RFC-0037 adversarial reliability gate
+- [x] Complete real development/research/desktop dogfood checklist
+- [x] Review all dogfood-discovered security and reliability issues
+- [x] Build wheel and sdist
+- [x] Validate isolated offline installation
+- [x] Verify no provider/model/API is required by package import or normal tests
+- [x] Write release notes and migration/dogfood guidance
+- [x] Change package version from 0.37.0 to 0.38.0 only here
+- [x] Mark RFC-0038 Accepted only after all required evidence is green
 - [ ] Tag and publish only after the normal release authorization/gates
 
 ## Acceptance criteria
@@ -1473,6 +1473,40 @@ true:
 26. The package version changes to 0.38.0 only in the final release slice.
 27. Any broader feature discovered during dogfood is deferred unless it is necessary
     to satisfy these acceptance criteria safely.
+
+## Acceptance
+
+RFC-0038 is accepted for Phoenix OS v0.38.0 after the complete existing quality gate,
+RFC-0038 deterministic provider/model-turn gates, RFC-0037 adversarial reliability,
+the complete real development/research/desktop dogfood checklist, review of discovered
+security/reliability issues, package build validation, isolated offline installation,
+provider/model/API-independent import and normal-test evidence, release/migration/dogfood
+guidance, and the dedicated version finalization all passed.
+
+The accepted implementation preserves the frozen claims:
+
+- real model execution crosses the existing RFC-0026 inference boundary and RFC-0027
+  agent authority path rather than creating a parallel provider or agent authority model;
+- a real model gains no authority that a deterministic model did not have;
+- the reviewed local provider is explicitly configured and loopback-constrained;
+- provider/model discovery, native output, caller options, and ambient environment state
+  cannot expand trusted Phoenix authority or resource limits;
+- there is no automatic local-to-cloud fallback;
+- there is no transparent retry after provider inference may have started;
+- durable recovery revalidates current provider/model/profile/tool/schema/policy evidence,
+  preserves original deadlines and consumed finite budgets, honors cancellation, and does
+  not silently replay indeterminate external attempts;
+- real-task dogfood remains narrow and content-free in durable evidence;
+- mandatory CI remains deterministic and network-free, with real/paid/provider canaries
+  outside mandatory CI.
+
+No hosted-provider canary is required for this acceptance because no concrete hosted
+provider/credential was selected. Any future hosted provider remains subject to RFC-0026
+and exact Phoenix secret-leasing/data-flow authority.
+
+Tagging and publication remain separate explicitly authorized operations. Item 12 stays
+open until the normal release authorization/gates, final-version artifacts/checksums,
+PR review/merge, and required green post-merge `main` CI permit publication.
 
 ## Post-v0.38 direction
 
