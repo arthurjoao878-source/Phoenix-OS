@@ -103,6 +103,7 @@ from phoenix_os.agent.durable_contracts import (
 )
 from phoenix_os.agent.durable_lease import InMemoryDurableLeaseManager
 from phoenix_os.agent.errors import AgentAuthorizationRejectedError, AgentServiceUnavailableError
+from phoenix_os.agent.loop import AgentModelTurnExecutionDriver
 from phoenix_os.agent.service import AgentService
 from phoenix_os.agent.state import AgentBudgetSnapshot, AgentCancellationToken
 from phoenix_os.agent.workspace_authorization import (
@@ -820,6 +821,7 @@ class _RecordingChildAgentService(AgentService):
         *,
         cancellation: AgentCancellationToken | None = None,
         _authority_binding: AgentRunAuthorityBinding | None = None,
+        _model_turn_execution_driver: AgentModelTurnExecutionDriver | None = None,
     ) -> AgentRunResult:
         self.run_requests.append(request)
         self.run_contexts.append(context)
@@ -828,6 +830,7 @@ class _RecordingChildAgentService(AgentService):
             context,
             cancellation=cancellation,
             _authority_binding=_authority_binding,
+            _model_turn_execution_driver=_model_turn_execution_driver,
         )
 
 

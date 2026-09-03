@@ -100,12 +100,29 @@ class OllamaModelBinding:
 
     descriptor: ModelDescriptor
     expected_digest: str | None = field(default=None, repr=False)
+    structured_json: bool = False
+    structured_json_schema: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.descriptor, ModelDescriptor):
             raise TypeError("descriptor must be ModelDescriptor")
         if self.descriptor.provider_id != OLLAMA_PROVIDER_ID:
             raise ValueError("Ollama model binding requires provider ollama-local")
+        if not isinstance(self.structured_json, bool):
+            raise TypeError("structured_json must be a boolean")
+        schema = self.structured_json_schema
+        if schema is not None:
+            if not isinstance(schema, str):
+                raise TypeError("structured_json_schema must be a string or None")
+            if self.structured_json:
+                raise ValueError(
+                    "structured_json and structured_json_schema are mutually exclusive"
+                )
+            object.__setattr__(
+                self,
+                "structured_json_schema",
+                _canonicalize_structured_json_schema(schema),
+            )
         digest = self.expected_digest
         if digest is not None:
             if not isinstance(digest, str):
@@ -639,7 +656,7 @@ class OllamaModelProvider:
             if status is not OllamaModelAvailability.AVAILABLE:
                 raise ModelProviderExecutionError()
 
-        document = {
+        document: dict[str, object] = {
             "model": binding.descriptor.provider_model_name,
             "messages": [
                 {
@@ -652,6 +669,9 @@ class OllamaModelProvider:
             "stream": False,
             "think": False,
         }
+        response_format = _binding_response_format(binding)
+        if response_format is not None:
+            document["format"] = response_format
         encoded = _encode_json(document, maximum_bytes=MAX_OLLAMA_REQUEST_BYTES)
         body = await self._transport.request("POST", OLLAMA_CHAT_TARGET, encoded)
         decoded = _decode_json(body)
@@ -667,7 +687,7 @@ class OllamaModelProvider:
             if status is not OllamaModelAvailability.AVAILABLE:
                 raise ModelProviderExecutionError()
 
-        document = {
+        document: dict[str, object] = {
             "model": binding.descriptor.provider_model_name,
             "messages": [
                 {
@@ -680,6 +700,9 @@ class OllamaModelProvider:
             "stream": True,
             "think": False,
         }
+        response_format = _binding_response_format(binding)
+        if response_format is not None:
+            document["format"] = response_format
         encoded = _encode_json(document, maximum_bytes=MAX_OLLAMA_REQUEST_BYTES)
 
         index = 0
@@ -946,6 +969,82 @@ async def _bounded_readline(reader: asyncio.StreamReader, limit: int) -> bytes:
     if not line or len(line) > limit or not line.endswith(b"\r\n"):
         raise InferenceMalformedOutputError()
     return line
+
+
+def _canonicalize_structured_json_schema(value: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError("structured_json_schema must be a string")
+    try:
+        raw = value.encode("utf-8")
+    except UnicodeEncodeError as exception:
+        raise ValueError("structured_json_schema must be valid UTF-8") from exception
+    if not raw or len(raw) > MAX_OLLAMA_REQUEST_BYTES:
+        raise ValueError("structured_json_schema is outside the reviewed bound")
+
+    try:
+        decoded: object = json.loads(
+            value,
+            object_pairs_hook=_strict_json_object,
+            parse_constant=_reject_json_constant,
+        )
+        _inspect_json(decoded, depth=0, count=[0])
+    except (
+        InferenceError,
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ) as exception:
+        raise ValueError("structured_json_schema is invalid") from exception
+
+    if not isinstance(decoded, Mapping):
+        raise ValueError("structured_json_schema must be a JSON object")
+
+    try:
+        encoded = json.dumps(
+            decoded,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+        UnicodeEncodeError,
+        RecursionError,
+    ) as exception:
+        raise ValueError("structured_json_schema is invalid") from exception
+    if len(encoded) > MAX_OLLAMA_REQUEST_BYTES:
+        raise ValueError("structured_json_schema is outside the reviewed bound")
+    return encoded.decode("utf-8")
+
+
+def _binding_response_format(binding: OllamaModelBinding) -> object | None:
+    schema = binding.structured_json_schema
+    if schema is not None:
+        try:
+            return cast(
+                object,
+                json.loads(
+                    schema,
+                    object_pairs_hook=_strict_json_object,
+                    parse_constant=_reject_json_constant,
+                ),
+            )
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            RecursionError,
+        ) as exception:  # pragma: no cover - binding canonicalization invariant
+            raise ModelProviderExecutionError() from exception
+    if binding.structured_json:
+        return "json"
+    return None
 
 
 def _encode_json(value: object, *, maximum_bytes: int) -> bytes:

@@ -174,11 +174,13 @@ def _provider(
     *,
     descriptor: ModelDescriptor | None = None,
     expected_digest: str | None = None,
+    structured_json: bool = False,
     transport_limits: OllamaTransportLimits | None = None,
 ) -> OllamaModelProvider:
     binding = OllamaModelBinding(
         _descriptor() if descriptor is None else descriptor,
         expected_digest=expected_digest,
+        structured_json=structured_json,
     )
     return OllamaModelProvider(
         _configuration(),
@@ -455,6 +457,13 @@ def test_binding_is_immutable_provider_scoped_and_digest_bounded() -> None:
 
     assert binding.expected_digest == "a" * 64
     assert binding.descriptor.model_id == ModelId("qwen3-coder-30b")
+    assert binding.structured_json is False
+
+    structured = OllamaModelBinding(_descriptor(), structured_json=True)
+    assert structured.structured_json is True
+
+    with pytest.raises(TypeError, match="structured_json"):
+        OllamaModelBinding(_descriptor(), structured_json=cast(Any, 1))
 
     with pytest.raises(ValueError, match="64-character"):
         OllamaModelBinding(_descriptor(), expected_digest="not-a-digest")
@@ -574,6 +583,29 @@ async def test_complete_translation_uses_exact_native_model_and_bounded_options(
 
 
 @pytest.mark.asyncio
+async def test_complete_structured_json_mode_is_binding_owned_and_explicit() -> None:
+    response = _http_response(200, "OK", body=_json_body(_chat_document()))
+    connector = _FakeConnector((response,))
+    provider = _provider(connector, structured_json=True)
+    request = _request(max_output_tokens=17)
+
+    result = await provider.infer(request)
+
+    assert result.text == "hello from ollama"
+    assert _written_body(connector.connections[0]) == {
+        "model": "qwen3-coder:30b",
+        "messages": [
+            {"role": "system", "content": "answer using the contract"},
+            {"role": "user", "content": "hello"},
+        ],
+        "options": {"num_predict": 17},
+        "stream": False,
+        "think": False,
+        "format": "json",
+    }
+
+
+@pytest.mark.asyncio
 async def test_complete_maps_length_and_rejects_output_usage_above_request_limit() -> None:
     length_response = _http_response(
         200,
@@ -598,12 +630,21 @@ async def test_complete_maps_length_and_rejects_output_usage_above_request_limit
 
 
 @pytest.mark.asyncio
-async def test_unreviewed_request_parameters_fail_before_transport() -> None:
+@pytest.mark.parametrize(
+    "parameters",
+    (
+        {"temperature": 0.2},
+        {"format": "json"},
+    ),
+)
+async def test_unreviewed_request_parameters_fail_before_transport(
+    parameters: dict[str, object],
+) -> None:
     connector = _FakeConnector()
     provider = _provider(connector)
 
     with pytest.raises(ModelProviderExecutionError):
-        await provider.infer(_request(parameters={"temperature": 0.2}))
+        await provider.infer(_request(parameters=parameters))
 
     assert connector.calls == []
 
@@ -969,6 +1010,36 @@ async def test_streaming_translates_ordered_ndjson_and_terminal_usage() -> None:
         "think": False,
     }
     assert connector.connections[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_stream_structured_json_mode_is_binding_owned_and_explicit() -> None:
+    body = _ndjson(
+        _stream_document(
+            content="done",
+            done=True,
+            input_tokens=5,
+            output_tokens=1,
+        )
+    )
+    connector = _FakeConnector((_http_response(200, "OK", body=body),))
+    provider = _provider(connector, structured_json=True)
+
+    chunks = [chunk async for chunk in provider.stream(_request(max_output_tokens=8))]
+
+    assert len(chunks) == 1
+    assert chunks[0].terminal is True
+    assert _written_body(connector.connections[0]) == {
+        "model": "qwen3-coder:30b",
+        "messages": [
+            {"role": "system", "content": "answer using the contract"},
+            {"role": "user", "content": "hello"},
+        ],
+        "options": {"num_predict": 8},
+        "stream": True,
+        "think": False,
+        "format": "json",
+    }
 
 
 @pytest.mark.asyncio

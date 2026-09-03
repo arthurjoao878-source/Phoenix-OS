@@ -60,6 +60,7 @@ from phoenix_os.agent.fake import (
     AgentModelTurnAdapter,
     AgentModelTurnKind,
     AgentModelTurnRequest,
+    AgentModelTurnResult,
 )
 from phoenix_os.agent.memory_retrieval import (
     AgentMemoryContextProvider,
@@ -149,6 +150,25 @@ class DefaultAgentInferenceRequestFactory:
             created_at=turn.created_at,
             deadline=turn.deadline,
         )
+
+
+@runtime_checkable
+class AgentModelTurnExecutionDriver(Protocol):
+    """Execute one already-authorized model turn through a caller-owned path."""
+
+    async def execute(
+        self,
+        executor: BoundedAgentExecutor,
+        adapter: AgentModelTurnAdapter,
+        turn: AgentModelTurnRequest,
+        inference_request: InferenceRequest,
+        context: SecurityContext,
+        *,
+        timeout_seconds: float,
+        cancellation_grace: float,
+        cancellation: AgentCancellationToken,
+        prepare_time: datetime,
+    ) -> AgentModelTurnResult: ...
 
 
 @runtime_checkable
@@ -341,6 +361,7 @@ class AgentLoop:
         *,
         cancellation: AgentCancellationToken | None = None,
         _authority_binding: AgentRunAuthorityBinding | None = None,
+        _model_turn_execution_driver: AgentModelTurnExecutionDriver | None = None,
     ) -> AgentRunResult:
         """Execute one in-memory run to exactly one safe terminal result."""
 
@@ -356,6 +377,13 @@ class AgentLoop:
             AgentRunAuthorityBinding,
         ):
             raise TypeError("_authority_binding must be AgentRunAuthorityBinding")
+        if _model_turn_execution_driver is not None and not isinstance(
+            _model_turn_execution_driver,
+            AgentModelTurnExecutionDriver,
+        ):
+            raise TypeError(
+                "_model_turn_execution_driver must implement AgentModelTurnExecutionDriver"
+            )
         run_lease: AgentAdmissionLease | None = None
 
         state = AgentRunStateMachine(
@@ -506,15 +534,30 @@ class AgentLoop:
                             ),
                             context,
                         )
-                        model_result = await self._executor.complete_model_turn(
-                            self._model_adapter,
-                            turn,
-                            inference_request=inference_request,
-                            context=context,
-                            timeout_seconds=state.budget.model_timeout_seconds(now=self._now()),
-                            cancellation_grace=request.limits.cancellation_grace.total_seconds(),
-                            cancellation=token,
-                        )
+                        timeout_seconds = state.budget.model_timeout_seconds(now=self._now())
+                        cancellation_grace = request.limits.cancellation_grace.total_seconds()
+                        if _model_turn_execution_driver is None:
+                            model_result = await self._executor.complete_model_turn(
+                                self._model_adapter,
+                                turn,
+                                inference_request=inference_request,
+                                context=context,
+                                timeout_seconds=timeout_seconds,
+                                cancellation_grace=cancellation_grace,
+                                cancellation=token,
+                            )
+                        else:
+                            model_result = await _model_turn_execution_driver.execute(
+                                self._executor,
+                                self._model_adapter,
+                                turn,
+                                inference_request,
+                                context,
+                                timeout_seconds=timeout_seconds,
+                                cancellation_grace=cancellation_grace,
+                                cancellation=token,
+                                prepare_time=self._now(),
+                            )
                     except BaseException as exception:
                         await self._observe_exception(
                             AgentOperation.MODEL_TURN,

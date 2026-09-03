@@ -1384,17 +1384,17 @@ navigation targets. Desktop/integrated reuses host process/window observation on
 
 ### Slice 5 - Durable real-provider dogfood and failure matrix
 
-- [ ] Run representative real local-model tasks
-- [ ] Exercise provider/model disappearance
-- [ ] Exercise cancellation during real inference
-- [ ] Exercise restart around model attempts
-- [ ] Exercise current provider/model/profile/tool/schema/policy revalidation
-- [ ] Exercise model revision drift where provider evidence is available
-- [ ] Prove no replay of indeterminate external attempts
-- [ ] Prove deadline and budget continuity
-- [ ] Record content-free dogfood evidence
-- [ ] Keep automated CI network-free
-- [ ] Keep package version at 0.37.0
+- [x] Run representative real local-model tasks
+- [x] Exercise provider/model disappearance
+- [x] Exercise cancellation during real inference
+- [x] Exercise restart around model attempts
+- [x] Exercise current provider/model/profile/tool/schema/policy revalidation
+- [x] Exercise model revision drift where provider evidence is available
+- [x] Prove no replay of indeterminate external attempts
+- [x] Prove deadline and budget continuity
+- [x] Record content-free dogfood evidence
+- [x] Keep automated CI network-free
+- [x] Keep package version at 0.37.0
 
 ### Slice 6 - Dogfood hardening and optional cross-provider canary
 

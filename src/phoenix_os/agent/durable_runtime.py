@@ -11,6 +11,10 @@ from phoenix_os.agent.durable_administration import (
     DurableRunAdministration,
 )
 from phoenix_os.agent.durable_approval import DurableApprovalRevalidator
+from phoenix_os.agent.durable_attempts import (
+    DurableExecutionAttemptRecorder,
+    StoreBackedDurableExecutionAttemptRecorder,
+)
 from phoenix_os.agent.durable_authorization import (
     DurableReconciliationAuthorizer,
     DurableResumeAuthorizer,
@@ -19,10 +23,17 @@ from phoenix_os.agent.durable_cleanup_administration import DurableCleanupAdmini
 from phoenix_os.agent.durable_compatibility import DurableCompatibilityValidator
 from phoenix_os.agent.durable_contracts import (
     CheckpointProtector,
+    DurableLease,
     DurableRunStore,
     RetentionPolicy,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
+from phoenix_os.agent.durable_live_binding import (
+    StoreBackedDurableModelTurnBindingProvider,
+)
+from phoenix_os.agent.durable_live_model_turn import (
+    DurableAgentModelTurnExecutionDriver,
+)
 from phoenix_os.agent.durable_metadata import (
     DurableCheckpointHistoryValidator,
     DurableCheckpointMetadataProjector,
@@ -204,12 +215,39 @@ class DurableAgentRuntimeStack:
     recovery_lifecycle: DurableRecoveryLifecycle
     observer: DurableRunObserver
     administration: DurableRunAdministration
+    attempt_recorder: DurableExecutionAttemptRecorder | None = None
+    metadata_projector: DurableCheckpointMetadataProjector | None = None
     reconciliation_administration: DurableReconciliationAdministration | None = None
     cleanup_administration: DurableCleanupAdministration | None = None
     protector: CheckpointProtector | None = None
     retention_policy: RetentionPolicy | None = None
     retention_worker: DurableRetentionWorker | None = None
     retention_lifecycle: DurableRetentionLifecycle | None = None
+
+    def create_model_turn_execution_driver(
+        self,
+        *,
+        lease: DurableLease,
+    ) -> DurableAgentModelTurnExecutionDriver:
+        """Compose live durable model execution without taking lease ownership."""
+
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+
+        recorder = self.attempt_recorder
+        if recorder is None:
+            raise RuntimeError("durable attempt recorder is unavailable")
+
+        binding_provider = StoreBackedDurableModelTurnBindingProvider(
+            store=self.store,
+            lease_manager=self.lease_manager,
+            lease=lease,
+            metadata_projector=self.metadata_projector,
+        )
+        return DurableAgentModelTurnExecutionDriver(
+            binding_provider=binding_provider,
+            recorder=recorder,
+        )
 
     async def close(self) -> None:
         """Rollback composed durable resources in reverse lifecycle order."""
@@ -374,11 +412,17 @@ def create_durable_agent_runtime_stack(
     if lease_manager.closed:
         raise ValueError("durable lease manager must be open")
 
+    attempt_recorder = StoreBackedDurableExecutionAttemptRecorder(
+        store=store,
+        metadata_projector=metadata_projector,
+    )
+
     coordinator = StartupDurableRecoveryCoordinator(
         store=store,
         lease_manager=lease_manager,
         compatibility_validator=compatibility_validator,
         approval_revalidator=approval_revalidator,
+        attempt_recorder=attempt_recorder,
         metadata_projector=metadata_projector,
         history_validator=history_validator,
         resume_gate=resume_gate,
@@ -456,6 +500,8 @@ def create_durable_agent_runtime_stack(
         recovery_lifecycle=DurableRecoveryLifecycle(worker),
         observer=selected_observer,
         administration=administration,
+        attempt_recorder=attempt_recorder,
+        metadata_projector=metadata_projector,
         reconciliation_administration=reconciliation_administration,
         cleanup_administration=cleanup_administration,
         protector=protector,

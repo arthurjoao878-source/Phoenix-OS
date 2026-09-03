@@ -33,7 +33,7 @@ from phoenix_os.agent.errors import (
     AgentServiceUnavailableError,
 )
 from phoenix_os.agent.fake import AgentModelTurnAdapter
-from phoenix_os.agent.loop import AgentLoop
+from phoenix_os.agent.loop import AgentLoop, AgentModelTurnExecutionDriver
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.state import AgentCancellationToken
 from phoenix_os.agent.tools import ToolAdapter, ToolDescriptor
@@ -324,6 +324,7 @@ class AgentService:
         *,
         cancellation: AgentCancellationToken | None = None,
         _authority_binding: AgentRunAuthorityBinding | None = None,
+        _model_turn_execution_driver: AgentModelTurnExecutionDriver | None = None,
     ) -> AgentRunResult:
         if not isinstance(request, AgentRunRequest):
             raise TypeError("request must be AgentRunRequest")
@@ -337,6 +338,13 @@ class AgentService:
             AgentRunAuthorityBinding,
         ):
             raise TypeError("_authority_binding must be AgentRunAuthorityBinding")
+        if _model_turn_execution_driver is not None and not isinstance(
+            _model_turn_execution_driver,
+            AgentModelTurnExecutionDriver,
+        ):
+            raise TypeError(
+                "_model_turn_execution_driver must implement AgentModelTurnExecutionDriver"
+            )
 
         started_at, started_clock = await self._begin(request, context, token)
         try:
@@ -357,6 +365,7 @@ class AgentService:
                     context,
                     cancellation=token,
                     _authority_binding=_authority_binding,
+                    _model_turn_execution_driver=_model_turn_execution_driver,
                 )
         except asyncio.CancelledError:
             token.cancel()
