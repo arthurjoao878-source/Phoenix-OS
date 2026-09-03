@@ -554,3 +554,56 @@ async def test_provider_finish_categories_are_not_reported_as_success() -> None:
             _register(errored),
             AllowAuthorizer(),
         ).infer(_request("errored"), _context())
+
+
+def _register_secondary_no_fallback_provider(
+    registry: ModelProviderRegistry,
+    provider: ModelProvider,
+) -> None:
+    registry.register_provider(provider)
+    registry.register_model(
+        ModelDescriptor(
+            provider_id=provider.provider_id,
+            model_id=ModelId("chat"),
+            provider_model_name="chat",
+            capabilities=ModelCapabilities(complete=True, streaming=True),
+            limits=InferenceLimits(),
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_failure_never_falls_back_to_other_registered_provider() -> None:
+    local_provider = FailingProvider()
+    cloud_provider = FixedResponseProvider(
+        lambda request: _response(request),
+        provider_id="cloud-fallback-sentinel",
+    )
+    registry = _register(local_provider)
+    _register_secondary_no_fallback_provider(registry, cloud_provider)
+    runtime = InferenceRuntime(registry, AllowAuthorizer())
+
+    with pytest.raises(ModelProviderExecutionError):
+        await runtime.infer(_request("failing"), _context())
+
+    assert local_provider.calls == 1
+    assert cloud_provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_stream_failure_never_falls_back_to_other_registered_provider() -> None:
+    local_provider = FailingProvider()
+    cloud_provider = FixedResponseProvider(
+        lambda request: _response(request),
+        provider_id="cloud-stream-fallback-sentinel",
+    )
+    registry = _register(local_provider)
+    _register_secondary_no_fallback_provider(registry, cloud_provider)
+    runtime = InferenceRuntime(registry, AllowAuthorizer())
+
+    with pytest.raises(ModelProviderExecutionError):
+        async for _chunk in runtime.stream(_request("failing"), _context()):
+            pass
+
+    assert local_provider.calls == 1
+    assert cloud_provider.calls == 0

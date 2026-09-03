@@ -34,6 +34,7 @@ from phoenix_os.inference.ollama import (
     OLLAMA_PROVIDER_ID,
     OllamaModelAvailability,
     OllamaModelBinding,
+    OllamaModelDiagnosticCause,
     OllamaModelProvider,
     OllamaTransportLimits,
 )
@@ -852,6 +853,7 @@ async def test_model_diagnostic_ignores_unconfigured_discovery_entries() -> None
     diagnostic = await provider.diagnose_model(ModelId("qwen3-coder-30b"))
 
     assert diagnostic.status is OllamaModelAvailability.AVAILABLE
+    assert diagnostic.cause is OllamaModelDiagnosticCause.NONE
     assert len(connector.calls) == 1
     written = bytes(connector.connections[0].written)
     assert written.startswith(b"GET /api/tags HTTP/1.1\r\n")
@@ -885,6 +887,11 @@ async def test_model_diagnostic_reports_missing_or_revision_mismatch(
     diagnostic = await provider.diagnose_model(ModelId("qwen3-coder-30b"))
 
     assert diagnostic.status is status
+    expected_cause = {
+        OllamaModelAvailability.UNAVAILABLE: OllamaModelDiagnosticCause.MODEL_UNAVAILABLE,
+        OllamaModelAvailability.REVISION_MISMATCH: (OllamaModelDiagnosticCause.REVISION_MISMATCH),
+    }[status]
+    assert diagnostic.cause is expected_cause
 
 
 @pytest.mark.asyncio
@@ -895,7 +902,28 @@ async def test_provider_unreachable_is_content_free_diagnostic() -> None:
     diagnostic = await provider.diagnose_model(ModelId("qwen3-coder-30b"))
 
     assert diagnostic.status is OllamaModelAvailability.PROVIDER_UNREACHABLE
+    assert diagnostic.cause is OllamaModelDiagnosticCause.PROVIDER_UNREACHABLE
     assert "private" not in repr(diagnostic)
+
+
+@pytest.mark.asyncio
+async def test_provider_timeout_is_distinct_content_free_diagnostic_cause() -> None:
+    connector = _FakeConnector(hang=True)
+    provider = _provider(
+        connector,
+        transport_limits=OllamaTransportLimits(
+            connect_timeout_seconds=0.05,
+            read_timeout_seconds=0.01,
+            total_timeout_seconds=0.1,
+        ),
+    )
+
+    diagnostic = await provider.diagnose_model(ModelId("qwen3-coder-30b"))
+
+    assert diagnostic.status is OllamaModelAvailability.PROVIDER_UNREACHABLE
+    assert diagnostic.cause is OllamaModelDiagnosticCause.PROVIDER_TIMEOUT
+    assert len(connector.calls) == 1
+    assert connector.connections[0].closed is True
 
 
 @pytest.mark.asyncio

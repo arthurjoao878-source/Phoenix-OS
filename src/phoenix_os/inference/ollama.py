@@ -140,6 +140,14 @@ class OllamaModelAvailability(StrEnum):
     PROVIDER_UNREACHABLE = "provider_unreachable"
 
 
+class OllamaModelDiagnosticCause(StrEnum):
+    NONE = "none"
+    MODEL_UNAVAILABLE = "model_unavailable"
+    REVISION_MISMATCH = "revision_mismatch"
+    PROVIDER_UNREACHABLE = "provider_unreachable"
+    PROVIDER_TIMEOUT = "provider_timeout"
+
+
 @dataclass(frozen=True, slots=True)
 class OllamaModelDiagnostic:
     """Content-free availability result for one already-configured Phoenix model."""
@@ -147,13 +155,52 @@ class OllamaModelDiagnostic:
     provider_id: ModelProviderId
     model_id: ModelId
     status: OllamaModelAvailability
+    cause: OllamaModelDiagnosticCause | None = None
 
     def __post_init__(self) -> None:
         if self.provider_id != OLLAMA_PROVIDER_ID:
             raise ValueError("Ollama diagnostic requires provider ollama-local")
         if not isinstance(self.model_id, ModelId):
             raise TypeError("model_id must be ModelId")
-        object.__setattr__(self, "status", OllamaModelAvailability(self.status))
+
+        status = OllamaModelAvailability(self.status)
+        object.__setattr__(self, "status", status)
+
+        cause = self.cause
+        if cause is None:
+            cause = {
+                OllamaModelAvailability.AVAILABLE: OllamaModelDiagnosticCause.NONE,
+                OllamaModelAvailability.UNAVAILABLE: (OllamaModelDiagnosticCause.MODEL_UNAVAILABLE),
+                OllamaModelAvailability.REVISION_MISMATCH: (
+                    OllamaModelDiagnosticCause.REVISION_MISMATCH
+                ),
+                OllamaModelAvailability.PROVIDER_UNREACHABLE: (
+                    OllamaModelDiagnosticCause.PROVIDER_UNREACHABLE
+                ),
+            }[status]
+        else:
+            if not isinstance(cause, (str, OllamaModelDiagnosticCause)):
+                raise TypeError("cause must be OllamaModelDiagnosticCause, string, or None")
+            cause = OllamaModelDiagnosticCause(cause)
+
+        allowed_causes = {
+            OllamaModelAvailability.AVAILABLE: frozenset({OllamaModelDiagnosticCause.NONE}),
+            OllamaModelAvailability.UNAVAILABLE: frozenset(
+                {OllamaModelDiagnosticCause.MODEL_UNAVAILABLE}
+            ),
+            OllamaModelAvailability.REVISION_MISMATCH: frozenset(
+                {OllamaModelDiagnosticCause.REVISION_MISMATCH}
+            ),
+            OllamaModelAvailability.PROVIDER_UNREACHABLE: frozenset(
+                {
+                    OllamaModelDiagnosticCause.PROVIDER_UNREACHABLE,
+                    OllamaModelDiagnosticCause.PROVIDER_TIMEOUT,
+                }
+            ),
+        }
+        if cause not in allowed_causes[status]:
+            raise ValueError("diagnostic cause is incompatible with diagnostic status")
+        object.__setattr__(self, "cause", cause)
 
 
 class _OllamaConnection(Protocol):
@@ -738,14 +785,20 @@ class OllamaModelProvider:
         binding = self._bindings.get(model_id)
         if binding is None:
             raise ModelProviderExecutionError()
+        cause: OllamaModelDiagnosticCause | None = None
         try:
             status = await self._diagnose_binding(binding)
-        except (ModelProviderExecutionError, InferenceTimeoutError):
+        except InferenceTimeoutError:
             status = OllamaModelAvailability.PROVIDER_UNREACHABLE
+            cause = OllamaModelDiagnosticCause.PROVIDER_TIMEOUT
+        except ModelProviderExecutionError:
+            status = OllamaModelAvailability.PROVIDER_UNREACHABLE
+            cause = OllamaModelDiagnosticCause.PROVIDER_UNREACHABLE
         return OllamaModelDiagnostic(
             provider_id=self.provider_id,
             model_id=model_id,
             status=status,
+            cause=cause,
         )
 
     def _binding_for_request(self, request: InferenceRequest) -> OllamaModelBinding:
