@@ -614,6 +614,10 @@ def _parser() -> argparse.ArgumentParser:
     explain_parser.add_argument("target_ref")
     explain_parser.add_argument("action")
     explain_parser.add_argument("resource_ref", nargs="?")
+
+    from phoenix_os.control_plane.operator_cli import add_operator_commands
+
+    add_operator_commands(commands)
     return parser
 
 
@@ -625,6 +629,12 @@ def main(
 ) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
+
+    if arguments.command != "authority":
+        from phoenix_os.control_plane.operator_cli import run_operator_command
+
+        return run_operator_command(arguments)
+
     try:
         client = ControlPlaneAuthorityCliClient(arguments.server, sender=sender)
         token = token_reader("Operator token: ")
