@@ -6,6 +6,7 @@ import asyncio
 import math
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Protocol, runtime_checkable
 
 from phoenix_os.agent.contracts import (
     ToolInvocationRequest,
@@ -16,6 +17,7 @@ from phoenix_os.agent.contracts import (
 from phoenix_os.agent.errors import (
     AgentAuthorizationRejectedError,
     AgentCancelledError,
+    AgentError,
     AgentLimitExceededError,
     AgentMalformedProposalError,
     AgentServiceUnavailableError,
@@ -159,6 +161,13 @@ def validate_tool_invocation_result(
     )
 
 
+@runtime_checkable
+class ModelTurnSubmissionGate(Protocol):
+    """One trusted pre-submit gate invoked exactly before model adapter dispatch."""
+
+    async def before_submit(self) -> None: ...
+
+
 class BoundedAgentExecutor:
     """Execute exactly once with finite timeout, cancellation, and safe outcomes."""
 
@@ -174,6 +183,7 @@ class BoundedAgentExecutor:
         *,
         inference_request: InferenceRequest | None = None,
         context: SecurityContext | None = None,
+        submission_gate: ModelTurnSubmissionGate | None = None,
         timeout_seconds: float,
         cancellation_grace: float,
         cancellation: AgentCancellationToken,
@@ -191,6 +201,11 @@ class BoundedAgentExecutor:
             raise TypeError("inference_request must be InferenceRequest or None")
         if context is not None and not isinstance(context, SecurityContext):
             raise TypeError("context must be SecurityContext or None")
+        if submission_gate is not None and not isinstance(
+            submission_gate,
+            ModelTurnSubmissionGate,
+        ):
+            raise TypeError("submission_gate must implement ModelTurnSubmissionGate or None")
         if not isinstance(cancellation, AgentCancellationToken):
             raise TypeError("cancellation must be AgentCancellationToken")
         timeout = _require_positive_seconds(timeout_seconds, "timeout_seconds")
@@ -202,11 +217,26 @@ class BoundedAgentExecutor:
             raise AgentTimeoutError()
         effective_timeout = min(timeout, remaining)
 
+        if isinstance(adapter, InferenceContextualAgentModelTurnAdapter):
+            if inference_request is None or context is None:
+                raise AgentServiceUnavailableError()
+            validate_agent_model_turn_inference_binding(request, inference_request)
+
+        cancellation.raise_if_cancelled()
+        if submission_gate is not None:
+            try:
+                await submission_gate.before_submit()
+            except AgentError:
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exception:
+                raise AgentServiceUnavailableError() from exception
+
         try:
             if isinstance(adapter, InferenceContextualAgentModelTurnAdapter):
-                if inference_request is None or context is None:
-                    raise AgentServiceUnavailableError()
-                validate_agent_model_turn_inference_binding(request, inference_request)
+                assert inference_request is not None
+                assert context is not None
                 operation = adapter.complete_turn_with_inference(
                     request,
                     inference_request,
