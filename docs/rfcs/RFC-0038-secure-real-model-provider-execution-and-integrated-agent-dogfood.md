@@ -1436,7 +1436,7 @@ Slice 6 closed with targeted hardening only:
 - [x] Write release notes and migration/dogfood guidance
 - [x] Change package version from 0.37.0 to 0.38.0 only here
 - [x] Mark RFC-0038 Accepted only after all required evidence is green
-- [ ] Tag and publish only after the normal release authorization/gates
+- [x] Tag and publish only after the normal release authorization/gates
 
 ## Acceptance criteria
 
@@ -1504,9 +1504,10 @@ No hosted-provider canary is required for this acceptance because no concrete ho
 provider/credential was selected. Any future hosted provider remains subject to RFC-0026
 and exact Phoenix secret-leasing/data-flow authority.
 
-Tagging and publication remain separate explicitly authorized operations. Item 12 stays
-open until the normal release authorization/gates, final-version artifacts/checksums,
-PR review/merge, and required green post-merge `main` CI permit publication.
+Tagging and publication remain separate explicitly authorized operations. For v0.38.0,
+those operations completed on 2026-09-03 only after normal release authorization,
+final-version artifacts/checksums, PR #115 merge, required green post-merge `main` CI,
+annotated tag `v0.38.0`, and GitHub Release publication.
 
 ## Post-v0.38 direction
 
