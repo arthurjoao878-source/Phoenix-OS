@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.38.0] - 2026-09-03
+
+### Added
+- Accepted RFC-0038 secure real-model provider execution and integrated agent dogfood through the existing RFC-0026 inference and RFC-0027 agent boundaries, without a parallel provider authority model or second agent loop.
+- Added the reviewed local Ollama provider adapter with explicit immutable provider/model binding, loopback endpoint policy, bounded complete/streaming translation, content-free diagnostics, and optional reviewed model revision/digest validation.
+- Added the Phoenix-owned structured real model-turn path with exactly one final result or one tool proposal, fail-closed malformed/multiple/mixed result handling, and unchanged RFC-0027 tool authorization/approval/execution semantics.
+- Added narrow development, research, and desktop/integrated dogfood profiles that reuse existing Phoenix capabilities without unrestricted shell, filesystem, HTTP, Git lifecycle, provider-installation, model-management, tag, or release authority.
+- Added content-free real-provider dogfood evidence across provider/model disappearance, cancellation, restart/revalidation, deadline/budget continuity, revision drift where available, and no-replay indeterminate external attempts.
+
+### Security
+- A real model gains no authority that a deterministic model did not have; provider output, model discovery, browser/network content, workspace/memory content, and durable metadata remain data rather than Phoenix authority.
+- There is no automatic local-to-cloud fallback and no transparent retry after provider inference may have started; uncertain external attempts remain controlled/indeterminate rather than silently replayed.
+- Ollama process lifecycle and model inventory remain operator-controlled. Phoenix does not automatically install providers, pull/delete models, kill/restart Ollama, or derive runtime authority from ambient proxy, redirect, or credential state.
+- Provider-native request options are allowlisted and bounded, and provider-advertised resource capacity cannot amplify the smaller trusted Phoenix context/output limits.
+- Mandatory CI remains deterministic and network-free; real/paid/provider canaries remain explicit operational dogfood outside mandatory CI and durable evidence remains content-free.
+
+### Compatibility
+- Phoenix OS 0.37.0 behavior remains valid when real-provider/dogfood configuration is omitted: no provider is contacted, no model is installed, no credential is created, no new tool is registered, and no additional authority is granted.
+- The provider-neutral package retains no mandatory runtime dependency; provider-specific integration remains an explicit RFC-0026 composition boundary.
+- Release validation includes the complete existing quality gate, RFC-0038 deterministic provider/model-turn evidence, RFC-0037 adversarial reliability, the complete real-task dogfood checklist, wheel/sdist validation, isolated offline installation, and provider/model/API-independent package import and normal tests.
+- Tagging, final-version publication artifacts/checksums, GitHub Release publication, PR review/merge, and green post-merge `main` CI remain separately controlled operations; acceptance of RFC-0038 does not authorize publication.
+
+
 ## [0.37.0] - 2026-08-30
 
 ### Added

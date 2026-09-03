@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.37.0` implements thirty-seven accepted specifications:
+Version `0.38.0` implements thirty-eight accepted specifications:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -117,6 +117,11 @@ Version `0.37.0` implements thirty-seven accepted specifications:
   fenced takeover/concurrent recovery, no-replay indeterminate effects, fresh live recovery
   authority, monotonic deadlines/budgets/cancellation, stale-restore protection, bounded
   recovery loops, and content-free reliability diagnostics.
+- **RFC-0038 - Secure Real-Model Provider Execution and Integrated Agent Dogfood:**
+  reviewed real-model execution through RFC-0026/RFC-0027, explicit local provider/model
+  binding, fail-closed structured real agent turns, narrow real-task dogfood profiles,
+  content-free provider failure/restart evidence, no automatic cloud fallback, no
+  transparent replay of uncertain attempts, and provider-neutral network-free CI.
 
 The core intentionally contains no AI model, remote database driver, external vector database,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -480,6 +485,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 
 ## Release notes
 
+- [Phoenix OS 0.38.0](docs/releases/v0.38.0.md)
 - [Phoenix OS 0.37.0](docs/releases/v0.37.0.md)
 - [Phoenix OS 0.36.0](docs/releases/v0.36.0.md)
 - [Phoenix OS 0.35.0](docs/releases/v0.35.0.md)
@@ -656,6 +662,16 @@ external effects, and fails closed when store freshness cannot be established. T
 [RFC-0037 durable-recovery reliability threat-model and invariant review](docs/security/RFC-0037-durable-recovery-reliability-threat-model-review.md)
 maps all 48 release invariants, deterministic crash/restart evidence, residual risks,
 and package/release boundaries.
+
+Phoenix OS 0.38.0 adds reviewed real-provider execution and serious integrated dogfood while
+preserving the existing RFC-0026 inference, RFC-0027 agent, RFC-0028 durable, and downstream
+canonical authority boundaries:
+
+- [Migrate v0.37.0 deployments to v0.38.0 real-provider execution and dogfood](docs/migrations/v0.37.0-to-v0.38.0-real-provider-dogfood.md)
+
+A real model gains no authority that a deterministic model did not have.
+There is no automatic local-to-cloud fallback. Provider process/model inventory remain operator-controlled,
+uncertain external attempts are not transparently replayed, and real-provider canaries remain outside mandatory CI.
 
 ## Architecture decisions
 
