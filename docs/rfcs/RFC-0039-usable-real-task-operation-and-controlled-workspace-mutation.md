@@ -134,9 +134,13 @@ The release scope is:
 - **P0:** official task entrypoint;
 - **P0:** operational configuration and `doctor`;
 - **P0:** content-free task/budget status;
-- **P1:** controlled `workspace.patch` for explicitly registered development checkouts;
-- **P1:** trusted patch review/diff;
+- **P1, release-required after P0:** controlled `workspace.patch` for explicitly registered
+  development checkouts;
+- **P1, release-required after P0:** trusted patch review/diff;
 - **P0 release gate:** real dogfood from the official wheel with no custom composition helper.
+
+The P0/P1 labels define implementation order, not optional release scope. Every capability listed
+above is required before RFC-0039 can move to Accepted for v0.39.0.
 
 Git mutation, arbitrary shell, generic filesystem write, cloud routing, desktop-wide control,
 and connector expansion remain outside this release.
@@ -206,6 +210,49 @@ This does not make native host paths model resources. Instead:
 A checkout-backed workspace is opt-in and must not change existing RFC-0031 behavior when
 omitted.
 
+### Narrow RFC-0031/RFC-0033 authority extension
+
+A registered checkout file is not an RFC-0031 authoritative `ArtifactRecord` merely because it is
+beneath a trusted checkout root. The checkout remains externally mutable host state. RFC-0039
+therefore extends the workspace resource model without pretending that checkout files are Phoenix
+artifact-store objects.
+
+The exact checkout-file canonical resource is derived only after trusted root admission and logical
+path canonicalization:
+
+```text
+development-checkout:<workspace-id>/path:<canonical-logical-path>
+```
+
+The resource carries server-derived freshness bindings for the checkout registration generation,
+admitted root identity, observed target identity, and current content digest or snapshot identity as
+applicable.
+
+For an exact checkout-file snapshot read, the canonical protected action remains `workspace.read`.
+RFC-0039 extends `workspace.read` to the checkout-file resource above; it does not grant generic
+native-filesystem read authority.
+
+For mutation of an exact checkout file, the new canonical protected action is `workspace.patch`.
+This is a narrow normative specialization of RFC-0031's write rule: `workspace.write` remains the
+only write boundary for RFC-0031 authoritative artifacts, while `workspace.patch` is the only
+mutation boundary for registered checkout files. Neither action substitutes for the other.
+
+RFC-0039 also extends the RFC-0033 closed-world protected-operation inventory with:
+
+```text
+registered checkout tree listing     workspace.list
+registered checkout snapshot read    workspace.read
+registered checkout text patch       workspace.patch
+```
+
+An agent-originated path additionally requires the existing `tool.invoke` boundary. Authority
+therefore composes by intersection: `tool.invoke` cannot substitute for `workspace.read` or
+`workspace.patch`, and neither workspace action can substitute for `tool.invoke`.
+
+Authority inspection/explanation must recognize these v0.39 resources and actions. If the new
+operation/resource pair is absent from the effective-authority catalog, the path is non-conformant
+and must fail closed.
+
 ## Goals
 
 - Make the official wheel usable for a normal real-model task without custom Python composition
@@ -220,6 +267,7 @@ omitted.
 - Avoid raw prompt text in process arguments and normal observability
 - Expose reliable task/run/step/tool/deadline/budget state without inventing unknown values
 - Add an opt-in development checkout registration boundary
+- Add bounded `workspace.list` and `workspace.read` inspection beneath trusted `read_prefixes`
 - Add one narrow `workspace.patch` action for existing bounded UTF-8 text files
 - Require expected base digest for every patch
 - Require patch preparation and final commit revalidation
@@ -232,9 +280,9 @@ omitted.
 ## Non-goals
 
 - Arbitrary shell, PowerShell, cmd.exe, bash, or command execution
-- Generic `filesystem.write`
+- Generic `filesystem.read` or `filesystem.write`
 - Arbitrary native filesystem paths supplied by a model
-- Automatic project-tree discovery or mounting
+- Automatic whole-project mounting or authority outside configured `read_prefixes`
 - Automatic provider installation, startup, shutdown, upgrade, model pull, or model deletion
 - Automatic provider/model authorization from discovery
 - Automatic local-to-cloud fallback
@@ -387,10 +435,13 @@ provider_model_name = "qwen3:4b-instruct"
 [workspaces.project]
 kind = "development-checkout"
 root = "C:/Projects/example"
+read_prefixes = ["src", "tests"]
+patch_prefixes = ["src", "tests"]
 
 [profiles.development]
 model = "dev"
 workspace = "project"
+context_paths = ["src/example.py"]
 allow_workspace_patch = true
 ```
 
@@ -415,6 +466,16 @@ The configuration loader must:
 already exist. It must not discover and authorize local models automatically.
 
 `phoenix config show` must be redacted and content-free with respect to secrets.
+
+The active configuration source is authority-bearing operator state. The same is true for any
+referenced policy, approval, credential/secret, audit-authority, durable-control, or Phoenix
+runtime-state location. Trusted composition must retain their resolved identities as protected
+targets. `workspace.patch` must deny mutation of those identities even if an operator accidentally
+places one beneath a registered checkout or beneath an otherwise allowed patch prefix.
+
+The running Phoenix installation and active virtual environment are also protected targets when
+their resolved paths overlap a registered checkout. A task must never be able to patch the code or
+environment currently implementing its own authority checks.
 
 ## Doctor
 
@@ -458,6 +519,20 @@ A development checkout is new opt-in authority and therefore requires an explici
 
 The operator configuration binds a stable workspace name to one absolute native root.
 
+Registration alone grants no read or patch authority and exposes no checkout bytes.
+
+A checkout registration may declare finite canonical logical `read_prefixes` and
+`patch_prefixes`. Both default to empty. v0.39 uses prefix segments rather than glob, negation,
+regular-expression, or native-path patterns.
+
+`read_prefixes` bound dynamic checkout discovery and file reads. `patch_prefixes` bound mutation
+and must be a subset of `read_prefixes`; Phoenix rejects configuration that violates this rule.
+Registration with empty `read_prefixes` exposes no dynamic checkout tree to a model. Registration
+with empty `patch_prefixes` permits no checkout mutation.
+
+A target outside every applicable configured prefix is ineligible before authorization is
+considered.
+
 The root is consumed only by trusted composition. It is never copied into model context, tool
 arguments, normal logs, or audit events.
 
@@ -486,6 +561,105 @@ Before a development checkout becomes usable, Phoenix must verify at minimum:
 - the adapter can prevent escape through descendants.
 
 A failed admission does not partially enable the workspace.
+
+### Checkout context snapshots
+
+A registered root is not implicitly mounted into model context.
+
+For v0.39, checkout bytes may enter a task either through a finite trusted preload selection such
+as the profile's configured `context_paths`, or through the bounded checkout discovery/read tools
+defined below. Model text cannot widen `read_prefixes`, `patch_prefixes`, or configured preload
+authority.
+
+Every configured `context_path` must resolve to an exact file that is either beneath a configured
+`read_prefix` or separately admitted as an exact trusted preload path. A preload does not grant
+dynamic access to neighboring files.
+
+For each selected preload path Phoenix must:
+
+1. resolve the checkout-file canonical resource beneath the admitted root;
+2. obtain fresh `workspace.read` authorization for that exact resource;
+3. reject path escapes, links, special files, protected control-state targets, and unsafe metadata;
+4. read a bounded regular file through the confined checkout adapter;
+5. compute a complete digest over the exact raw bytes;
+6. capture a server-owned `CheckoutFileSnapshot` identity containing workspace identity, canonical
+   logical path, checkout-registration generation, root identity, observed file identity, digest,
+   and byte length;
+7. admit content to inference only through the existing RFC-0031 untrusted artifact-context
+   boundary or an equivalently reviewed bounded untrusted context block.
+
+The snapshot identity is freshness evidence, not authority. Snapshot bytes remain untrusted data.
+A later patch may target only a file for which the current run has an admitted checkout snapshot
+whose digest equals the requested base digest. This prevents blind mutation of files the run never
+observed.
+
+### Bounded checkout discovery and read
+
+v0.39 exposes dynamic project inspection only through two finite integrated tools backed by the
+registered checkout adapter:
+
+```text
+workspace.list
+workspace.read
+```
+
+These are the existing protected action names, not new generic filesystem permissions.
+
+For a checkout tree listing, the canonical resource is:
+
+```text
+development-checkout:<workspace-id>/prefix:<canonical-logical-prefix>
+```
+
+For a direct checkout file read, the canonical resource remains:
+
+```text
+development-checkout:<workspace-id>/path:<canonical-logical-path>
+```
+
+A model-proposed logical prefix or path is untrusted request data. Phoenix canonicalizes it and
+rejects it unless it is beneath a configured `read_prefix`. The configured prefix is trusted
+server-owned authority input; the model cannot create or widen it.
+
+`workspace.list`:
+
+- requires the surrounding RFC-0027/RFC-0036 `tool.invoke` admission plus fresh exact
+  `workspace.list` authorization for the canonical prefix resource;
+- never follows symlinks, junctions, reparse points, hardlinks as directories, mount/device
+  aliases, or other escape-capable entries;
+- returns only bounded canonical logical child names and server-owned entry categories;
+- exposes no native host path;
+- has finite maximum entries, name bytes, total result bytes, and traversal depth;
+- is non-recursive per invocation in v0.39; deeper traversal requires another separately admitted
+  list call;
+- may report only a bounded excluded-entry count for unsafe/unsupported children rather than
+  exposing their native metadata.
+
+`workspace.read`:
+
+- requires the surrounding `tool.invoke` admission plus fresh exact `workspace.read`
+  authorization for the canonical file resource;
+- accepts only an existing bounded regular file beneath a configured `read_prefix`;
+- rejects links, special files, protected control/runtime targets, path escapes, binary/NUL data,
+  invalid UTF-8, and files above the reviewed byte bound;
+- captures the same server-owned `CheckoutFileSnapshot` identity used by patch stale-base
+  protection;
+- returns bounded untrusted text through RFC-0036 data-flow admission;
+- persists no source bytes in ordinary logs, audit, metrics, checkpoints, or task status.
+
+A list result grants no later read authority, and a read result grants no later patch authority.
+Every protected operation is independently reauthorized at its canonical boundary.
+
+The initial deterministic bounds must include at least:
+
+- one listing level per call;
+- at most 256 returned entries per listing;
+- at most 64 KiB serialized listing result;
+- at most 1 MiB per checkout text read;
+- a finite run-wide checkout-read byte budget owned by the integrated profile.
+
+The run-wide checkout-read budget is monotonic and survives durable recovery under RFC-0037. A
+restart cannot replenish it.
 
 ## `workspace.patch`
 
@@ -523,15 +697,29 @@ A patch request must bind at least:
 
 - workspace identity;
 - canonical logical path;
+- current-run `CheckoutFileSnapshot` identity;
 - expected complete base digest;
 - bounded ordered text edits;
 - task/run identity;
 - tool invocation identity.
 
-Each text edit must include enough expected old-text evidence to reject an edit that no longer
-matches the exact admitted base.
+The base digest is SHA-256 over the exact raw target bytes. v0.39 accepts strict UTF-8 text
+without a BOM and rejects NUL-containing text. Phoenix performs no Unicode normalization and no
+newline normalization of the admitted base.
 
-Edits must be sorted, non-overlapping, deterministic, and bounded.
+Each text edit is expressed against the exact base as a half-open UTF-8 byte range
+`[start_byte, end_byte)`, aligned to code-point boundaries, together with exact expected old text
+for that range and bounded replacement text. Edits are sorted by `start_byte`, non-overlapping,
+deterministic, and bounded.
+
+Candidate bytes are assembled from untouched raw base slices plus UTF-8 encoded replacement text.
+Bytes outside edited ranges therefore remain byte-for-byte identical. Repeated textual fragments
+cannot create location ambiguity because the byte range, expected old text, base digest, and
+snapshot identity must all agree.
+
+The canonical patch/preparation digest binds at least workspace identity, logical path, snapshot
+identity, base digest, ordered edit ranges, digests of expected/replacement text, and candidate
+after-digest. Raw source text is not persisted in normal audit or telemetry.
 
 Phoenix must not execute arbitrary patch-language directives, shell fragments, Git commands, or
 filesystem commands embedded in patch text.
@@ -556,10 +744,20 @@ Before preparation and again before commit, Phoenix must reject:
 - `..` traversal;
 - absolute, drive-relative, UNC, device, or alternate-data-stream paths;
 - separator or Unicode aliases that escape canonical logical-path rules;
+- a target outside the configured `patch_prefixes`;
+- any `.git`, `.hg`, or `.svn` control-metadata path component, including linked-worktree
+  metadata files;
+- the active Phoenix configuration, policy, approval, secret/credential, audit-authority,
+  durable-control, or runtime-state target by resolved identity;
+- any target beneath the running Phoenix installation or active virtual environment when those
+  locations overlap the checkout;
 - symlink components;
 - junction or reparse-point components;
-- hardlinked target files where unique-file identity cannot be established safely;
+- a target with more than one hardlink when the platform exposes link count, or any target whose
+  unique-file identity cannot otherwise be proven;
 - FIFOs, sockets, devices, or other special objects;
+- a target with alternate data streams, extended attributes, ACL/security-descriptor state, or
+  other security-relevant metadata that the adapter cannot preserve and verify safely;
 - a target whose resolved identity escapes the registered root;
 - a root whose identity changed since admission.
 
@@ -568,7 +766,12 @@ string-prefix comparison alone is insufficient.
 
 ### Stale-base protection
 
-The complete current target digest must equal the request's expected base digest.
+The complete current target digest must equal the request's expected base digest and the
+current run's referenced `CheckoutFileSnapshot` digest.
+
+The current resolved file identity must also match the snapshot's observed identity until the
+operation reaches its defined replacement admission point. A replaced/reborn path is not accepted
+merely because a name was reused.
 
 If the file changed after the model read it, preparation fails with a stable stale-base category.
 Phoenix does not silently rebase, regenerate, merge, or retry the patch.
@@ -581,16 +784,19 @@ It must:
 
 1. revalidate current authority;
 2. revalidate workspace registration and root identity;
-3. resolve the logical target safely;
-4. verify regular-text-file constraints;
-5. verify target size and UTF-8 decoding;
-6. verify expected base digest;
-7. verify every expected text edit;
-8. construct the candidate bytes in memory;
-9. enforce post-patch size bounds;
-10. compute before digest, after digest, and patch digest;
-11. create a bounded `WorkspacePatchPreparation` identity;
-12. produce trusted review metadata/diff.
+3. resolve the logical target safely and verify `patch_prefixes` plus protected-target
+   exclusions;
+4. verify the referenced current-run checkout snapshot and observed file identity;
+5. verify regular-text-file constraints and security-relevant metadata;
+6. verify target size and strict UTF-8-without-BOM decoding;
+7. verify expected base digest;
+8. verify every exact byte-range edit and UTF-8 boundary;
+9. construct the candidate bytes in memory without rewriting untouched bytes;
+10. enforce post-patch size bounds;
+11. compute before digest, after digest, canonical patch digest, and a security-metadata
+    fingerprint;
+12. create a bounded `WorkspacePatchPreparation` identity;
+13. produce trusted review metadata/diff.
 
 Preparation never modifies the target.
 
@@ -620,17 +826,31 @@ Immediately before mutation Phoenix must revalidate:
 - root identity;
 - target path identity;
 - target regular-file status;
-- complete current base digest;
+- target protected-state exclusion;
+- target security-metadata fingerprint and unique-link status;
+- complete current base digest and snapshot freshness;
 - prepared patch digest;
 - deadline and cancellation state.
 
 The write must use a same-directory confined temporary file or an equivalent platform-safe atomic
-replacement sequence.
+replacement sequence. The temporary name is server-generated and never model-controlled.
 
-The temporary file must not be model-named.
+Before replacement, candidate bytes must be fully written and flushed according to the adapter's
+durability contract. The adapter must preserve or explicitly reproduce and then verify the
+security-relevant metadata that v0.39 promises not to mutate, including ownership/mode or Windows
+security descriptor/attributes as applicable. If alternate streams, extended attributes, ACLs,
+ownership, link state, or platform replacement semantics cannot be preserved and verified safely,
+the target is unsupported and the operation fails closed before effect admission.
 
-If final atomic replacement cannot be proven safe on the platform/adapter, the operation fails
-closed.
+After replacement, Phoenix verifies the after-digest, confined path, protected-target exclusion,
+and required security metadata. A failure after replacement may be an indeterminate external
+effect and follows the RFC-0037 reconciliation rules rather than being silently retried.
+
+When the platform exposes directory durability primitives, the adapter also flushes the containing
+directory after the atomic name replacement.
+
+If final atomic replacement and metadata preservation cannot be proven safe on the
+platform/adapter, the operation fails closed.
 
 ### Result
 
@@ -701,8 +921,11 @@ Stable public/operator failure categories should include at least:
 - workspace_unsafe;
 - workspace_patch_unauthorized;
 - workspace_patch_stale_base;
+- workspace_patch_unobserved_base;
 - workspace_patch_path_escape;
+- workspace_patch_protected_target;
 - workspace_patch_special_file;
+- workspace_patch_metadata_unsafe;
 - workspace_patch_binary_or_invalid_text;
 - workspace_patch_limit_exceeded;
 - workspace_patch_approval_required;
@@ -746,22 +969,35 @@ as already applied. Unknown state requires operator reconciliation.
 6. Secrets are referenced, not embedded in ordinary config fields.
 7. `doctor` is read-only and does not repair, install, start, pull, or authorize anything.
 8. A checkout root is trusted configuration, never model-selected.
-9. The model sees logical paths, never ambient host-path authority.
-10. `workspace.patch` requires fresh exact authority.
-11. `workspace.patch` is not equivalent to generic filesystem write.
-12. v0.39 patches only one existing bounded UTF-8 regular file per invocation.
-13. Every patch requires an expected complete base digest.
-14. Stale files are never silently rebased or overwritten.
-15. Patch preparation is zero-effect.
-16. Approval, when required, binds to the exact prepared patch digest.
-17. Commit revalidates path identity, base digest, policy, deadline, cancellation, and approval.
-18. Symlink, reparse, hardlink ambiguity, special-file, and root-escape cases fail closed.
-19. Successful patch writes are atomic or fail closed.
-20. Indeterminate patch effects are never transparently replayed.
-21. Audit and normal telemetry persist no file contents or diffs.
-22. Workspace content remains untrusted after mutation.
-23. No patch automatically triggers shell, tests, Git, network, browser, or desktop actions.
-24. Existing behavior is unchanged when operator task/configuration and checkout mutation are omitted.
+9. Registration alone grants no checkout list, read, or patch authority.
+10. Dynamic checkout discovery is bounded by trusted `read_prefixes` and fresh exact
+    `workspace.list` authority.
+11. Checkout content enters a run only through a bounded current-run snapshot authorized by exact
+    `workspace.read`.
+12. A list result is not read authority, and a read result is not patch authority.
+13. The model sees logical paths, never ambient host-path authority.
+14. `workspace.patch` requires fresh exact authority and cannot be substituted by `workspace.write`.
+15. RFC-0031 artifact writes continue to require `workspace.write`; checkout mutation uses only the
+    new exact checkout-file `workspace.patch` boundary.
+16. `workspace.patch` is not equivalent to generic filesystem write.
+17. v0.39 patches only one existing bounded strict-UTF-8 regular file per invocation.
+18. Every patch requires a current-run checkout snapshot and expected complete base digest.
+19. Stale, unobserved, or reborn files are never silently rebased or overwritten.
+20. Patch preparation is zero-effect.
+21. Approval, when required, binds to the exact prepared patch digest.
+22. Commit revalidates path identity, base digest, snapshot freshness, policy, deadline,
+    cancellation, approval, and security metadata.
+23. Symlink, reparse, multi-hardlink ambiguity, special-file, protected-target, metadata-unsafe, and
+    root-escape cases fail closed.
+24. VCS control metadata and active Phoenix authority/runtime state are never patch targets.
+25. Successful patch writes are atomic, metadata-preserving within the reviewed contract, or fail
+    closed.
+26. Indeterminate patch effects are never transparently replayed.
+27. Audit and normal telemetry persist no file contents or diffs.
+28. Workspace content remains untrusted after mutation.
+29. No patch automatically triggers shell, tests, Git, network, browser, or desktop actions.
+30. Existing behavior is unchanged when operator task/configuration and checkout mutation are
+    omitted.
 
 ## Testing strategy
 
@@ -776,9 +1012,19 @@ Ordinary CI remains network-free and must cover:
 - task composition without provider-specific bypass;
 - status snapshot bounds and redaction;
 - checkout root admission fixtures;
+- `read_prefixes` and `patch_prefixes` schema/subset enforcement;
+- checkout `workspace.list` canonical-resource authorization, one-level traversal, bounds, and
+  unsafe-entry confinement;
+- exact checkout-file `workspace.read` snapshot authorization, UTF-8 limits, data-flow admission,
+  and current-run freshness;
+- run-wide monotonic checkout-read budget across durable recovery;
+- `patch_prefixes` enforcement;
 - path traversal and alias rejection;
-- symlink/junction/reparse/hardlink/special-file rejection where platform fixtures allow;
-- stale digest rejection;
+- VCS metadata, active config/policy/state, and active runtime/venv protected-target rejection;
+- symlink/junction/reparse/multi-hardlink/special-file rejection where platform fixtures allow;
+- alternate-stream/xattr/ACL/security-metadata preservation or fail-closed rejection;
+- stale digest, unobserved-base, and resource-rebirth rejection;
+- strict UTF-8/BOM/NUL handling and byte-for-byte preservation outside edited ranges;
 - patch edit validation;
 - patch bounds;
 - approval binding;
@@ -808,18 +1054,21 @@ At minimum the manual dogfood must demonstrate:
 4. operator starts Ollama manually;
 5. `phoenix doctor` reports the configured model as available;
 6. `phoenix task run` starts a real-model task through the normal integrated path;
-7. the task reads admitted workspace context;
-8. the model proposes a bounded patch;
-9. Phoenix renders the trusted diff;
-10. required approval binds to that exact patch;
-11. Phoenix applies the patch and reports before/after digests;
-12. a stale-base patch is rejected;
-13. a traversal/reparse/special-file attempt is rejected;
-14. provider interruption produces controlled failure;
-15. stop/restart plus `phoenix task resume` follows RFC-0037 live revalidation;
-16. task status reports finite budgets and terminal reason;
-17. no shell or Git authority is used;
-18. normal evidence remains content-free.
+7. the task uses bounded `workspace.list`/`workspace.read` to inspect admitted project content
+   beneath configured `read_prefixes`;
+8. each checkout read produces a current-run snapshot and consumes the finite read budget;
+9. the model proposes a bounded patch to a file it actually observed;
+10. Phoenix renders the trusted diff;
+11. required approval binds to that exact patch;
+12. Phoenix applies the patch and reports before/after digests;
+13. a stale-base or unobserved-base patch is rejected;
+14. a traversal/reparse/special-file attempt is rejected;
+15. a `.git`/active-config/other protected-target patch attempt is rejected;
+16. provider interruption produces controlled failure;
+17. stop/restart plus `phoenix task resume` follows RFC-0037 live revalidation;
+18. task status reports finite budgets and terminal reason;
+19. no shell or Git authority is used;
+20. normal evidence remains content-free.
 
 The release candidate should exercise 10-20 normal tasks across more than one task shape before
 v0.39.0 is accepted for publication.
@@ -911,8 +1160,16 @@ all of the following:
 - a real configured model runs through RFC-0026/RFC-0027/RFC-0036;
 - task state and budgets are observable without leaking content;
 - checkout roots are explicit and fail closed against path escapes;
-- `workspace.patch` cannot mutate outside its registered root;
-- stale-base, binary, special-file, reparse, and oversized cases fail closed;
+- checkout dynamic discovery is confined by trusted `read_prefixes`, exact `workspace.list`, and
+  finite listing/read budgets;
+- checkout context snapshots require exact `workspace.read` authority and are current-run freshness
+  evidence rather than ambient filesystem access;
+- RFC-0033 authority inspection/explanation includes checkout list/read resources and the new
+  `workspace.patch` canonical boundary;
+- `workspace.patch` cannot mutate outside configured `patch_prefixes` or any protected
+  control/runtime target;
+- stale-base, unobserved-base, binary, special-file, reparse, metadata-unsafe, and oversized cases
+  fail closed;
 - review/approval binds to the exact prepared patch;
 - commit revalidation prevents stale authorization or stale file replacement;
 - indeterminate patch effects are not replayed blindly;
