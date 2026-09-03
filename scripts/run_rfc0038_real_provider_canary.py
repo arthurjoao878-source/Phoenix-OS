@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import subprocess
 import time
@@ -113,6 +114,47 @@ def _environment_truthy(name: str) -> bool:
     if value is None:
         return False
     return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _bounded_elapsed_observation(
+    started_clock: float,
+    finished_clock: float,
+    *,
+    maximum_ms: int,
+) -> tuple[int, bool]:
+    for label, value in (
+        ("started_clock", started_clock),
+        ("finished_clock", finished_clock),
+    ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{label} must be a number")
+        if not math.isfinite(value):
+            raise ValueError(f"{label} must be finite")
+    if isinstance(maximum_ms, bool) or not isinstance(maximum_ms, int):
+        raise TypeError("maximum_ms must be an integer")
+    if maximum_ms <= 0:
+        raise ValueError("maximum_ms must be positive")
+
+    raw_ms = max(0, round((finished_clock - started_clock) * 1_000))
+    return min(raw_ms, maximum_ms), raw_ms > maximum_ms
+
+
+def _usage_within_limits(
+    input_tokens: int,
+    output_tokens: int,
+    limits: AgentLimits,
+) -> bool:
+    for label, value in (
+        ("input_tokens", input_tokens),
+        ("output_tokens", output_tokens),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{label} must be an integer")
+        if value < 0:
+            raise ValueError(f"{label} must not be negative")
+    if not isinstance(limits, AgentLimits):
+        raise TypeError("limits must be AgentLimits")
+    return input_tokens <= limits.max_input_tokens and output_tokens <= limits.max_output_tokens
 
 
 def _json_evidence(values: dict[str, object]) -> None:
@@ -582,9 +624,11 @@ async def _run() -> int:
         await inference_service.stop(inference_context)
 
     try:
-        elapsed_ms = max(
-            0,
-            round((time.perf_counter() - started_clock) * 1_000),
+        maximum_elapsed_ms = round((request.deadline - request.created_at).total_seconds() * 1_000)
+        elapsed_ms, elapsed_ms_capped = _bounded_elapsed_observation(
+            started_clock,
+            time.perf_counter(),
+            maximum_ms=maximum_elapsed_ms,
         )
 
         current = await store.get_current(durable_run_id)
@@ -600,6 +644,7 @@ async def _run() -> int:
                     "phoenix_model_id": str(MODEL_ID),
                     "diagnostic_status": diagnostic.status.value,
                     "elapsed_ms": elapsed_ms,
+                    "elapsed_ms_capped": elapsed_ms_capped,
                     "exception_category": type(terminal_exception).__name__,
                     "branch": _safe_git("branch", "--show-current"),
                     "commit": _safe_git("rev-parse", "HEAD"),
@@ -617,6 +662,7 @@ async def _run() -> int:
                     "phoenix_model_id": str(MODEL_ID),
                     "diagnostic_status": diagnostic.status.value,
                     "elapsed_ms": elapsed_ms,
+                    "elapsed_ms_capped": elapsed_ms_capped,
                     "status": "missing_terminal_state",
                 }
             )
@@ -631,6 +677,11 @@ async def _run() -> int:
             inference_authorizer.requests[0] is authorized
             for authorized in model_authorizer.requests
         )
+        usage_within_limits = _usage_within_limits(
+            current.metadata.budget.input_tokens,
+            current.metadata.budget.output_tokens,
+            request.limits,
+        )
         succeeded = (
             result.status is AgentRunStatus.COMPLETED
             and result.model_turns == 1
@@ -644,6 +695,7 @@ async def _run() -> int:
             and driver.last_checkpoint == current
             and exact_request_identity
             and content_free_history
+            and usage_within_limits
         )
 
         _json_evidence(
@@ -656,6 +708,7 @@ async def _run() -> int:
                 "branch": _safe_git("branch", "--show-current"),
                 "commit": _safe_git("rev-parse", "HEAD"),
                 "elapsed_ms": elapsed_ms,
+                "elapsed_ms_capped": elapsed_ms_capped,
                 "run_status": result.status.value,
                 "model_turns": result.model_turns,
                 "tool_calls": result.tool_calls,
@@ -666,6 +719,7 @@ async def _run() -> int:
                 "run_error_code": result.error_code,
                 "input_tokens": current.metadata.budget.input_tokens,
                 "output_tokens": current.metadata.budget.output_tokens,
+                "usage_within_limits": usage_within_limits,
                 "exact_request_identity": exact_request_identity,
                 "content_free_history": content_free_history,
                 "final_output_present": final_output is not None,

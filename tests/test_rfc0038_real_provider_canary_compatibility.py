@@ -82,3 +82,41 @@ def test_real_provider_canary_revalidates_structured_schema_as_model_provider() 
 
     assert assessment.category is DurableCompatibilityCategory.MODEL_PROVIDER_CHANGED
     assert assessment.compatible is False
+
+
+def test_real_provider_canary_bounds_content_free_elapsed_observation() -> None:
+    assert canary._bounded_elapsed_observation(
+        10.0,
+        11.25,
+        maximum_ms=2_000,
+    ) == (1_250, False)
+    assert canary._bounded_elapsed_observation(
+        10.0,
+        9.0,
+        maximum_ms=2_000,
+    ) == (0, False)
+    assert canary._bounded_elapsed_observation(
+        10.0,
+        20.0,
+        maximum_ms=2_000,
+    ) == (2_000, True)
+
+
+def test_real_provider_canary_usage_observation_is_agent_limit_bounded() -> None:
+    limits = canary._configuration().limits
+
+    assert canary._usage_within_limits(
+        limits.max_input_tokens,
+        limits.max_output_tokens,
+        limits,
+    )
+    assert not canary._usage_within_limits(
+        limits.max_input_tokens + 1,
+        limits.max_output_tokens,
+        limits,
+    )
+    assert not canary._usage_within_limits(
+        limits.max_input_tokens,
+        limits.max_output_tokens + 1,
+        limits,
+    )

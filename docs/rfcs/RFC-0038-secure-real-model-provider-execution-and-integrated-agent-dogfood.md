@@ -1398,16 +1398,30 @@ navigation targets. Desktop/integrated reuses host process/window observation on
 
 ### Slice 6 - Dogfood hardening and optional cross-provider canary
 
-- [ ] Fix only general problems demonstrated by real dogfood
-- [ ] Harden provider health and operator diagnostics
-- [ ] Harden latency/usage/content-free model observations
-- [ ] Review configuration ergonomics without adding ambient authority
-- [ ] Optionally add one hosted-provider canary behind RFC-0026
-- [ ] If a hosted provider is added, use exact Phoenix secret leasing
-- [ ] Prove there is no automatic local-to-cloud fallback
-- [ ] Compare equivalent tasks without changing AgentLoop/tool authority
-- [ ] Keep paid/network canaries outside mandatory CI
-- [ ] Keep package version at 0.37.0
+- [x] Fix only general problems demonstrated by real dogfood
+- [x] Harden provider health and operator diagnostics
+- [x] Harden latency/usage/content-free model observations
+- [x] Review configuration ergonomics without adding ambient authority
+- [x] Optionally add one hosted-provider canary behind RFC-0026
+- [x] If a hosted provider is added, use exact Phoenix secret leasing
+- [x] Prove there is no automatic local-to-cloud fallback
+- [x] Compare equivalent tasks without changing AgentLoop/tool authority
+- [x] Keep paid/network canaries outside mandatory CI
+- [x] Keep package version at 0.37.0
+
+#### Slice 6 closure
+
+Slice 6 closed with targeted hardening only:
+
+- Slice 5 real-provider dogfood left no unresolved general correctness defect that justified speculative behavior changes.
+- Provider health diagnostics preserve the existing availability status contract while adding content-free causes that distinguish provider timeout from generic provider/transport unreachability.
+- Real-provider canary observations keep prompt/model/tool content out of durable evidence, bound elapsed-time evidence by the request deadline, and verify observed token usage against Phoenix `AgentLimits`.
+- Configuration ergonomics were reviewed without adding provider defaults, automatic discovery, environment-derived credentials, proxy/redirect authority, or other ambient authority.
+- The hosted-provider canary was optional and was intentionally not added in this slice because no concrete hosted provider/credential was selected.
+- Because no hosted provider was added, the exact Phoenix secret-leasing requirement is conditional and not applicable to this slice; it remains mandatory if a hosted provider is added later.
+- Network-free tests prove there is no automatic local-to-cloud fallback and compare equivalent local/hosted-sentinel tasks without changing `AgentLoop` or tool authority.
+- Paid/network canaries remain outside mandatory CI, and the real-provider canary refuses CI execution.
+- Package version remains `0.37.0`.
 
 ### Slice 7 - v0.38.0 release gate and finalization
 

@@ -852,3 +852,70 @@ def test_loop_exposes_exact_registry_identity_for_server_composition() -> None:
     )
 
     assert loop.registry is registry
+
+
+@pytest.mark.asyncio
+async def test_equivalent_provider_tasks_preserve_agent_loop_and_tool_authority() -> None:
+    async def run_variant(
+        provider_id: str,
+    ) -> tuple[
+        AgentRunStatus,
+        int,
+        int,
+        tuple[ModelProviderId, ...],
+        tuple[ModelId, ...],
+        tuple[ToolId, ...],
+        int,
+    ]:
+        registry = ToolRegistry()
+        descriptor = _descriptor()
+        adapter = DeterministicReadOnlyTool("lookup", {"value": "fixed"})
+        registry.register_tool(
+            descriptor,
+            resolver=StaticToolResourceResolver(
+                "static-resource",
+                "record:fixed",
+            ),
+            adapter=adapter,
+        )
+        loop, _run_auth, model_auth, tool_auth = _loop(
+            (
+                DeterministicToolTurn(
+                    ToolId("lookup"),
+                    {"value": "input"},
+                ),
+                DeterministicFinalTurn("complete"),
+            ),
+            registry=registry,
+        )
+        request = AgentRunRequest(
+            agent_id=AgentId("assistant"),
+            provider_id=ModelProviderId(provider_id),
+            model_id=ModelId("chat"),
+            messages=(AgentMessage(AgentMessageRole.USER, "hello"),),
+            limits=AgentLimits(),
+            created_at=_NOW,
+            deadline=_NOW + timedelta(minutes=5),
+        )
+
+        result = await loop.run(request, _context())
+
+        return (
+            result.status,
+            result.model_turns,
+            result.tool_calls,
+            tuple(item.provider_id for item in model_auth.requests),
+            tuple(item.model_id for item in model_auth.requests),
+            tuple(item.tool_id for item in tool_auth.requests),
+            len(adapter.requests),
+        )
+
+    local = await run_variant("local")
+    hosted = await run_variant("hosted-sentinel")
+
+    assert local[:3] == hosted[:3] == (AgentRunStatus.COMPLETED, 2, 1)
+    assert local[3] == (ModelProviderId("local"),) * 4
+    assert hosted[3] == (ModelProviderId("hosted-sentinel"),) * 4
+    assert local[4] == hosted[4] == (ModelId("chat"),) * 4
+    assert local[5] == hosted[5] == (ToolId("lookup"),) * 2
+    assert local[6] == hosted[6] == 1
