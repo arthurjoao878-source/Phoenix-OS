@@ -9,7 +9,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from phoenix_os.control_plane.operator_configuration import (
     OperatorConfiguration,
@@ -21,6 +21,7 @@ from phoenix_os.control_plane.operator_configuration import (
 )
 from phoenix_os.inference.ollama import (
     OllamaModelAvailability,
+    OllamaModelDiagnostic,
     OllamaModelDiagnosticCause,
     OllamaModelProvider,
 )
@@ -37,6 +38,11 @@ _DOCTOR_FAILURE_STATUSES = frozenset(
         "unknown",
     }
 )
+
+
+class _DoctorDocument(TypedDict):
+    schema_version: int
+    checks: list[dict[str, str]]
 
 
 def add_operator_commands(commands: Any) -> None:
@@ -98,12 +104,12 @@ def _run_config(arguments: argparse.Namespace) -> int:
 def _run_doctor(path: Path) -> int:
     document = doctor_document(path)
     print(json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True))
-    return 5 if any(
-        check["status"] in _DOCTOR_FAILURE_STATUSES for check in document["checks"]
-    ) else 0
+    return (
+        5 if any(check["status"] in _DOCTOR_FAILURE_STATUSES for check in document["checks"]) else 0
+    )
 
 
-def doctor_document(path: Path) -> dict[str, object]:
+def doctor_document(path: Path) -> _DoctorDocument:
     """Build a bounded, content-free, read-only diagnostic projection."""
 
     checks: list[dict[str, str]] = [{"category": "package", "status": "ready"}]
@@ -156,7 +162,7 @@ async def _ollama_checks(configuration: OperatorConfiguration) -> list[dict[str,
     except Exception:
         return _invalid_provider_checks(configuration)
 
-    diagnostics = []
+    diagnostics: list[OllamaModelDiagnostic | None] = []
     diagnostic_failed = False
     for model in configuration.models:
         try:

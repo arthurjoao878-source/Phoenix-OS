@@ -40,9 +40,7 @@ MAX_OPERATOR_PATH_TEXT = 32_768
 MAX_OPERATOR_PATH_ITEMS = 256
 
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
-_ALLOWED_TOP_LEVEL = frozenset(
-    {"schema_version", "providers", "models", "workspaces", "profiles"}
-)
+_ALLOWED_TOP_LEVEL = frozenset({"schema_version", "providers", "models", "workspaces", "profiles"})
 _SCAFFOLD = """\
 schema_version = 1
 
@@ -333,9 +331,7 @@ def _compile_workspaces(
     document: dict[str, object],
 ) -> tuple[OperatorWorkspaceConfiguration, ...]:
     if len(document) > MAX_OPERATOR_WORKSPACES:
-        raise OperatorConfigurationError(
-            "operator workspace count exceeds the supported maximum"
-        )
+        raise OperatorConfigurationError("operator workspace count exceeds the supported maximum")
     result: list[OperatorWorkspaceConfiguration] = []
     for workspace_name, value in _normalized_named_entries(document):
         item = _mapping(value, "workspace")
@@ -347,9 +343,7 @@ def _compile_workspaces(
         kind = _string(item.get("kind"), maximum=64)
         if kind != "development-checkout":
             raise OperatorConfigurationError("unsupported workspace kind")
-        root = _normalize_host_path(
-            _string(item.get("root"), maximum=MAX_OPERATOR_PATH_TEXT)
-        )
+        root = _normalize_host_path(_string(item.get("root"), maximum=MAX_OPERATOR_PATH_TEXT))
         read_prefixes = _logical_path_list(item.get("read_prefixes", []), "read_prefixes")
         patch_prefixes = _logical_path_list(item.get("patch_prefixes", []), "patch_prefixes")
         if any(
@@ -498,9 +492,7 @@ def _logical_path_list(value: object, label: str) -> tuple[str, ...]:
             or any(part in {"", ".", ".."} for part in parsed.parts)
             or parsed.as_posix() != path
         ):
-            raise OperatorConfigurationError(
-                f"{label} contains a non-canonical logical path"
-            )
+            raise OperatorConfigurationError(f"{label} contains a non-canonical logical path")
         if path in seen:
             raise OperatorConfigurationError(f"{label} contains a duplicate logical path")
         seen.add(path)
@@ -515,19 +507,12 @@ def _within_prefix(path: str, prefix: str) -> bool:
 def _normalize_host_path(value: str) -> str:
     namespace_form = value.replace("/", "\\")
     if os.name == "nt" and (
-        namespace_form.startswith("\\\\?\\")
-        or namespace_form.startswith("\\\\.\\")
+        namespace_form.startswith("\\\\?\\") or namespace_form.startswith("\\\\.\\")
     ):
-        raise OperatorConfigurationError(
-            "development checkout root uses a device namespace"
-        )
+        raise OperatorConfigurationError("development checkout root uses a device namespace")
     if not Path(value).is_absolute():
-        raise OperatorConfigurationError(
-            "development checkout root must be native and absolute"
-        )
+        raise OperatorConfigurationError("development checkout root must be native and absolute")
     normalized = os.path.abspath(value)
     if not Path(normalized).is_absolute():
-        raise OperatorConfigurationError(
-            "development checkout root must be native and absolute"
-        )
+        raise OperatorConfigurationError("development checkout root must be native and absolute")
     return normalized

@@ -13,10 +13,12 @@ from phoenix_os.control_plane.operator_configuration import (
     OperatorConfigurationError,
     load_operator_configuration,
 )
+from phoenix_os.inference.contracts import ModelId
 from phoenix_os.inference.ollama import (
     OLLAMA_PROVIDER_ID,
     OllamaModelAvailability,
     OllamaModelDiagnostic,
+    OllamaModelProvider,
 )
 
 
@@ -69,10 +71,10 @@ def test_operator_configuration_read_is_bounded(
     config.write_text("schema_version = 1\n", encoding="utf-8")
     selected = config.resolve(strict=True)
     payload = b"schema_version = 1\n"
-    observed_sizes: list[int] = []
+    observed_sizes: list[int | None] = []
 
     class _TrackingReader(io.BytesIO):
-        def read(self, size: int = -1) -> bytes:
+        def read(self, size: int | None = -1) -> bytes:
             observed_sizes.append(size)
             return super().read(size)
 
@@ -99,6 +101,7 @@ def test_operator_configuration_rejects_oversized_document(tmp_path: Path) -> No
 
     with pytest.raises(OperatorConfigurationError):
         load_operator_configuration(config)
+
 
 def test_operator_configuration_compiles_into_existing_inference_contracts(
     tmp_path: Path,
@@ -130,10 +133,7 @@ def test_model_controlled_or_credential_like_provider_fields_are_rejected(
 ) -> None:
     config = tmp_path / "phoenix.toml"
     config.write_text(
-        "schema_version = 1\n\n"
-        "[providers.ollama-local]\n"
-        'kind = "ollama-local"\n'
-        + addition,
+        'schema_version = 1\n\n[providers.ollama-local]\nkind = "ollama-local"\n' + addition,
         encoding="utf-8",
     )
 
@@ -210,7 +210,7 @@ def test_doctor_reuses_reviewed_ollama_diagnostic_boundary(
 
     calls: list[str] = []
 
-    async def diagnose(self: object, model_id: object) -> OllamaModelDiagnostic:
+    async def diagnose(self: object, model_id: ModelId) -> OllamaModelDiagnostic:
         del self
         calls.append(str(model_id))
         return OllamaModelDiagnostic(
@@ -219,7 +219,7 @@ def test_doctor_reuses_reviewed_ollama_diagnostic_boundary(
             status=OllamaModelAvailability.AVAILABLE,
         )
 
-    monkeypatch.setattr(operator_cli.OllamaModelProvider, "diagnose_model", diagnose)
+    monkeypatch.setattr(OllamaModelProvider, "diagnose_model", diagnose)
 
     assert cli.main(["doctor", "--config", str(config)]) == 0
 
@@ -250,13 +250,13 @@ def test_doctor_absent_config_is_content_free_and_does_not_probe_provider(
 ) -> None:
     called = False
 
-    async def diagnose(self: object, model_id: object) -> OllamaModelDiagnostic:
+    async def diagnose(self: object, model_id: ModelId) -> OllamaModelDiagnostic:
         nonlocal called
         del self, model_id
         called = True
         raise AssertionError("provider diagnostic must not run")
 
-    monkeypatch.setattr(operator_cli.OllamaModelProvider, "diagnose_model", diagnose)
+    monkeypatch.setattr(OllamaModelProvider, "diagnose_model", diagnose)
 
     assert cli.main(["doctor", "--config", str(tmp_path / "missing.toml")]) == 5
 
@@ -264,7 +264,6 @@ def test_doctor_absent_config_is_content_free_and_does_not_probe_provider(
     assert called is False
     assert document["checks"][1]["category"] == "configuration"
     assert document["checks"][1]["status"] == "absent"
-
 
 
 def test_patch_prefixes_must_be_within_read_prefixes(tmp_path: Path) -> None:
@@ -318,9 +317,7 @@ def test_doctor_marks_filesystem_root_unsafe(
     assert cli.main(["doctor", "--config", str(config)]) == 5
 
     document = json.loads(capsys.readouterr().out)
-    workspace = next(
-        check for check in document["checks"] if check["category"] == "workspace"
-    )
+    workspace = next(check for check in document["checks"] if check["category"] == "workspace")
     assert workspace["status"] == "unsafe"
     assert workspace["operator_action"] == "select_non_root_checkout_directory"
 
@@ -347,9 +344,7 @@ def test_doctor_reparse_detection_fails_closed(
     assert cli.main(["doctor", "--config", str(config)]) == 5
 
     document = json.loads(capsys.readouterr().out)
-    workspace = next(
-        check for check in document["checks"] if check["category"] == "workspace"
-    )
+    workspace = next(check for check in document["checks"] if check["category"] == "workspace")
     assert workspace["status"] == "unsafe"
 
 
@@ -365,26 +360,23 @@ def test_doctor_malformed_provider_diagnostic_is_content_free(
     config = tmp_path / "phoenix.toml"
     config.write_text(_configured_document(root), encoding="utf-8")
 
-    async def diagnose(self: object, model_id: object) -> OllamaModelDiagnostic:
+    async def diagnose(self: object, model_id: ModelId) -> OllamaModelDiagnostic:
         del self, model_id
         raise InferenceMalformedOutputError()
 
-    monkeypatch.setattr(operator_cli.OllamaModelProvider, "diagnose_model", diagnose)
+    monkeypatch.setattr(OllamaModelProvider, "diagnose_model", diagnose)
 
     assert cli.main(["doctor", "--config", str(config)]) == 5
 
     captured = capsys.readouterr()
     assert captured.err == ""
     document = json.loads(captured.out)
-    provider = next(
-        check for check in document["checks"] if check["category"] == "provider"
-    )
+    provider = next(check for check in document["checks"] if check["category"] == "provider")
     model = next(check for check in document["checks"] if check["category"] == "model")
     assert provider["status"] == "invalid"
     assert model["status"] == "unknown"
     assert "traceback" not in captured.out.lower()
     assert "model provider output is invalid" not in captured.out.lower()
-
 
 
 def test_foreign_platform_root_is_rejected(tmp_path: Path) -> None:
@@ -458,20 +450,18 @@ def test_doctor_unexpected_provider_failure_is_content_free(
     config = tmp_path / "phoenix.toml"
     config.write_text(_configured_document(root), encoding="utf-8")
 
-    async def diagnose(self: object, model_id: object) -> OllamaModelDiagnostic:
+    async def diagnose(self: object, model_id: ModelId) -> OllamaModelDiagnostic:
         del self, model_id
         raise RuntimeError("secret provider diagnostic detail")
 
-    monkeypatch.setattr(operator_cli.OllamaModelProvider, "diagnose_model", diagnose)
+    monkeypatch.setattr(OllamaModelProvider, "diagnose_model", diagnose)
 
     assert cli.main(["doctor", "--config", str(config)]) == 5
 
     captured = capsys.readouterr()
     assert captured.err == ""
     document = json.loads(captured.out)
-    provider = next(
-        check for check in document["checks"] if check["category"] == "provider"
-    )
+    provider = next(check for check in document["checks"] if check["category"] == "provider")
     model = next(check for check in document["checks"] if check["category"] == "model")
     assert provider["status"] == "invalid"
     assert model["status"] == "unknown"
