@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Awaitable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -205,12 +206,16 @@ def _fixture(
         objective="Continue the exact reviewed development checkout task.",
     )
 
+    request_time = datetime.now(UTC)
+
     request = AgentRunRequest(
         agent_id=_AGENT_ID,
         provider_id=ModelProviderId("local"),
         model_id=ModelId("chat"),
         messages=(AgentMessage(AgentMessageRole.USER, "continue"),),
         run_id=_RUN_ID,
+        created_at=request_time,
+        deadline=request_time + timedelta(minutes=20),
     )
 
     owner = ServerOwnedDurableIntegratedTaskRuntime(
