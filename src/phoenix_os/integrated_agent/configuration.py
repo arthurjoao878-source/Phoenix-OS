@@ -75,6 +75,7 @@ _BUDGET_KEYS = frozenset(
         "max_network_operations",
         "max_memory_operations",
         "max_workspace_operations",
+        "max_workspace_read_bytes",
         "max_workspace_mutation_bytes",
         "max_host_operations",
     }
@@ -357,6 +358,10 @@ def _decode_budget(value: object | None) -> IntegratedBudgetExtension:
             mapping.get("max_workspace_operations", defaults.max_workspace_operations),
             label="max_workspace_operations",
         ),
+        max_workspace_read_bytes=_int(
+            mapping.get("max_workspace_read_bytes", defaults.max_workspace_read_bytes),
+            label="max_workspace_read_bytes",
+        ),
         max_workspace_mutation_bytes=_int(
             mapping.get(
                 "max_workspace_mutation_bytes",
@@ -380,6 +385,7 @@ def _encode_budget(value: IntegratedBudgetExtension) -> dict[str, object]:
         "max_network_operations": value.max_network_operations,
         "max_memory_operations": value.max_memory_operations,
         "max_workspace_operations": value.max_workspace_operations,
+        "max_workspace_read_bytes": value.max_workspace_read_bytes,
         "max_workspace_mutation_bytes": value.max_workspace_mutation_bytes,
         "max_host_operations": value.max_host_operations,
     }

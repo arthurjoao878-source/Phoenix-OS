@@ -13,6 +13,7 @@ from phoenix_os.agent.configuration import AgentServiceConfiguration
 from phoenix_os.agent.contracts import AgentId, AgentLimits, AgentRunId, AgentRunRequest
 from phoenix_os.authority.contracts import AuthorityFreshnessBinding
 from phoenix_os.integrated_agent.contracts import (
+    IntegratedBudgetExtension,
     IntegratedExecutionProfileGeneration,
     IntegratedExecutionProfileId,
     IntegratedTaskDigest,
@@ -56,6 +57,7 @@ class IntegratedAgentRunBinding:
     profile_generation: IntegratedExecutionProfileGeneration
     agent_id: AgentId
     effective_limits: AgentLimits
+    budget_extension: IntegratedBudgetExtension
     authority: AgentRunAuthorityBinding
 
     def __post_init__(self) -> None:
@@ -73,6 +75,8 @@ class IntegratedAgentRunBinding:
             raise TypeError("agent_id must be AgentId")
         if not isinstance(self.effective_limits, AgentLimits):
             raise TypeError("effective_limits must be AgentLimits")
+        if not isinstance(self.budget_extension, IntegratedBudgetExtension):
+            raise TypeError("budget_extension must be IntegratedBudgetExtension")
         if not isinstance(self.authority, AgentRunAuthorityBinding):
             raise TypeError("authority must be AgentRunAuthorityBinding")
 
@@ -179,6 +183,8 @@ class IntegratedAgentAdmission:
         self._profile = profile
         self._task_digests: dict[IntegratedTaskId, IntegratedTaskDigest] = {}
         self._seen_run_ids: set[AgentRunId] = set()
+        self._seen_bindings: dict[AgentRunId, IntegratedAgentRunBinding] = {}
+        self._seen_requests: dict[AgentRunId, AgentRunRequest] = {}
         self._active: dict[AgentRunId, IntegratedAgentRunBinding] = {}
         self._active_requests: dict[AgentRunId, AgentRunRequest] = {}
         self._closed = False
@@ -209,59 +215,13 @@ class IntegratedAgentAdmission:
         task: IntegratedTaskRequest,
         request: AgentRunRequest,
     ) -> IntegratedAgentAdmissionLease:
-        if not isinstance(task, IntegratedTaskRequest):
-            raise TypeError("task must be IntegratedTaskRequest")
-        if not isinstance(request, AgentRunRequest):
-            raise TypeError("request must be AgentRunRequest")
-
-        configuration = self._service_configuration
-        profile = self._profile
-        if (
-            request.agent_id != profile.agent_id
-            or request.agent_id != configuration.agent_id
-            or request.provider_id != configuration.provider_id
-            or request.model_id != configuration.model_id
-        ):
-            raise IntegratedAgentValidationError(
-                "agent run does not match the server-owned integrated execution binding"
-            )
-
-        effective_limits = most_restrictive_agent_limits(
-            request.limits,
-            profile.limits,
-            configuration.limits,
+        effective_request, binding = _prepare_integrated_run(
+            self._profile,
+            self._service_configuration,
+            task,
+            request,
         )
-        effective_deadline = min(
-            request.deadline,
-            request.created_at + effective_limits.total_duration,
-        )
-        effective_request = AgentRunRequest(
-            agent_id=request.agent_id,
-            provider_id=request.provider_id,
-            model_id=request.model_id,
-            messages=request.messages,
-            limits=effective_limits,
-            metadata=request.metadata,
-            run_id=request.run_id,
-            created_at=request.created_at,
-            deadline=effective_deadline,
-        )
-        task_digest = task.digest
-        authority = _integrated_agent_run_authority(
-            task_id=task.task_id,
-            task_digest=task_digest,
-            profile=profile,
-        )
-        binding = IntegratedAgentRunBinding(
-            run_id=effective_request.run_id,
-            task_id=task.task_id,
-            task_digest=task_digest,
-            profile_id=profile.profile_id,
-            profile_generation=profile.generation,
-            agent_id=profile.agent_id,
-            effective_limits=effective_limits,
-            authority=authority,
-        )
+        task_digest = binding.task_digest
 
         async with self._lock:
             if self._closed:
@@ -277,8 +237,59 @@ class IntegratedAgentAdmission:
                 )
             self._task_digests.setdefault(task.task_id, task_digest)
             self._seen_run_ids.add(effective_request.run_id)
+            self._seen_bindings[effective_request.run_id] = binding
+            self._seen_requests[effective_request.run_id] = effective_request
             self._active[effective_request.run_id] = binding
             self._active_requests[effective_request.run_id] = effective_request
+
+        return IntegratedAgentAdmissionLease(self, effective_request, binding)
+
+    async def restore_run(
+        self,
+        task: IntegratedTaskRequest,
+        request: AgentRunRequest,
+    ) -> IntegratedAgentAdmissionLease:
+        """Restore exact reviewed live state without treating the run as a new admission."""
+
+        effective_request, binding = _prepare_integrated_run(
+            self._profile,
+            self._service_configuration,
+            task,
+            request,
+        )
+        task_digest = binding.task_digest
+        run_id = effective_request.run_id
+
+        async with self._lock:
+            if self._closed:
+                raise IntegratedAgentRejectedError("integrated agent admission is closed")
+            known_digest = self._task_digests.get(task.task_id)
+            if known_digest is not None and known_digest != task_digest:
+                raise IntegratedAgentValidationError(
+                    "integrated task identity cannot be reused with changed canonical bytes"
+                )
+            if run_id in self._active or run_id in self._active_requests:
+                raise IntegratedAgentRejectedError(
+                    "agent run is already active in integrated admission"
+                )
+
+            seen_binding = self._seen_bindings.get(run_id)
+            if seen_binding is not None and seen_binding != binding:
+                raise IntegratedAgentValidationError(
+                    "agent run cannot be restored with a changed integrated binding"
+                )
+            seen_request = self._seen_requests.get(run_id)
+            if seen_request is not None and seen_request != effective_request:
+                raise IntegratedAgentValidationError(
+                    "agent run cannot be restored with a changed effective request"
+                )
+
+            self._task_digests.setdefault(task.task_id, task_digest)
+            self._seen_run_ids.add(run_id)
+            self._seen_bindings.setdefault(run_id, binding)
+            self._seen_requests.setdefault(run_id, effective_request)
+            self._active[run_id] = binding
+            self._active_requests[run_id] = effective_request
 
         return IntegratedAgentAdmissionLease(self, effective_request, binding)
 
@@ -315,6 +326,66 @@ class IntegratedAgentAdmission:
                 )
             del self._active[binding.run_id]
             del self._active_requests[binding.run_id]
+
+
+def _prepare_integrated_run(
+    profile: IntegratedExecutionProfile,
+    configuration: AgentServiceConfiguration,
+    task: IntegratedTaskRequest,
+    request: AgentRunRequest,
+) -> tuple[AgentRunRequest, IntegratedAgentRunBinding]:
+    if not isinstance(task, IntegratedTaskRequest):
+        raise TypeError("task must be IntegratedTaskRequest")
+    if not isinstance(request, AgentRunRequest):
+        raise TypeError("request must be AgentRunRequest")
+    if (
+        request.agent_id != profile.agent_id
+        or request.agent_id != configuration.agent_id
+        or request.provider_id != configuration.provider_id
+        or request.model_id != configuration.model_id
+    ):
+        raise IntegratedAgentValidationError(
+            "agent run does not match the server-owned integrated execution binding"
+        )
+
+    effective_limits = most_restrictive_agent_limits(
+        request.limits,
+        profile.limits,
+        configuration.limits,
+    )
+    effective_deadline = min(
+        request.deadline,
+        request.created_at + effective_limits.total_duration,
+    )
+    effective_request = AgentRunRequest(
+        agent_id=request.agent_id,
+        provider_id=request.provider_id,
+        model_id=request.model_id,
+        messages=request.messages,
+        limits=effective_limits,
+        metadata=request.metadata,
+        run_id=request.run_id,
+        created_at=request.created_at,
+        deadline=effective_deadline,
+    )
+    task_digest = task.digest
+    authority = _integrated_agent_run_authority(
+        task_id=task.task_id,
+        task_digest=task_digest,
+        profile=profile,
+    )
+    binding = IntegratedAgentRunBinding(
+        run_id=effective_request.run_id,
+        task_id=task.task_id,
+        task_digest=task_digest,
+        profile_id=profile.profile_id,
+        profile_generation=profile.generation,
+        agent_id=profile.agent_id,
+        effective_limits=effective_limits,
+        budget_extension=profile.budget_extension,
+        authority=authority,
+    )
+    return effective_request, binding
 
 
 def most_restrictive_agent_limits(*limits: AgentLimits) -> AgentLimits:

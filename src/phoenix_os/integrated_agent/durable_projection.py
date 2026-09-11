@@ -351,7 +351,8 @@ def validate_integrated_durable_projection(
         if next_operation is not CheckpointNextOperation.NONE:
             raise IntegratedAgentCodecError("terminal projection requires no next operation")
     elif next_operation is CheckpointNextOperation.NONE:
-        raise IntegratedAgentCodecError("non-terminal projection cannot use no next operation")
+        if checkpoint.status is not DurableRunStatus.CHECKPOINTING:
+            raise IntegratedAgentCodecError("non-terminal projection cannot use no next operation")
     elif (
         phase is not IntegratedOrchestrationPhase.WAITING
         and next_operation not in _ACTIVE_NEXT_OPERATIONS

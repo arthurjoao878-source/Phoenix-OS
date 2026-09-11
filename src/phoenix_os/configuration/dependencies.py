@@ -7,6 +7,7 @@ import inspect
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, cast
 from uuid import uuid4
@@ -64,11 +65,17 @@ if TYPE_CHECKING:
     from phoenix_os.agent.durable_cleanup_administration import (
         DurableCleanupAdministration,
     )
+    from phoenix_os.agent.durable_compatibility import DurableCompatibilityPolicy
+    from phoenix_os.agent.durable_metadata import (
+        DurableCheckpointHistoryValidator,
+        DurableCheckpointMetadataProjector,
+    )
     from phoenix_os.agent.durable_reconciliation_administration import (
         DurableReconciliationAdministration,
         DurableReconciliationStatusLookup,
     )
     from phoenix_os.agent.durable_runtime import DurableStorageLifecycle
+    from phoenix_os.agent.loop import AgentExecutionInterceptor
     from phoenix_os.audit import AuditLedger
     from phoenix_os.control_plane import (
         AdminTokenAuthenticator,
@@ -89,6 +96,10 @@ if TYPE_CHECKING:
         ControlPlaneStepUpPolicy,
         ControlPlaneTlsListenerConfig,
         JobRecordSource,
+    )
+    from phoenix_os.control_plane.operator_configuration import (
+        OperatorConfiguration,
+        OperatorProfileConfiguration,
     )
     from phoenix_os.control_plane.service_account_contracts import (
         ControlPlaneServiceAccountRepository,
@@ -113,6 +124,8 @@ if TYPE_CHECKING:
     )
     from phoenix_os.inference.configuration import InferenceServiceConfiguration
     from phoenix_os.inference.contracts import ModelProvider
+    from phoenix_os.integrated_agent.composition import IntegratedAgentToolComposition
+    from phoenix_os.integrated_agent.profiles import IntegratedExecutionProfile
     from phoenix_os.jobs import JobScheduler
     from phoenix_os.secrets import SecretsManager
     from phoenix_os.webhooks import (
@@ -191,6 +204,7 @@ _RESERVED_DEFINITION_NAMES = frozenset(
         "control_plane.secure-http",
         "control_plane.remote-login",
         "control_plane.remote-audit",
+        "control_plane.task-runtime",
         "control_plane.webhook-http",
         "control_plane.webhooks",
         "control_plane.inbound",
@@ -709,6 +723,7 @@ class RuntimeAssembler:
         agent_enabled: bool = False,
         agent_configuration: AgentServiceConfiguration | None = None,
         agent_model_adapter: AgentModelTurnAdapter | None = None,
+        agent_execution_interceptor: AgentExecutionInterceptor | None = None,
         agent_tool_resolvers: tuple[ToolResourceResolver, ...] = (),
         agent_tool_adapters: tuple[ToolAdapter, ...] = (),
         agent_approval_service: ToolApprovalService | None = None,
@@ -726,9 +741,12 @@ class RuntimeAssembler:
             AgentWorkspaceCleanupRuntimeConfiguration | None
         ) = None,
         agent_durable_enabled: bool = False,
+        agent_durable_sqlite_path: str | Path | None = None,
         agent_durable_store: DurableRunStore | None = None,
         agent_durable_lease_manager: DurableLeaseManager | None = None,
         agent_durable_compatibility_validator: DurableCompatibilityValidator | None = None,
+        agent_durable_metadata_projector: DurableCheckpointMetadataProjector | None = None,
+        agent_durable_history_validator: DurableCheckpointHistoryValidator | None = None,
         agent_durable_recovery_configuration: DurableRecoveryWorkerConfiguration | None = None,
         agent_durable_approval_revalidator: DurableApprovalRevalidator | None = None,
         agent_durable_administration_configuration: (
@@ -745,6 +763,14 @@ class RuntimeAssembler:
         agent_checkpoint_protector: CheckpointProtector | None = None,
         agent_durable_retention_policy: RetentionPolicy | None = None,
         agent_durable_retention_configuration: DurableRetentionWorkerConfiguration | None = None,
+        agent_integrated_task_runtime_enabled: bool = False,
+        agent_integrated_profile: IntegratedExecutionProfile | None = None,
+        agent_integrated_composition: IntegratedAgentToolComposition | None = None,
+        agent_integrated_compatibility_policy: DurableCompatibilityPolicy | None = None,
+        agent_integrated_actor_id: str | None = None,
+        agent_integrated_owner_id: str | None = None,
+        agent_integrated_operator_configuration: OperatorConfiguration | None = None,
+        agent_integrated_operator_profile: OperatorProfileConfiguration | None = None,
         webhooks_enabled: bool = False,
         webhook_service_account_administration_enabled: bool = False,
         webhook_subscription_repository: WebhookSubscriptionRepository | None = None,
@@ -857,6 +883,7 @@ class RuntimeAssembler:
         self._agent_enabled = agent_enabled
         self._agent_configuration = agent_configuration
         self._agent_model_adapter = agent_model_adapter
+        self._agent_execution_interceptor = agent_execution_interceptor
         self._agent_tool_resolvers = tuple(agent_tool_resolvers)
         self._agent_tool_adapters = tuple(agent_tool_adapters)
         self._agent_approval_service = agent_approval_service
@@ -870,9 +897,12 @@ class RuntimeAssembler:
         self._agent_workspace_transfer_configuration = agent_workspace_transfer_configuration
         self._agent_workspace_cleanup_configuration = agent_workspace_cleanup_configuration
         self._agent_durable_enabled = agent_durable_enabled
+        self._agent_durable_sqlite_path = agent_durable_sqlite_path
         self._agent_durable_store = agent_durable_store
         self._agent_durable_lease_manager = agent_durable_lease_manager
         self._agent_durable_compatibility_validator = agent_durable_compatibility_validator
+        self._agent_durable_metadata_projector = agent_durable_metadata_projector
+        self._agent_durable_history_validator = agent_durable_history_validator
         self._agent_durable_recovery_configuration = agent_durable_recovery_configuration
         self._agent_durable_approval_revalidator = agent_durable_approval_revalidator
         self._agent_durable_administration_configuration = (
@@ -893,6 +923,14 @@ class RuntimeAssembler:
         self._agent_checkpoint_protector = agent_checkpoint_protector
         self._agent_durable_retention_policy = agent_durable_retention_policy
         self._agent_durable_retention_configuration = agent_durable_retention_configuration
+        self._agent_integrated_task_runtime_enabled = agent_integrated_task_runtime_enabled
+        self._agent_integrated_profile = agent_integrated_profile
+        self._agent_integrated_composition = agent_integrated_composition
+        self._agent_integrated_compatibility_policy = agent_integrated_compatibility_policy
+        self._agent_integrated_actor_id = agent_integrated_actor_id
+        self._agent_integrated_owner_id = agent_integrated_owner_id
+        self._agent_integrated_operator_configuration = agent_integrated_operator_configuration
+        self._agent_integrated_operator_profile = agent_integrated_operator_profile
         self._webhooks_enabled = webhooks_enabled
         self._webhook_service_account_administration_enabled = (
             webhook_service_account_administration_enabled
@@ -1049,10 +1087,20 @@ class RuntimeAssembler:
                 raise ValueError("enabled inference requires at least one provider")
         if not isinstance(agent_enabled, bool):
             raise TypeError("agent enabled flag must be bool")
+        if agent_execution_interceptor is not None:
+            from phoenix_os.agent.loop import (
+                AgentExecutionInterceptor as RuntimeAgentExecutionInterceptor,
+            )
+
+            if not isinstance(agent_execution_interceptor, RuntimeAgentExecutionInterceptor):
+                raise TypeError(
+                    "agent execution interceptor must implement AgentExecutionInterceptor"
+                )
         agent_options_supplied = any(
             (
                 agent_configuration is not None,
                 agent_model_adapter is not None,
+                agent_execution_interceptor is not None,
                 bool(self._agent_tool_resolvers),
                 bool(self._agent_tool_adapters),
                 agent_approval_service is not None,
@@ -1066,8 +1114,8 @@ class RuntimeAssembler:
                 raise ValueError("enabled agent requires a PolicyEngine")
             if agent_configuration is None:
                 raise ValueError("enabled agent requires configuration")
-            if agent_model_adapter is None:
-                raise ValueError("enabled agent requires a model adapter")
+            if agent_model_adapter is None and not inference_enabled:
+                raise ValueError("enabled agent requires a model adapter or enabled inference")
 
         memory_options_supplied = any(
             (
@@ -1174,15 +1222,209 @@ class RuntimeAssembler:
 
         if not isinstance(agent_durable_enabled, bool):
             raise TypeError("agent durable enabled flag must be bool")
+        if agent_durable_sqlite_path is not None and not isinstance(
+            agent_durable_sqlite_path,
+            (str, Path),
+        ):
+            raise TypeError("agent durable SQLite path must be str or Path")
+        if agent_durable_metadata_projector is not None:
+            from phoenix_os.agent.durable_metadata import (
+                DurableCheckpointMetadataProjector as RuntimeDurableCheckpointMetadataProjector,
+            )
+
+            if not isinstance(
+                agent_durable_metadata_projector,
+                RuntimeDurableCheckpointMetadataProjector,
+            ):
+                raise TypeError("agent durable metadata projector has an invalid type")
+        if agent_durable_history_validator is not None:
+            from phoenix_os.agent.durable_metadata import (
+                DurableCheckpointHistoryValidator as RuntimeDurableCheckpointHistoryValidator,
+            )
+
+            if not isinstance(
+                agent_durable_history_validator,
+                RuntimeDurableCheckpointHistoryValidator,
+            ):
+                raise TypeError("agent durable history validator has an invalid type")
         if not isinstance(agent_durable_reconciliation_administration_enabled, bool):
             raise TypeError("agent durable reconciliation administration enabled flag must be bool")
         if not isinstance(agent_durable_cleanup_administration_enabled, bool):
             raise TypeError("agent durable cleanup administration enabled flag must be bool")
+        if not isinstance(agent_integrated_task_runtime_enabled, bool):
+            raise TypeError("agent integrated task runtime enabled flag must be bool")
+        integrated_task_runtime_options_supplied = any(
+            (
+                agent_integrated_profile is not None,
+                agent_integrated_composition is not None,
+                agent_integrated_compatibility_policy is not None,
+                agent_integrated_actor_id is not None,
+                agent_integrated_owner_id is not None,
+                agent_integrated_operator_configuration is not None,
+                agent_integrated_operator_profile is not None,
+            )
+        )
+        if integrated_task_runtime_options_supplied and not agent_integrated_task_runtime_enabled:
+            raise ValueError(
+                "integrated task runtime options require agent_integrated_task_runtime_enabled"
+            )
+        if agent_integrated_task_runtime_enabled:
+            from phoenix_os.control_plane.operator_configuration import (
+                OperatorConfiguration as RuntimeOperatorConfiguration,
+            )
+            from phoenix_os.control_plane.operator_configuration import (
+                OperatorProfileConfiguration as RuntimeOperatorProfileConfiguration,
+            )
+
+            if (agent_integrated_operator_configuration is None) != (
+                agent_integrated_operator_profile is None
+            ):
+                raise ValueError(
+                    "integrated task runtime operator configuration and profile "
+                    "must be provided together"
+                )
+            if agent_integrated_operator_configuration is not None and not isinstance(
+                agent_integrated_operator_configuration,
+                RuntimeOperatorConfiguration,
+            ):
+                raise TypeError("agent integrated operator configuration has an invalid type")
+            if agent_integrated_operator_profile is not None and not isinstance(
+                agent_integrated_operator_profile,
+                RuntimeOperatorProfileConfiguration,
+            ):
+                raise TypeError("agent integrated operator profile has an invalid type")
+
+            from phoenix_os.agent.durable_compatibility import (
+                DurableCompatibilityPolicy as RuntimeDurableCompatibilityPolicy,
+            )
+            from phoenix_os.integrated_agent.composition import (
+                IntegratedAgentToolComposition as RuntimeIntegratedAgentToolComposition,
+            )
+            from phoenix_os.integrated_agent.execution_guard import (
+                IntegratedAgentExecutionGuard,
+            )
+            from phoenix_os.integrated_agent.profiles import (
+                IntegratedExecutionProfile as RuntimeIntegratedExecutionProfile,
+            )
+
+            if not agent_enabled:
+                raise ValueError("enabled integrated task runtime requires agent_enabled")
+            if not agent_durable_enabled:
+                raise ValueError("enabled integrated task runtime requires agent_durable_enabled")
+            if not isinstance(agent_integrated_profile, RuntimeIntegratedExecutionProfile):
+                raise TypeError(
+                    "enabled integrated task runtime requires an IntegratedExecutionProfile"
+                )
+            if not isinstance(
+                agent_integrated_composition,
+                RuntimeIntegratedAgentToolComposition,
+            ):
+                raise TypeError(
+                    "enabled integrated task runtime requires an IntegratedAgentToolComposition"
+                )
+            if not isinstance(
+                agent_integrated_compatibility_policy,
+                RuntimeDurableCompatibilityPolicy,
+            ):
+                raise TypeError(
+                    "enabled integrated task runtime requires a DurableCompatibilityPolicy"
+                )
+            if not isinstance(agent_execution_interceptor, IntegratedAgentExecutionGuard):
+                raise ValueError(
+                    "enabled integrated task runtime requires IntegratedAgentExecutionGuard"
+                )
+            if agent_execution_interceptor.profile != agent_integrated_profile:
+                raise ValueError("integrated task runtime execution guard profile mismatch")
+            if agent_integrated_composition.profile != agent_integrated_profile:
+                raise ValueError("integrated task runtime composition profile mismatch")
+            if agent_integrated_compatibility_policy.agent_id != agent_integrated_profile.agent_id:
+                raise ValueError("integrated task runtime compatibility policy agent mismatch")
+            if agent_configuration is None:
+                raise AssertionError("integrated task runtime lost agent configuration")
+            agent_integrated_composition.require_service_configuration(agent_configuration)
+            expected_resolvers = agent_integrated_composition.runtime_resolvers
+            if len(self._agent_tool_resolvers) != len(expected_resolvers) or any(
+                actual is not expected
+                for actual, expected in zip(
+                    self._agent_tool_resolvers,
+                    expected_resolvers,
+                    strict=True,
+                )
+            ):
+                raise ValueError("integrated task runtime requires exact composition resolvers")
+            expected_adapters = agent_integrated_composition.adapters
+            if len(self._agent_tool_adapters) != len(expected_adapters) or any(
+                actual is not expected
+                for actual, expected in zip(
+                    self._agent_tool_adapters,
+                    expected_adapters,
+                    strict=True,
+                )
+            ):
+                raise ValueError("integrated task runtime requires exact composition adapters")
+            if self._agent_integrated_operator_configuration is not None:
+                from phoenix_os.agent.checkout_agent_tools import (
+                    CHECKOUT_LIST_TOOL_ID,
+                    CHECKOUT_READ_TOOL_ID,
+                    CheckoutToolAdapter,
+                )
+                from phoenix_os.agent.checkout_authorization import (
+                    PolicyEngineCheckoutWorkspaceAuthorizer,
+                )
+
+                by_tool_id = {
+                    registration.tool_id: registration
+                    for registration in agent_integrated_composition.registrations
+                }
+                checkout_adapters: list[CheckoutToolAdapter] = []
+                for checkout_tool_id in (
+                    CHECKOUT_LIST_TOOL_ID,
+                    CHECKOUT_READ_TOOL_ID,
+                ):
+                    checkout_registration = by_tool_id.get(checkout_tool_id)
+                    if checkout_registration is None or not isinstance(
+                        checkout_registration.adapter,
+                        CheckoutToolAdapter,
+                    ):
+                        raise ValueError("integrated task runtime requires exact checkout adapters")
+                    checkout_adapters.append(checkout_registration.adapter)
+
+                list_adapter, read_adapter = checkout_adapters
+                if list_adapter.registration is not read_adapter.registration:
+                    raise ValueError(
+                        "integrated task runtime checkout adapters must share one registration"
+                    )
+                if list_adapter.authorizer is not read_adapter.authorizer:
+                    raise ValueError(
+                        "integrated task runtime checkout adapters must share one authorizer"
+                    )
+                checkout_authorizer = list_adapter.authorizer
+                if not isinstance(
+                    checkout_authorizer,
+                    PolicyEngineCheckoutWorkspaceAuthorizer,
+                ):
+                    raise ValueError(
+                        "integrated task runtime checkout authorizer must be policy-backed"
+                    )
+                if checkout_authorizer.policy is not self._policy:
+                    raise ValueError(
+                        "integrated task runtime checkout authorizer must use shared policy"
+                    )
+            for value, label in (
+                (agent_integrated_actor_id, "actor id"),
+                (agent_integrated_owner_id, "owner id"),
+            ):
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"integrated task runtime {label} must not be blank")
+
         durable_options_supplied = any(
             (
+                agent_durable_sqlite_path is not None,
                 agent_durable_store is not None,
                 agent_durable_lease_manager is not None,
                 agent_durable_compatibility_validator is not None,
+                agent_durable_metadata_projector is not None,
+                agent_durable_history_validator is not None,
                 agent_durable_recovery_configuration is not None,
                 agent_durable_approval_revalidator is not None,
                 agent_durable_administration_configuration is not None,
@@ -1200,10 +1442,21 @@ class RuntimeAssembler:
         if agent_durable_enabled:
             if not agent_enabled:
                 raise ValueError("enabled durable agent requires agent_enabled")
-            if agent_durable_store is None:
-                raise ValueError("enabled durable agent requires a DurableRunStore")
-            if agent_durable_lease_manager is None:
-                raise ValueError("enabled durable agent requires a DurableLeaseManager")
+            if agent_durable_sqlite_path is not None:
+                if agent_durable_store is not None or agent_durable_lease_manager is not None:
+                    raise ValueError(
+                        "durable SQLite path cannot be combined with explicit durable storage"
+                    )
+            else:
+                if agent_durable_store is None:
+                    raise ValueError(
+                        "enabled durable agent requires a DurableRunStore or durable SQLite path"
+                    )
+                if agent_durable_lease_manager is None:
+                    raise ValueError(
+                        "enabled durable agent requires a DurableLeaseManager "
+                        "or durable SQLite path"
+                    )
             if agent_durable_compatibility_validator is None:
                 raise ValueError("enabled durable agent requires a DurableCompatibilityValidator")
             if (
@@ -1728,11 +1981,16 @@ class RuntimeAssembler:
             from phoenix_os.agent import create_agent_runtime_stack
 
             assert self._agent_configuration is not None
-            assert self._agent_model_adapter is not None
             assert self._policy is not None
+            model_adapter = self._agent_model_adapter
+            if model_adapter is None:
+                from phoenix_os.agent.model_turn import InferenceBackedAgentModelTurnAdapter
+
+                assert inference_stack is not None
+                model_adapter = InferenceBackedAgentModelTurnAdapter(inference_stack.service)
             agent_stack = create_agent_runtime_stack(
                 configuration=self._agent_configuration,
-                model_adapter=self._agent_model_adapter,
+                model_adapter=model_adapter,
                 tool_resolvers=self._agent_tool_resolvers,
                 tool_adapters=self._agent_tool_adapters,
                 policy=self._policy,
@@ -1741,6 +1999,7 @@ class RuntimeAssembler:
                 approval_service=self._agent_approval_service,
                 approval_resolver=self._agent_approval_resolver,
                 memory_context=(None if agent_memory_stack is None else agent_memory_stack.context),
+                execution_interceptor=self._agent_execution_interceptor,
                 audit=self._audit,
                 observability=self._observability,
             )
@@ -2343,6 +2602,7 @@ class RuntimeAssembler:
         durable_reconciliation_storage_lifecycle = None
         durable_cleanup_lifecycle = None
         durable_cleanup_storage_lifecycle = None
+        owned_durable_sqlite_store = None
         try:
             if self._agent_durable_enabled:
                 from phoenix_os.agent import (
@@ -2353,14 +2613,25 @@ class RuntimeAssembler:
                     create_durable_agent_runtime_stack,
                 )
                 from phoenix_os.agent.durable_authorization import (
+                    PolicyEngineDurableCancellationAuthorizer,
                     PolicyEngineDurableReconciliationAuthorizer,
                     PolicyEngineDurableResumeAuthorizer,
                 )
                 from phoenix_os.policy import PrincipalType
 
                 assert self._agent_configuration is not None
-                assert self._agent_durable_store is not None
-                assert self._agent_durable_lease_manager is not None
+                durable_store = self._agent_durable_store
+                durable_lease_manager = self._agent_durable_lease_manager
+                if self._agent_durable_sqlite_path is not None:
+                    from phoenix_os.agent.durable_sqlite import SQLiteDurableRunStore
+
+                    owned_durable_sqlite_store = SQLiteDurableRunStore(
+                        self._agent_durable_sqlite_path
+                    )
+                    durable_store = owned_durable_sqlite_store
+                    durable_lease_manager = owned_durable_sqlite_store.lease_manager
+                assert durable_store is not None
+                assert durable_lease_manager is not None
                 assert self._agent_durable_compatibility_validator is not None
                 assert self._policy is not None
 
@@ -2369,9 +2640,13 @@ class RuntimeAssembler:
                     if self._agent_durable_recovery_configuration is not None
                     else DurableRecoveryWorkerConfiguration()
                 )
+                cancellation_authorizer = PolicyEngineDurableCancellationAuthorizer(
+                    self._policy,
+                    durable_lease_manager,
+                )
                 resume_authorizer = PolicyEngineDurableResumeAuthorizer(
                     self._policy,
-                    self._agent_durable_lease_manager,
+                    durable_lease_manager,
                 )
                 resume_context = SecurityContext(
                     principal=selected_recovery_configuration.owner_id,
@@ -2404,9 +2679,11 @@ class RuntimeAssembler:
                     )
 
                 durable_agent_stack = create_durable_agent_runtime_stack(
-                    store=self._agent_durable_store,
-                    lease_manager=self._agent_durable_lease_manager,
+                    store=durable_store,
+                    lease_manager=durable_lease_manager,
                     compatibility_validator=self._agent_durable_compatibility_validator,
+                    metadata_projector=self._agent_durable_metadata_projector,
+                    history_validator=self._agent_durable_history_validator,
                     recovery_configuration=selected_recovery_configuration,
                     approval_revalidator=approval_revalidator,
                     resume_authorizer=resume_authorizer,
@@ -2414,6 +2691,7 @@ class RuntimeAssembler:
                     observer=durable_observer,
                     administration_configuration=(self._agent_durable_administration_configuration),
                     machine_guard=self._agent_durable_machine_administration_guard,
+                    cancellation_authorizer=cancellation_authorizer,
                     reconciliation_authorizer=reconciliation_authorizer,
                     reconciliation_audit=(
                         self._audit
@@ -2429,6 +2707,9 @@ class RuntimeAssembler:
                     ),
                 )
                 custom_services["agent.durable"] = durable_agent_stack
+                if durable_agent_stack.cancellation is None:
+                    raise AssertionError("durable cancellation composition is unavailable")
+                custom_services["agent.durable.cancellation"] = durable_agent_stack.cancellation
                 custom_services["agent.durable.administration"] = durable_agent_stack.administration
                 custom_services["agent.durable.observer"] = durable_agent_stack.observer
                 if durable_agent_stack.reconciliation_administration is not None:
@@ -2458,6 +2739,84 @@ class RuntimeAssembler:
                     )
                 if durable_agent_stack.protector is not None:
                     custom_services["agent.durable.protector"] = durable_agent_stack.protector
+
+                if self._agent_integrated_task_runtime_enabled:
+                    from phoenix_os.control_plane.task_runtime_composition import (
+                        compose_server_owned_durable_integrated_task_runtime,
+                    )
+                    from phoenix_os.integrated_agent.execution_guard import (
+                        IntegratedAgentExecutionGuard,
+                    )
+
+                    if agent_stack is None:
+                        raise AssertionError("integrated task runtime lost agent stack")
+                    execution_guard = self._agent_execution_interceptor
+                    if not isinstance(execution_guard, IntegratedAgentExecutionGuard):
+                        raise AssertionError("integrated task runtime lost exact execution guard")
+                    if self._agent_integrated_profile is None:
+                        raise AssertionError("integrated task runtime lost profile")
+                    if self._agent_integrated_composition is None:
+                        raise AssertionError("integrated task runtime lost composition")
+                    if self._agent_integrated_compatibility_policy is None:
+                        raise AssertionError("integrated task runtime lost compatibility policy")
+                    if self._agent_integrated_actor_id is None:
+                        raise AssertionError("integrated task runtime lost actor id")
+                    if self._agent_integrated_owner_id is None:
+                        raise AssertionError("integrated task runtime lost owner id")
+                    task_runtime = compose_server_owned_durable_integrated_task_runtime(
+                        service=agent_stack.service,
+                        durable_stack=durable_agent_stack,
+                        profile=self._agent_integrated_profile,
+                        execution_guard=execution_guard,
+                        compatibility_policy=(self._agent_integrated_compatibility_policy),
+                        actor_id=self._agent_integrated_actor_id,
+                        owner_id=self._agent_integrated_owner_id,
+                        composition=self._agent_integrated_composition,
+                        operator_configuration=(self._agent_integrated_operator_configuration),
+                        operator_profile=self._agent_integrated_operator_profile,
+                    )
+                    custom_services["control_plane.task-runtime"] = task_runtime
+                    if (
+                        control_plane_stack is not None
+                        and control_plane_stack.operator_access is not None
+                        and task_runtime.operator_configuration is not None
+                        and task_runtime.operator_profile is not None
+                    ):
+                        from phoenix_os.control_plane.authority_integration import (
+                            ControlPlaneDurableAuthorityFreshnessValidator,
+                        )
+                        from phoenix_os.control_plane.task_http import (
+                            ServerOwnedControlPlaneTaskHttpAdministration,
+                        )
+                        from phoenix_os.policy import PolicyEngine as RuntimePolicyEngine
+
+                        shared_policy = self._policy
+                        task_owner_id = self._agent_integrated_owner_id
+                        if not isinstance(shared_policy, RuntimePolicyEngine):
+                            raise AssertionError("integrated task HTTP lost shared policy")
+                        if (
+                            not isinstance(task_owner_id, str)
+                            or not task_owner_id.strip()
+                            or task_owner_id != task_owner_id.strip()
+                        ):
+                            raise AssertionError("integrated task HTTP lost exact owner id")
+                        durable_sessions = control_plane_stack.durable_sessions
+                        operator_registry = control_plane_stack.operator_registry
+                        if durable_sessions is None or operator_registry is None:
+                            raise AssertionError(
+                                "integrated task HTTP lost durable session freshness owners"
+                            )
+                        task_authority_freshness = ControlPlaneDurableAuthorityFreshnessValidator(
+                            repository=durable_sessions,
+                            registry=operator_registry,
+                        )
+                        task_http_administration = ServerOwnedControlPlaneTaskHttpAdministration(
+                            owner=task_runtime,
+                            policy=shared_policy,
+                            lease_owner_id=task_owner_id,
+                            authority_freshness=task_authority_freshness,
+                        )
+                        control_plane_stack.http.bind_task_http(task_http_administration)
 
                 reconciliation_coordinator = durable_agent_stack.reconciliation_administration
                 if reconciliation_coordinator is not None:
@@ -2637,6 +2996,12 @@ class RuntimeAssembler:
             if durable_agent_stack is not None:
                 try:
                     await durable_agent_stack.close()
+                except (Exception, asyncio.CancelledError) as rollback_exception:
+                    if rollback_failure is None:
+                        rollback_failure = rollback_exception
+            elif owned_durable_sqlite_store is not None:
+                try:
+                    await owned_durable_sqlite_store.close()
                 except (Exception, asyncio.CancelledError) as rollback_exception:
                     if rollback_failure is None:
                         rollback_failure = rollback_exception

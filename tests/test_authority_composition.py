@@ -103,7 +103,7 @@ from phoenix_os.agent.durable_contracts import (
 )
 from phoenix_os.agent.durable_lease import InMemoryDurableLeaseManager
 from phoenix_os.agent.errors import AgentAuthorizationRejectedError, AgentServiceUnavailableError
-from phoenix_os.agent.loop import AgentModelTurnExecutionDriver
+from phoenix_os.agent.loop import AgentModelTurnExecutionDriver, AgentToolExecutionDriver
 from phoenix_os.agent.service import AgentService
 from phoenix_os.agent.state import AgentBudgetSnapshot, AgentCancellationToken
 from phoenix_os.agent.workspace_authorization import (
@@ -135,6 +135,7 @@ from phoenix_os.agent.workspace_contracts import (
 )
 from phoenix_os.agent.workspace_service import AgentWorkspaceService
 from phoenix_os.agent.workspace_store import StateStoreWorkspaceStore
+from phoenix_os.authority import AuthorityFreshnessValidator
 from phoenix_os.events import EventBus
 from phoenix_os.host_automation import (
     HOST_APPLICATION_LAUNCH_ACTION,
@@ -821,7 +822,10 @@ class _RecordingChildAgentService(AgentService):
         *,
         cancellation: AgentCancellationToken | None = None,
         _authority_binding: AgentRunAuthorityBinding | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
         _model_turn_execution_driver: AgentModelTurnExecutionDriver | None = None,
+        _tool_execution_driver: AgentToolExecutionDriver | None = None,
+        _restored_budget: AgentBudgetSnapshot | None = None,
     ) -> AgentRunResult:
         self.run_requests.append(request)
         self.run_contexts.append(context)
@@ -830,7 +834,10 @@ class _RecordingChildAgentService(AgentService):
             context,
             cancellation=cancellation,
             _authority_binding=_authority_binding,
+            _authority_freshness=_authority_freshness,
             _model_turn_execution_driver=_model_turn_execution_driver,
+            _tool_execution_driver=_tool_execution_driver,
+            _restored_budget=_restored_budget,
         )
 
 

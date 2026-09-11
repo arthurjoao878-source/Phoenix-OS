@@ -165,6 +165,36 @@ provider_model_name = "qwen3:4b-instruct"
         load_operator_configuration(config)
 
 
+@pytest.mark.parametrize(
+    "logical_path",
+    (
+        "Src",
+        "src/Ãrvore.py",
+        "src/name with space.py",
+        "src/con.txt",
+        "src/file.",
+        ".git/config",
+    ),
+)
+def test_checkout_configuration_rejects_non_policy_safe_logical_paths(
+    tmp_path: Path,
+    logical_path: str,
+) -> None:
+    root = tmp_path / "checkout"
+    root.mkdir()
+    config = tmp_path / "phoenix.toml"
+    config.write_text(
+        _configured_document(root).replace(
+            'read_prefixes = ["src", "tests"]',
+            f"read_prefixes = {json.dumps([logical_path])}",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OperatorConfigurationError):
+        load_operator_configuration(config)
+
+
 def test_profile_context_must_be_inside_workspace_read_prefixes(tmp_path: Path) -> None:
     root = tmp_path / "checkout"
     root.mkdir()
@@ -510,3 +540,54 @@ def test_existing_authority_parser_path_remains_available() -> None:
     assert authority.authority_command == "inspect"
     assert config.command == "config"
     assert doctor.command == "doctor"
+
+
+def test_operator_configuration_compiles_explicit_durable_state_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "checkout"
+    root.mkdir()
+    durable_state = tmp_path / "state" / "agent-durable.sqlite3"
+    config = tmp_path / "phoenix.toml"
+    config.write_text(
+        _configured_document(root)
+        + "\n[runtime]\n"
+        + f"durable_state_path = {json.dumps(durable_state.as_posix())}\n",
+        encoding="utf-8",
+    )
+
+    compiled = load_operator_configuration(config)
+
+    assert compiled.runtime is not None
+    assert compiled.runtime.durable_state_path == durable_state.resolve(strict=False)
+    assert not durable_state.parent.exists()
+    projected = operator_configuration.project_operator_configuration(compiled)
+    assert projected["runtime"] == {
+        "durable_state_path": str(durable_state.resolve(strict=False)),
+    }
+
+
+def test_operator_configuration_rejects_relative_durable_state_path(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "phoenix.toml"
+    config.write_text(
+        'schema_version = 1\n\n[runtime]\ndurable_state_path = "state.sqlite3"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OperatorConfigurationError):
+        load_operator_configuration(config)
+
+
+def test_operator_configuration_rejects_durable_state_over_config_source(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "phoenix.toml"
+    config.write_text(
+        f"schema_version = 1\n\n[runtime]\ndurable_state_path = {json.dumps(config.as_posix())}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OperatorConfigurationError):
+        load_operator_configuration(config)

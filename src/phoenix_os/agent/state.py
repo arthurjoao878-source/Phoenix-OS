@@ -97,6 +97,43 @@ class AgentRunBudget:
         self._input_tokens = 0
         self._output_tokens = 0
 
+    @classmethod
+    def restore(
+        cls,
+        limits: AgentLimits,
+        snapshot: AgentBudgetSnapshot,
+    ) -> AgentRunBudget:
+        """Restore exact bounded usage without replaying already-consumed work."""
+
+        if not isinstance(snapshot, AgentBudgetSnapshot):
+            raise TypeError("snapshot must be AgentBudgetSnapshot")
+        restored = cls(
+            limits,
+            started_at=snapshot.started_at,
+            deadline=snapshot.deadline,
+        )
+        if snapshot.steps != snapshot.model_turns + snapshot.tool_calls:
+            raise AgentStateConflictError()
+        if (
+            snapshot.steps > limits.max_steps
+            or snapshot.model_turns > limits.max_model_turns
+            or snapshot.tool_calls > limits.max_tool_calls
+            or snapshot.model_output_bytes > limits.max_model_output_bytes
+            or snapshot.tool_result_bytes > limits.max_tool_result_bytes
+            or snapshot.input_tokens > limits.max_input_tokens
+            or snapshot.output_tokens > limits.max_output_tokens
+        ):
+            raise AgentLimitExceededError()
+
+        restored._steps = snapshot.steps
+        restored._model_turns = snapshot.model_turns
+        restored._tool_calls = snapshot.tool_calls
+        restored._model_output_bytes = snapshot.model_output_bytes
+        restored._tool_result_bytes = snapshot.tool_result_bytes
+        restored._input_tokens = snapshot.input_tokens
+        restored._output_tokens = snapshot.output_tokens
+        return restored
+
     @property
     def limits(self) -> AgentLimits:
         return self._limits
@@ -242,6 +279,44 @@ class AgentRunStateMachine:
             started_at=created_at,
             deadline=deadline,
         )
+
+    @classmethod
+    def restore_model_turn_boundary(
+        cls,
+        run_id: AgentRunId,
+        limits: AgentLimits,
+        *,
+        budget: AgentBudgetSnapshot,
+        restored_at: datetime,
+    ) -> AgentRunStateMachine:
+        """Restore one safe pre-model-turn state from authoritative budget evidence."""
+
+        if not isinstance(budget, AgentBudgetSnapshot):
+            raise TypeError("budget must be AgentBudgetSnapshot")
+        _require_aware(restored_at, "restored_at")
+        if restored_at < budget.started_at:
+            raise ValueError("restored_at cannot precede budget started_at")
+        if restored_at >= budget.deadline:
+            raise AgentTimeoutError()
+
+        restored_budget = AgentRunBudget.restore(limits, budget)
+        if budget.model_turns == 0 and budget.tool_calls == 0:
+            status = AgentRunStatus.CREATED
+        elif budget.model_turns == budget.tool_calls:
+            status = AgentRunStatus.VALIDATING_RESULT
+        else:
+            raise AgentStateConflictError()
+
+        machine = cls(
+            run_id,
+            limits,
+            created_at=budget.started_at,
+            deadline=budget.deadline,
+        )
+        machine._status = status
+        machine._updated_at = restored_at
+        machine._budget = restored_budget
+        return machine
 
     @property
     def status(self) -> AgentRunStatus:

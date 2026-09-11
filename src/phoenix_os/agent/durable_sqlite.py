@@ -7,6 +7,7 @@ import os
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
@@ -52,10 +53,69 @@ from phoenix_os.agent.errors import (
 if TYPE_CHECKING:
     from sqlite3 import Connection, Row
 
-DURABLE_SQLITE_SCHEMA_VERSION: Final = 5
+DURABLE_SQLITE_SCHEMA_VERSION: Final = 6
 DEFAULT_DURABLE_SQLITE_BUSY_TIMEOUT_MS: Final = 5_000
 _STORE_WITNESS_PREFIX: Final = "phoenix-durable-store-v1"
 _MAX_STORE_WITNESS_BYTES: Final = 192
+_CHECKOUT_REGISTRATION_DIGEST_LENGTH: Final = 64
+_MAX_CHECKOUT_REGISTRATION_GENERATION: Final = 2**63 - 1
+
+
+@dataclass(frozen=True, slots=True)
+class CheckoutRegistrationIdentity:
+    """Durable server-owned identity for one configured development checkout."""
+
+    workspace_id: UUID
+    generation: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace_id, UUID):
+            raise TypeError("workspace_id must be UUID")
+        if (
+            isinstance(self.generation, bool)
+            or not isinstance(self.generation, int)
+            or not 1 <= self.generation <= _MAX_CHECKOUT_REGISTRATION_GENERATION
+        ):
+            raise ValueError("generation must be a positive bounded integer")
+
+
+def _require_checkout_registration_digest(value: str, *, label: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a string")
+    if len(value) != _CHECKOUT_REGISTRATION_DIGEST_LENGTH or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise ValueError(f"{label} must be a canonical sha256 hex digest")
+    return value
+
+
+def _checkout_registration_identity_from_row(
+    row: Row,
+) -> tuple[CheckoutRegistrationIdentity, str]:
+    try:
+        raw_workspace_id = _row_text(row, "workspace_id")
+        workspace_id = UUID(raw_workspace_id)
+        if str(workspace_id) != raw_workspace_id:
+            raise ValueError("workspace_id is not canonical")
+        generation = _row_int(row, "generation", positive=True)
+        if generation > _MAX_CHECKOUT_REGISTRATION_GENERATION:
+            raise ValueError("generation is outside supported bounds")
+        registration_digest = _require_checkout_registration_digest(
+            _row_text(row, "registration_digest"),
+            label="persisted registration_digest",
+        )
+        return (
+            CheckoutRegistrationIdentity(
+                workspace_id=workspace_id,
+                generation=generation,
+            ),
+            registration_digest,
+        )
+    except AgentCodecError:
+        raise
+    except (TypeError, ValueError) as exception:
+        raise AgentCodecError("persisted checkout registration identity is invalid") from exception
+
 
 _RUN_COLUMNS: Final = """
     run_id,
@@ -648,7 +708,7 @@ class _SQLiteDurableDatabase:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, 2, 3, 4, DURABLE_SQLITE_SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, 5, DURABLE_SQLITE_SCHEMA_VERSION}:
                 raise AgentCodecError("unsupported durable SQLite schema version")
 
             connection.execute("BEGIN IMMEDIATE")
@@ -700,7 +760,7 @@ class _SQLiteDurableDatabase:
                 else:
                     _store_freshness_meta(meta)
                 connection.execute(f"PRAGMA user_version = {DURABLE_SQLITE_SCHEMA_VERSION}")
-            elif version in {1, 2, 3, 4}:
+            elif version in {1, 2, 3, 4, 5}:
                 if meta is None or _row_int(meta, "schema_version", positive=True) != version:
                     raise AgentCodecError(
                         "durable SQLite migration metadata is missing or incompatible"
@@ -792,6 +852,24 @@ class _SQLiteDurableDatabase:
                     ),
                 freshness_witness_initialized INTEGER NOT NULL
                     CHECK (freshness_witness_initialized IN (0, 1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS checkout_registrations (
+                registration_key TEXT PRIMARY KEY
+                    CHECK (length(registration_key) = 64),
+                workspace_id TEXT NOT NULL UNIQUE,
+                generation INTEGER NOT NULL
+                    CHECK (
+                        generation > 0
+                        AND generation <= 9223372036854775807
+                    ),
+                registration_digest TEXT NOT NULL
+                    CHECK (length(registration_digest) = 64),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -972,6 +1050,22 @@ class _SQLiteDurableDatabase:
         }
         if "recovery_attempts" not in columns:
             raise AgentCodecError("durable SQLite recovery bookkeeping is missing")
+
+        checkout_columns = {
+            str(item["name"])
+            for item in connection.execute("PRAGMA table_info(checkout_registrations)").fetchall()
+        }
+        if checkout_columns != {
+            "registration_key",
+            "workspace_id",
+            "generation",
+            "registration_digest",
+            "created_at",
+            "updated_at",
+        }:
+            raise AgentCodecError(
+                "durable SQLite checkout registration schema is missing or incompatible"
+            )
 
 
 class SQLiteDurableLeaseManager(DurableLeaseManager):
@@ -1366,6 +1460,123 @@ class SQLiteDurableRunStore(DurableRunStore):
             self._ensure_open()
             self._database.writer_connection()
             return self._database.freshness
+
+    async def resolve_checkout_registration_identity(
+        self,
+        *,
+        registration_key: str,
+        registration_digest: str,
+    ) -> CheckoutRegistrationIdentity:
+        """Resolve one stable checkout UUID and monotonic configuration generation."""
+
+        key = _require_checkout_registration_digest(
+            registration_key,
+            label="registration_key",
+        )
+        digest = _require_checkout_registration_digest(
+            registration_digest,
+            label="registration_digest",
+        )
+        self._ensure_open()
+        now = datetime.now(UTC)
+
+        async with self._database.lock:
+            self._ensure_open()
+            connection = self._database.writer_connection()
+            self._database.require_current_freshness()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    """
+                    SELECT workspace_id, generation, registration_digest
+                    FROM checkout_registrations
+                    WHERE registration_key = ?
+                    """,
+                    (key,),
+                ).fetchone()
+
+                freshness_generation: int | None = None
+                if row is None:
+                    identity = CheckoutRegistrationIdentity(
+                        workspace_id=uuid4(),
+                        generation=1,
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO checkout_registrations (
+                            registration_key,
+                            workspace_id,
+                            generation,
+                            registration_digest,
+                            created_at,
+                            updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            key,
+                            str(identity.workspace_id),
+                            identity.generation,
+                            digest,
+                            now.isoformat(),
+                            now.isoformat(),
+                        ),
+                    )
+                    freshness_generation = self._advance_store_generation(
+                        connection,
+                        now=now,
+                    )
+                else:
+                    identity, persisted_digest = _checkout_registration_identity_from_row(row)
+                    if persisted_digest != digest:
+                        if identity.generation >= _MAX_CHECKOUT_REGISTRATION_GENERATION:
+                            raise AgentLimitExceededError()
+                        next_identity = CheckoutRegistrationIdentity(
+                            workspace_id=identity.workspace_id,
+                            generation=identity.generation + 1,
+                        )
+                        cursor = connection.execute(
+                            """
+                            UPDATE checkout_registrations
+                            SET
+                                generation = ?,
+                                registration_digest = ?,
+                                updated_at = ?
+                            WHERE registration_key = ?
+                              AND workspace_id = ?
+                              AND generation = ?
+                              AND registration_digest = ?
+                            """,
+                            (
+                                next_identity.generation,
+                                digest,
+                                now.isoformat(),
+                                key,
+                                str(identity.workspace_id),
+                                identity.generation,
+                                persisted_digest,
+                            ),
+                        )
+                        if cursor.rowcount != 1:
+                            raise AgentStateConflictError()
+                        identity = next_identity
+                        freshness_generation = self._advance_store_generation(
+                            connection,
+                            now=now,
+                        )
+
+                connection.execute("COMMIT")
+                if freshness_generation is not None:
+                    self._database.publish_store_generation(freshness_generation)
+                return identity
+            except sqlite3.IntegrityError as exception:
+                _rollback(connection)
+                raise AgentStateConflictError() from exception
+            except sqlite3.Error as exception:
+                _rollback(connection)
+                raise AgentServiceUnavailableError() from exception
+            except BaseException:
+                _rollback(connection)
+                raise
 
     async def create(self, checkpoint: CheckpointEnvelope) -> None:
         """Create one metadata-only durable run checkpoint."""

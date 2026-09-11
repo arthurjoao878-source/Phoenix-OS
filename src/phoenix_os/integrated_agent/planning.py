@@ -423,6 +423,38 @@ def _proposal_from_arguments(arguments: Mapping[str, object]) -> PlanProposal:
         raise IntegratedAgentValidationError("integrated plan proposal is invalid") from exception
 
 
+def require_integrated_plan_update_owner(
+    *,
+    descriptor: ToolDescriptor,
+    resolver: ToolResourceResolver,
+    adapter: ToolAdapter,
+) -> IntegratedPlanner:
+    """Return the exact planner that owns one reviewed plan-update registration."""
+
+    if not isinstance(descriptor, ToolDescriptor):
+        raise TypeError("descriptor must be ToolDescriptor")
+    if not isinstance(resolver, ToolResourceResolver):
+        raise TypeError("resolver must implement ToolResourceResolver")
+    if not isinstance(adapter, ToolAdapter):
+        raise TypeError("adapter must implement ToolAdapter")
+    if descriptor != _PLAN_DESCRIPTOR:
+        raise IntegratedAgentConfigurationError()
+    if not isinstance(resolver, _IntegratedPlanUpdateResourceResolver):
+        raise IntegratedAgentConfigurationError()
+    if not isinstance(adapter, _IntegratedPlanUpdateAdapter):
+        raise IntegratedAgentConfigurationError()
+
+    planner = resolver._planner
+    if (
+        adapter._planner is not planner
+        or descriptor != planner.descriptor
+        or resolver is not planner.resource_resolver
+        or adapter is not planner.adapter
+    ):
+        raise IntegratedAgentConfigurationError()
+    return planner
+
+
 def _plan_provenance(binding: IntegratedAgentRunBinding) -> IntegratedDataProvenance:
     return IntegratedDataProvenance(
         (

@@ -663,3 +663,72 @@ async def test_exact_exhaustion_still_allows_local_complete_bookkeeping() -> Non
         now=_NOW,
     )
     await lease.release()
+
+
+@pytest.mark.asyncio
+async def test_live_revalidator_awaits_async_context_freshness_probe() -> None:
+    admission = _admission()
+    lease = await admission.admit(_task(), _request())
+    seen: list[IntegratedDataProvenance] = []
+
+    async def current(provenance: IntegratedDataProvenance) -> bool:
+        seen.append(provenance)
+        return True
+
+    live = AgentLoopIntegratedDurableRecoveryLiveRevalidator(
+        loop=_loop(_BoundRunAuthorizer(), _FreshnessValidator()),
+        configuration=_configuration(),
+        context=_context(),
+        cancellation_probe=lambda _run_id: False,
+        context_freshness_probe=current,
+    )
+    checkpoint = _checkpoint(lease.request)
+    provenance = IntegratedDataProvenance(
+        (
+            IntegratedDataProvenanceAtom(
+                source_kind=IntegratedDataSourceKind.BROWSER,
+                source_binding="browser:page/async-freshness",
+                freshness_bindings=("browser-revision:1",),
+            ),
+        )
+    )
+
+    try:
+        assert await live.revalidate_context(
+            checkpoint,
+            provenance,
+            now=_NOW,
+        )
+        assert seen == [provenance]
+    finally:
+        await lease.release()
+
+
+@pytest.mark.asyncio
+async def test_live_revalidator_awaits_async_cancellation_probe() -> None:
+    admission = _admission()
+    lease = await admission.admit(_task(), _request())
+    seen: list[AgentRunId] = []
+
+    async def cancelled(run_id: AgentRunId) -> bool:
+        seen.append(run_id)
+        return False
+
+    live = AgentLoopIntegratedDurableRecoveryLiveRevalidator(
+        loop=_loop(_BoundRunAuthorizer(), _FreshnessValidator()),
+        configuration=_configuration(),
+        context=_context(),
+        cancellation_probe=cancelled,
+        context_freshness_probe=lambda _provenance: True,
+    )
+
+    try:
+        assert await live.revalidate_run(
+            _checkpoint(lease.request),
+            lease.binding,
+            lease.request,
+            now=_NOW,
+        )
+        assert seen == [lease.request.run_id]
+    finally:
+        await lease.release()

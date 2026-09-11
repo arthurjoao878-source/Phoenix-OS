@@ -81,6 +81,10 @@ from phoenix_os.control_plane.serialization import (
 from phoenix_os.control_plane.service_account_http import (
     ControlPlaneServiceAccountHttpAdapter,
 )
+from phoenix_os.control_plane.task_http import (
+    ControlPlaneTaskHttpAdapter,
+    ControlPlaneTaskHttpAdministration,
+)
 from phoenix_os.control_plane.webhook_http import ControlPlaneWebhookHttpAdapter
 
 
@@ -249,6 +253,7 @@ class ControlPlaneHttpServer:
         self._durable_reconciliation_http: ControlPlaneDurableReconciliationHttpAdapter | None = (
             None
         )
+        self._task_http: ControlPlaneTaskHttpAdapter | None = None
         self._service_account_http = service_account_http
         self._inference_http = inference_http
         self._webhook_http = webhook_http
@@ -347,6 +352,34 @@ class ControlPlaneHttpServer:
             boundary=self._durable_session_http,
         )
         self._durable_reconciliation_http = adapter
+        return adapter
+
+    @property
+    def task_http(self) -> ControlPlaneTaskHttpAdapter | None:
+        """Return the optional durable-session RFC-0039 task boundary."""
+
+        return self._task_http
+
+    def bind_task_http(
+        self,
+        administration: ControlPlaneTaskHttpAdministration,
+    ) -> ControlPlaneTaskHttpAdapter:
+        """Bind durable-session task HTTP exactly once before socket startup."""
+
+        if not isinstance(administration, ControlPlaneTaskHttpAdministration):
+            raise TypeError("task HTTP requires task administration")
+        if self._state is not ControlPlaneHttpState.CREATED:
+            raise ControlPlaneServerStateError("task HTTP must be bound before server startup")
+        if self._durable_session_http is None:
+            raise ValueError("task HTTP requires durable session authentication")
+        if self._task_http is not None:
+            raise ControlPlaneServerStateError("task HTTP is already bound")
+
+        adapter = ControlPlaneTaskHttpAdapter(
+            administration=administration,
+            boundary=self._durable_session_http,
+        )
+        self._task_http = adapter
         return adapter
 
     @property
@@ -550,6 +583,12 @@ class ControlPlaneHttpServer:
             if limit <= 0:
                 raise RuntimeError("inbound HTTP adapter returned an invalid body limit")
             return limit
+        if method == "POST" and self._task_http is not None and self._task_http.handles(path):
+            task_limit = self._task_http.body_limit(path)
+            if task_limit is not None:
+                if task_limit <= 0:
+                    raise RuntimeError("task HTTP adapter returned an invalid body limit")
+                return task_limit
         return self._config.max_command_body_bytes
 
     async def _dispatch(
@@ -731,6 +770,20 @@ class ControlPlaneHttpServer:
             and self._durable_reconciliation_http.handles(request.path)
         ):
             return await self._durable_reconciliation_http.dispatch(
+                authentication=durable_authentication,
+                method=request.method,
+                path=request.path,
+                query=request.query,
+                headers=request.headers,
+                body=request.body,
+                server_origin=server_origin,
+            )
+        if (
+            durable_authentication is not None
+            and self._task_http is not None
+            and self._task_http.handles(request.path)
+        ):
+            return await self._task_http.dispatch(
                 authentication=durable_authentication,
                 method=request.method,
                 path=request.path,

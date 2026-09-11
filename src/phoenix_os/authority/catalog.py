@@ -92,6 +92,7 @@ _BUILTIN_ENTRIES = (
         rf"agent-delegation:{_ID}/parent:{_ID}/child:{_ID}",
     ),
     AuthorityCatalogEntry("agent.resume", "agent.resume", rf"durable-agent-run:{_UUID}"),
+    AuthorityCatalogEntry("agent.cancel", "agent.cancel", rf"durable-agent-run:{_UUID}"),
     AuthorityCatalogEntry(
         "agent.reconcile",
         "agent.reconcile",

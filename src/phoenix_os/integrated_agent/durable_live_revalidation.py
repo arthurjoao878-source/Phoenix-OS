@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import inspect
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -14,11 +16,27 @@ from phoenix_os.agent.durable_contracts import (
 )
 from phoenix_os.agent.errors import AgentAuthorizationRejectedError
 from phoenix_os.agent.loop import AgentLoop
+from phoenix_os.agent.service import AgentService
+from phoenix_os.authority import AuthorityFreshnessValidator
 from phoenix_os.integrated_agent.admission import IntegratedAgentRunBinding
 from phoenix_os.integrated_agent.composition import IntegratedAgentToolComposition
 from phoenix_os.integrated_agent.contracts import IntegratedDataProvenance
 from phoenix_os.integrated_agent.errors import IntegratedAgentConfigurationError
 from phoenix_os.policy import SecurityContext
+
+
+@dataclass(frozen=True, slots=True)
+class IntegratedDurableRecoveryLiveProbes:
+    """Explicit caller-owned live probes required for durable recovery revalidation."""
+
+    cancellation_probe: Callable[[AgentRunId], bool | Awaitable[bool]]
+    context_freshness_probe: Callable[[IntegratedDataProvenance], bool | Awaitable[bool]]
+
+    def __post_init__(self) -> None:
+        if not callable(self.cancellation_probe):
+            raise TypeError("cancellation_probe must be callable")
+        if not callable(self.context_freshness_probe):
+            raise TypeError("context_freshness_probe must be callable")
 
 
 @runtime_checkable
@@ -52,9 +70,10 @@ class AgentLoopIntegratedDurableRecoveryLiveRevalidator:
         loop: AgentLoop,
         configuration: AgentServiceConfiguration,
         context: SecurityContext,
-        cancellation_probe: Callable[[AgentRunId], bool],
-        context_freshness_probe: Callable[[IntegratedDataProvenance], bool],
+        cancellation_probe: Callable[[AgentRunId], bool | Awaitable[bool]],
+        context_freshness_probe: Callable[[IntegratedDataProvenance], bool | Awaitable[bool]],
         composition: IntegratedAgentToolComposition | None = None,
+        authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> None:
         if not isinstance(loop, AgentLoop):
             raise TypeError("loop must be AgentLoop")
@@ -73,6 +92,11 @@ class AgentLoopIntegratedDurableRecoveryLiveRevalidator:
             raise TypeError("composition must be IntegratedAgentToolComposition or None")
         if configuration.tool_ids and composition is None:
             raise ValueError("configured integrated tools require current composition")
+        if authority_freshness is not None and not isinstance(
+            authority_freshness,
+            AuthorityFreshnessValidator,
+        ):
+            raise TypeError("authority_freshness must implement AuthorityFreshnessValidator")
 
         self._loop = loop
         self._configuration = configuration
@@ -80,6 +104,7 @@ class AgentLoopIntegratedDurableRecoveryLiveRevalidator:
         self._cancellation_probe = cancellation_probe
         self._context_freshness_probe = context_freshness_probe
         self._composition = composition
+        self._authority_freshness = authority_freshness
 
     async def revalidate_run(
         self,
@@ -118,6 +143,8 @@ class AgentLoopIntegratedDurableRecoveryLiveRevalidator:
             return False
 
         cancelled = self._cancellation_probe(request.run_id)
+        if inspect.isawaitable(cancelled):
+            cancelled = await cancelled
         if type(cancelled) is not bool:
             raise TypeError("cancellation_probe must return bool")
         if cancelled:
@@ -132,11 +159,12 @@ class AgentLoopIntegratedDurableRecoveryLiveRevalidator:
                     return False
             else:
                 composition.require_service_configuration(configuration)
-                composition.require_registry(self._loop.registry)
+                composition.require_runtime_registry(self._loop.registry)
             await self._loop.revalidate_run_authority(
                 request,
                 self._context,
                 binding.authority,
+                _authority_freshness=self._authority_freshness,
             )
         except (AgentAuthorizationRejectedError, IntegratedAgentConfigurationError):
             return False
@@ -155,9 +183,39 @@ class AgentLoopIntegratedDurableRecoveryLiveRevalidator:
             raise TypeError("provenance must be IntegratedDataProvenance")
         _require_timezone_aware(now)
         current = self._context_freshness_probe(provenance)
+        if inspect.isawaitable(current):
+            current = await current
         if type(current) is not bool:
             raise TypeError("context_freshness_probe must return bool")
         return current
+
+
+def compose_agent_service_integrated_durable_recovery_live_revalidator(
+    *,
+    service: AgentService,
+    context: SecurityContext,
+    probes: IntegratedDurableRecoveryLiveProbes,
+    composition: IntegratedAgentToolComposition | None = None,
+    authority_freshness: AuthorityFreshnessValidator | None = None,
+) -> AgentLoopIntegratedDurableRecoveryLiveRevalidator:
+    """Compose recovery revalidation from public AgentService ownership only."""
+
+    if not isinstance(service, AgentService):
+        raise TypeError("service must be AgentService")
+    if not isinstance(context, SecurityContext):
+        raise TypeError("context must be SecurityContext")
+    if not isinstance(probes, IntegratedDurableRecoveryLiveProbes):
+        raise TypeError("probes must be IntegratedDurableRecoveryLiveProbes")
+
+    return AgentLoopIntegratedDurableRecoveryLiveRevalidator(
+        loop=service.runtime,
+        configuration=service.configuration,
+        context=context,
+        cancellation_probe=probes.cancellation_probe,
+        context_freshness_probe=probes.context_freshness_probe,
+        composition=composition,
+        authority_freshness=authority_freshness,
+    )
 
 
 def _budget_within_current_limits(

@@ -47,6 +47,8 @@ from phoenix_os.agent.authorization import (
     PolicyEngineAgentRunAuthorizer,
     agent_run_resource,
 )
+from phoenix_os.agent.loop import AgentToolExecutionDriver
+from phoenix_os.agent.tools import ToolAdapter, ToolFinalAdmissionValidator
 from phoenix_os.inference import InferenceRequest, ModelId, ModelProviderId
 from phoenix_os.inference.authorization import (
     INFERENCE_MODEL_ACTION,
@@ -226,6 +228,39 @@ class _ContextualLoopTool:
         )
 
 
+class _RecordingToolExecutionDriver:
+    def __init__(self) -> None:
+        self.invocations: list[ToolInvocationRequest] = []
+        self.prepare_times: list[datetime] = []
+
+    async def execute(
+        self,
+        executor: BoundedAgentExecutor,
+        adapter: ToolAdapter,
+        invocation: ToolInvocationRequest,
+        descriptor: ToolDescriptor,
+        context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
+        timeout_seconds: float,
+        cancellation_grace: float,
+        cancellation: AgentCancellationToken,
+        prepare_time: datetime,
+    ) -> ToolInvocationResult:
+        self.invocations.append(invocation)
+        self.prepare_times.append(prepare_time)
+        return await executor.invoke_tool(
+            adapter,
+            invocation,
+            descriptor,
+            context=context,
+            final_admission=final_admission,
+            timeout_seconds=timeout_seconds,
+            cancellation_grace=cancellation_grace,
+            cancellation=cancellation,
+        )
+
+
 def _loop(
     turns: Sequence[DeterministicModelTurn],
     *,
@@ -353,6 +388,42 @@ async def test_read_only_tool_cycle_is_serial_and_authorized_per_turn() -> None:
     assert tool_auth.requests[0] is tool_auth.requests[1]
     assert tool_auth.requests[0].agent_id == AgentId("assistant")
     assert len(adapter.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_read_only_tool_cycle_can_use_caller_owned_tool_execution_driver() -> None:
+    registry = ToolRegistry()
+    descriptor = _descriptor()
+    adapter = DeterministicReadOnlyTool("lookup", {"value": "fixed"})
+    registry.register_tool(
+        descriptor,
+        resolver=StaticToolResourceResolver("static-resource", "record:fixed"),
+        adapter=adapter,
+    )
+    loop, _run_auth, _model_auth, tool_auth = _loop(
+        (
+            DeterministicToolTurn(ToolId("lookup"), {"value": "input"}),
+            DeterministicFinalTurn("complete"),
+        ),
+        registry=registry,
+    )
+    driver = _RecordingToolExecutionDriver()
+
+    result = await loop.run(
+        _request(),
+        _context(),
+        _tool_execution_driver=driver,
+    )
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert result.tool_calls == 1
+    assert len(driver.invocations) == 1
+    assert len(tool_auth.requests) == 2
+    assert driver.invocations[0] is tool_auth.requests[0]
+    assert tool_auth.requests[0] is tool_auth.requests[1]
+    assert driver.prepare_times == [_NOW]
+    assert adapter.requests == (driver.invocations[0],)
+    assert isinstance(driver, AgentToolExecutionDriver)
 
 
 @pytest.mark.asyncio
@@ -548,6 +619,38 @@ async def test_session_backed_run_without_freshness_validator_fails_closed() -> 
 
 
 @pytest.mark.asyncio
+async def test_session_backed_run_accepts_explicit_run_scoped_freshness_override() -> None:
+    class _Freshness:
+        def __init__(self) -> None:
+            self.contexts: list[SecurityContext] = []
+
+        async def validate(self, context: SecurityContext) -> None:
+            self.contexts.append(context)
+
+    loop, run_auth, model_auth, tool_auth = _loop((DeterministicFinalTurn("done"),))
+    context = SecurityContext(
+        principal="service:assistant",
+        principal_type=PrincipalType.SERVICE,
+        authenticated=True,
+        session_id=UUID("73000000-0000-4000-8000-000000000044"),
+    )
+    freshness = _Freshness()
+
+    result = await loop.run(
+        _request(),
+        context,
+        _authority_freshness=freshness,
+    )
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert result.final_output == "done"
+    assert freshness.contexts == [context, context]
+    assert len(run_auth.requests) == 2
+    assert len(model_auth.requests) == 2
+    assert tool_auth.requests == []
+
+
+@pytest.mark.asyncio
 async def test_queued_run_policy_revocation_blocks_fresh_admission() -> None:
     limits = AgentLimits(
         max_concurrent_runs=1,
@@ -683,8 +786,6 @@ async def test_queued_model_policy_revocation_blocks_fresh_admission() -> None:
 
 @pytest.mark.asyncio
 async def test_final_admission_tool_reauthorizes_after_adapter_wait_boundary() -> None:
-    from phoenix_os.agent.tools import ToolFinalAdmissionValidator
-
     class _FinalAdmissionTool:
         adapter_id = "final-admission"
         tool_id = ToolId("lookup")

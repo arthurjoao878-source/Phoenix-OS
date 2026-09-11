@@ -44,6 +44,7 @@ from phoenix_os.agent.durable_recovery import (
     DurableRecoveryCoordinator,
     StartupDurableRecoveryCoordinator,
     classify_recovery_checkpoint,
+    validate_authoritative_checkpoint_history,
 )
 from phoenix_os.agent.errors import AgentCodecError, AgentStateConflictError
 from phoenix_os.agent.state import AgentBudgetSnapshot
@@ -494,3 +495,43 @@ async def test_closed_coordinator_rejects_new_assessments() -> None:
             now=RECOVERY_TIME,
             limit=1,
         )
+
+
+def test_public_authoritative_checkpoint_history_accepts_exact_chain() -> None:
+    root = _checkpoint()
+    second = _next(root)
+
+    validate_authoritative_checkpoint_history(second, (root, second))
+
+
+def test_public_authoritative_checkpoint_history_rejects_incomplete_chain() -> None:
+    root = _checkpoint()
+    second = _next(root)
+
+    with pytest.raises(AgentCodecError, match="history is incomplete"):
+        validate_authoritative_checkpoint_history(second, (root,))
+
+
+def test_public_authoritative_checkpoint_history_rejects_broken_digest_chain() -> None:
+    root = _checkpoint()
+    second = _checkpoint(
+        2,
+        previous_digest=_digest("f"),
+    )
+
+    with pytest.raises(AgentCodecError, match="broken digest chain"):
+        validate_authoritative_checkpoint_history(second, (root, second))
+
+
+def test_public_authoritative_checkpoint_history_rejects_terminal_continuation() -> None:
+    root = _checkpoint(
+        status=DurableRunStatus.COMPLETED,
+        next_operation=CheckpointNextOperation.NONE,
+    )
+    second = _checkpoint(
+        2,
+        previous_digest=root.digest,
+    )
+
+    with pytest.raises(AgentCodecError, match="continued after a terminal checkpoint"):
+        validate_authoritative_checkpoint_history(second, (root, second))

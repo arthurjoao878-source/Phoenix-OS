@@ -33,11 +33,16 @@ from phoenix_os.agent.errors import (
     AgentServiceUnavailableError,
 )
 from phoenix_os.agent.fake import AgentModelTurnAdapter
-from phoenix_os.agent.loop import AgentLoop, AgentModelTurnExecutionDriver
+from phoenix_os.agent.loop import (
+    AgentLoop,
+    AgentModelTurnExecutionDriver,
+    AgentToolExecutionDriver,
+)
 from phoenix_os.agent.registry import ToolRegistry
-from phoenix_os.agent.state import AgentCancellationToken
+from phoenix_os.agent.state import AgentBudgetSnapshot, AgentCancellationToken
 from phoenix_os.agent.tools import ToolAdapter, ToolDescriptor
 from phoenix_os.audit import AuditCategory, AuditLedger, AuditOutcome, AuditSeverity
+from phoenix_os.authority import AuthorityFreshnessValidator
 from phoenix_os.events import EventBus
 from phoenix_os.observability import MetricKind, ObservabilityHub, Severity
 from phoenix_os.policy import SecurityContext
@@ -324,7 +329,10 @@ class AgentService:
         *,
         cancellation: AgentCancellationToken | None = None,
         _authority_binding: AgentRunAuthorityBinding | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
         _model_turn_execution_driver: AgentModelTurnExecutionDriver | None = None,
+        _tool_execution_driver: AgentToolExecutionDriver | None = None,
+        _restored_budget: AgentBudgetSnapshot | None = None,
     ) -> AgentRunResult:
         if not isinstance(request, AgentRunRequest):
             raise TypeError("request must be AgentRunRequest")
@@ -338,6 +346,11 @@ class AgentService:
             AgentRunAuthorityBinding,
         ):
             raise TypeError("_authority_binding must be AgentRunAuthorityBinding")
+        if _authority_freshness is not None and not isinstance(
+            _authority_freshness,
+            AuthorityFreshnessValidator,
+        ):
+            raise TypeError("_authority_freshness must implement AuthorityFreshnessValidator")
         if _model_turn_execution_driver is not None and not isinstance(
             _model_turn_execution_driver,
             AgentModelTurnExecutionDriver,
@@ -345,6 +358,16 @@ class AgentService:
             raise TypeError(
                 "_model_turn_execution_driver must implement AgentModelTurnExecutionDriver"
             )
+        if _tool_execution_driver is not None and not isinstance(
+            _tool_execution_driver,
+            AgentToolExecutionDriver,
+        ):
+            raise TypeError("_tool_execution_driver must implement AgentToolExecutionDriver")
+        if _restored_budget is not None and not isinstance(
+            _restored_budget,
+            AgentBudgetSnapshot,
+        ):
+            raise TypeError("_restored_budget must be AgentBudgetSnapshot or None")
 
         started_at, started_clock = await self._begin(request, context, token)
         try:
@@ -365,7 +388,10 @@ class AgentService:
                     context,
                     cancellation=token,
                     _authority_binding=_authority_binding,
+                    _authority_freshness=_authority_freshness,
                     _model_turn_execution_driver=_model_turn_execution_driver,
+                    _tool_execution_driver=_tool_execution_driver,
+                    _restored_budget=_restored_budget,
                 )
         except asyncio.CancelledError:
             token.cancel()
@@ -393,6 +419,33 @@ class AgentService:
             result=result,
         )
         return result
+
+    async def continue_model_turn(
+        self,
+        request: AgentRunRequest,
+        context: SecurityContext,
+        *,
+        restored_budget: AgentBudgetSnapshot,
+        cancellation: AgentCancellationToken | None = None,
+        _authority_binding: AgentRunAuthorityBinding | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
+        _model_turn_execution_driver: AgentModelTurnExecutionDriver | None = None,
+        _tool_execution_driver: AgentToolExecutionDriver | None = None,
+    ) -> AgentRunResult:
+        """Continue one reviewed existing run from a safe pre-model-turn boundary."""
+
+        if not isinstance(restored_budget, AgentBudgetSnapshot):
+            raise TypeError("restored_budget must be AgentBudgetSnapshot")
+        return await self.run(
+            request,
+            context,
+            cancellation=cancellation,
+            _authority_binding=_authority_binding,
+            _authority_freshness=_authority_freshness,
+            _model_turn_execution_driver=_model_turn_execution_driver,
+            _tool_execution_driver=_tool_execution_driver,
+            _restored_budget=restored_budget,
+        )
 
     async def _begin(
         self,

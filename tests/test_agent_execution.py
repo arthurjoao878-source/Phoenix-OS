@@ -36,6 +36,7 @@ from phoenix_os.agent import (
     ToolSchema,
     ToolSchemaType,
 )
+from phoenix_os.agent.execution import ToolSubmissionGate
 from phoenix_os.agent.tools import ContextualToolAdapter
 from phoenix_os.policy import PrincipalType, SecurityContext
 
@@ -265,6 +266,47 @@ class _SynchronouslyFailingContextualTool:
         raise RuntimeError("synchronous private contextual failure")
 
 
+class _RecordingToolSubmissionGate:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        failure: Exception | None = None,
+    ) -> None:
+        self.events = events
+        self.failure = failure
+        self.calls = 0
+
+    async def before_submit(self) -> None:
+        self.calls += 1
+        self.events.append("gate")
+        if self.failure is not None:
+            raise self.failure
+
+
+class _GateOrderingTool:
+    adapter_id = "deterministic-read-only"
+    tool_id = ToolId("lookup")
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.calls = 0
+
+    async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+        self.calls += 1
+        self.events.append("adapter")
+        return ToolInvocationResult(
+            run_id=request.run_id,
+            step_id=request.step_id,
+            call_id=request.call_id,
+            tool_id=request.tool_id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={"value": "gated"},
+            started_at=request.created_at,
+            completed_at=request.created_at,
+        )
+
+
 @pytest.mark.asyncio
 async def test_model_turn_executes_once_and_validates_exact_identity() -> None:
     request = _turn_request()
@@ -346,6 +388,75 @@ async def test_tool_execution_rejects_missing_agent_binding_before_adapter_call(
         )
 
     assert adapter.requests == ()
+
+
+@pytest.mark.asyncio
+async def test_tool_submission_gate_runs_after_preflight_and_before_adapter_dispatch() -> None:
+    events: list[str] = []
+    gate = _RecordingToolSubmissionGate(events)
+    adapter = _GateOrderingTool(events)
+    request = _invocation()
+    executor = BoundedAgentExecutor(clock=lambda: _NOW)
+
+    result = await executor.invoke_tool(
+        adapter,
+        request,
+        _descriptor(),
+        submission_gate=gate,
+        timeout_seconds=1,
+        cancellation_grace=0.1,
+        cancellation=AgentCancellationToken(),
+    )
+
+    assert result.status is ToolResultStatus.SUCCEEDED
+    assert events == ["gate", "adapter"]
+    assert gate.calls == 1
+    assert adapter.calls == 1
+    assert isinstance(gate, ToolSubmissionGate)
+
+    rejected_events: list[str] = []
+    rejected_gate = _RecordingToolSubmissionGate(rejected_events)
+    contextual = _ContextualTool()
+    with pytest.raises(ToolExecutionError):
+        await executor.invoke_tool(
+            contextual,
+            request,
+            _descriptor(),
+            submission_gate=rejected_gate,
+            timeout_seconds=1,
+            cancellation_grace=0.1,
+            cancellation=AgentCancellationToken(),
+        )
+
+    assert rejected_gate.calls == 0
+    assert rejected_events == []
+    assert contextual.contexts == []
+    assert contextual.plain_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_submission_gate_failure_stops_before_adapter_dispatch() -> None:
+    events: list[str] = []
+    gate = _RecordingToolSubmissionGate(
+        events,
+        failure=RuntimeError("private durable gate failure"),
+    )
+    adapter = _GateOrderingTool(events)
+
+    with pytest.raises(AgentServiceUnavailableError):
+        await BoundedAgentExecutor(clock=lambda: _NOW).invoke_tool(
+            adapter,
+            _invocation(),
+            _descriptor(),
+            submission_gate=gate,
+            timeout_seconds=1,
+            cancellation_grace=0.1,
+            cancellation=AgentCancellationToken(),
+        )
+
+    assert events == ["gate"]
+    assert gate.calls == 1
+    assert adapter.calls == 0
 
 
 @pytest.mark.asyncio

@@ -4,10 +4,20 @@ from uuid import UUID
 
 import pytest
 
+from phoenix_os.agent.configuration import (
+    AgentServiceConfiguration,
+    AgentToolConfiguration,
+)
 from phoenix_os.agent.contracts import (
     AgentId,
+    AgentLimits,
     AgentRunId,
     AgentStepId,
+    ToolAvailability,
+    ToolEffect,
+    ToolId,
+    ToolInvocationRequest,
+    ToolInvocationResult,
 )
 from phoenix_os.agent.durable_codec import seal_checkpoint_envelope
 from phoenix_os.agent.durable_compatibility import (
@@ -15,6 +25,7 @@ from phoenix_os.agent.durable_compatibility import (
     DurableCompatibilityCategory,
     DurableCompatibilityPolicy,
     StaticDurableCompatibilityValidator,
+    create_ollama_metadata_only_durable_compatibility_policy,
 )
 from phoenix_os.agent.durable_contracts import (
     CheckpointDigest,
@@ -42,7 +53,19 @@ from phoenix_os.agent.durable_lease import InMemoryDurableLeaseManager
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
 from phoenix_os.agent.durable_recovery import StartupDurableRecoveryCoordinator
 from phoenix_os.agent.errors import AgentStateConflictError
+from phoenix_os.agent.registry import ToolRegistry
+from phoenix_os.agent.schemas import ToolInputSchema, ToolOutputSchema, ToolSchema, ToolSchemaType
 from phoenix_os.agent.state import AgentBudgetSnapshot
+from phoenix_os.agent.tools import StaticToolResourceResolver, ToolDescriptor
+from phoenix_os.inference.configuration import InferenceProviderConfiguration
+from phoenix_os.inference.contracts import ModelCapabilities, ModelDescriptor, ModelId
+from phoenix_os.inference.endpoints import ModelEndpointMode, ModelEndpointPolicy
+from phoenix_os.inference.ollama import (
+    OLLAMA_ENDPOINT_URL,
+    OLLAMA_PORT,
+    OLLAMA_PROVIDER_ID,
+    OllamaModelBinding,
+)
 
 NOW = datetime(2026, 7, 31, 7, tzinfo=UTC)
 RECOVERY_TIME = NOW + timedelta(minutes=10)
@@ -422,3 +445,233 @@ async def test_coordinator_rejects_substituted_compatibility_assessment() -> Non
         )
 
     assert await store.lease_manager.get_current(DURABLE_RUN_ID, now=RECOVERY_TIME) is None
+
+
+class _CompatibilityToolAdapter:
+    adapter_id = "compatibility-adapter"
+    tool_id = ToolId("lookup")
+
+    async def invoke(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+        del request
+        raise AssertionError("compatibility digest tests never invoke tools")
+
+
+def _compatibility_tool_descriptor(
+    *,
+    availability: ToolAvailability = ToolAvailability.ACTIVE,
+) -> ToolDescriptor:
+    schema = ToolSchema(kind=ToolSchemaType.OBJECT)
+    return ToolDescriptor(
+        tool_id=ToolId("lookup"),
+        name="Lookup",
+        description="Return one deterministic record.",
+        input_schema=ToolInputSchema(schema),
+        output_schema=ToolOutputSchema(schema),
+        effect=ToolEffect.READ_ONLY,
+        approval_may_be_required=False,
+        max_input_bytes=4_096,
+        max_output_bytes=4_096,
+        timeout=timedelta(seconds=30),
+        resolver_id="compatibility-resolver",
+        adapter_id="compatibility-adapter",
+        availability=availability,
+    )
+
+
+def _compatibility_configuration(
+    descriptor: ToolDescriptor | None = None,
+    *,
+    max_steps: int | None = None,
+) -> AgentServiceConfiguration:
+    limits = AgentLimits() if max_steps is None else AgentLimits(max_steps=max_steps)
+    tools: tuple[AgentToolConfiguration, ...] = (
+        () if descriptor is None else (AgentToolConfiguration(descriptor),)
+    )
+    return AgentServiceConfiguration(
+        agent_id=AGENT_ID,
+        provider_id=OLLAMA_PROVIDER_ID,
+        model_id=ModelId("dev"),
+        tools=tools,
+        limits=limits,
+        source="phoenix.operator",
+    )
+
+
+def _compatibility_provider_inputs(
+    *,
+    expected_digest: str | None = "a" * 64,
+) -> tuple[InferenceProviderConfiguration, OllamaModelBinding]:
+    provider = InferenceProviderConfiguration(
+        provider_id=OLLAMA_PROVIDER_ID,
+        endpoint_policy=ModelEndpointPolicy(
+            OLLAMA_ENDPOINT_URL,
+            mode=ModelEndpointMode.LOOPBACK_HTTP,
+            allowed_ports=frozenset({OLLAMA_PORT}),
+        ),
+    )
+    descriptor = ModelDescriptor(
+        provider_id=OLLAMA_PROVIDER_ID,
+        model_id=ModelId("dev"),
+        provider_model_name="qwen3:4b-instruct",
+        capabilities=ModelCapabilities(complete=True, streaming=True),
+    )
+    return provider, OllamaModelBinding(
+        descriptor,
+        expected_digest=expected_digest,
+    )
+
+
+def _sealed_compatibility_registry(
+    descriptor: ToolDescriptor | None = None,
+) -> ToolRegistry:
+    registry = ToolRegistry()
+    if descriptor is not None:
+        registry.register_tool(
+            descriptor,
+            resolver=StaticToolResourceResolver(
+                resolver_id="compatibility-resolver",
+                resource="record:fixed",
+            ),
+            adapter=_CompatibilityToolAdapter(),
+        )
+    registry.seal()
+    return registry
+
+
+def test_typed_ollama_compatibility_policy_is_deterministic_and_validator_exact() -> None:
+    configuration = _compatibility_configuration()
+    registry = _sealed_compatibility_registry()
+    provider, binding = _compatibility_provider_inputs()
+
+    first = create_ollama_metadata_only_durable_compatibility_policy(
+        configuration=configuration,
+        registry=registry,
+        provider_configuration=provider,
+        binding=binding,
+    )
+    second = create_ollama_metadata_only_durable_compatibility_policy(
+        configuration=configuration,
+        registry=registry,
+        provider_configuration=provider,
+        binding=binding,
+    )
+
+    assert first.current == second.current
+    assert first.payload_profile is CheckpointPayloadProfile.METADATA_ONLY
+    assert first.current.payload_codec is None
+    assessment = StaticDurableCompatibilityValidator((first,)).validate(
+        _checkpoint(compatibility=first.current)
+    )
+    assert assessment.category is DurableCompatibilityCategory.EXACT
+
+
+def test_configuration_change_moves_only_configuration_digest() -> None:
+    configuration = _compatibility_configuration()
+    changed = _compatibility_configuration(max_steps=configuration.limits.max_steps + 1)
+    registry = _sealed_compatibility_registry()
+    provider, binding = _compatibility_provider_inputs()
+
+    first = create_ollama_metadata_only_durable_compatibility_policy(
+        configuration=configuration,
+        registry=registry,
+        provider_configuration=provider,
+        binding=binding,
+    )
+    second = create_ollama_metadata_only_durable_compatibility_policy(
+        configuration=changed,
+        registry=registry,
+        provider_configuration=provider,
+        binding=binding,
+    )
+
+    assert first.current.configuration != second.current.configuration
+    assert first.current.tool_registry == second.current.tool_registry
+    assert first.current.model_provider == second.current.model_provider
+    assert first.current.checkpoint_codec == second.current.checkpoint_codec
+
+
+def test_registry_lifecycle_change_moves_only_tool_registry_digest() -> None:
+    active = _compatibility_tool_descriptor()
+    disabled = replace(active, availability=ToolAvailability.DISABLED)
+    configuration = _compatibility_configuration(active)
+    active_registry = _sealed_compatibility_registry(active)
+    disabled_registry = _sealed_compatibility_registry(disabled)
+    provider, binding = _compatibility_provider_inputs()
+
+    first = create_ollama_metadata_only_durable_compatibility_policy(
+        configuration=configuration,
+        registry=active_registry,
+        provider_configuration=provider,
+        binding=binding,
+    )
+    second = create_ollama_metadata_only_durable_compatibility_policy(
+        configuration=configuration,
+        registry=disabled_registry,
+        provider_configuration=provider,
+        binding=binding,
+    )
+
+    assert first.current.configuration == second.current.configuration
+    assert first.current.tool_registry != second.current.tool_registry
+    assert first.current.model_provider == second.current.model_provider
+    assert first.current.checkpoint_codec == second.current.checkpoint_codec
+
+
+def test_model_revision_change_moves_only_model_provider_digest() -> None:
+    configuration = _compatibility_configuration()
+    registry = _sealed_compatibility_registry()
+    provider, first_binding = _compatibility_provider_inputs(expected_digest="a" * 64)
+    _provider, second_binding = _compatibility_provider_inputs(expected_digest="b" * 64)
+
+    first = create_ollama_metadata_only_durable_compatibility_policy(
+        configuration=configuration,
+        registry=registry,
+        provider_configuration=provider,
+        binding=first_binding,
+    )
+    second = create_ollama_metadata_only_durable_compatibility_policy(
+        configuration=configuration,
+        registry=registry,
+        provider_configuration=provider,
+        binding=second_binding,
+    )
+
+    assert first.current.configuration == second.current.configuration
+    assert first.current.tool_registry == second.current.tool_registry
+    assert first.current.model_provider != second.current.model_provider
+    assert first.current.checkpoint_codec == second.current.checkpoint_codec
+
+
+def test_typed_compatibility_policy_rejects_unsealed_registry_and_model_substitution() -> None:
+    configuration = _compatibility_configuration()
+    provider, binding = _compatibility_provider_inputs()
+    unsealed = ToolRegistry()
+
+    with pytest.raises(ValueError, match="sealed"):
+        create_ollama_metadata_only_durable_compatibility_policy(
+            configuration=configuration,
+            registry=unsealed,
+            provider_configuration=provider,
+            binding=binding,
+        )
+
+    substituted = replace(
+        binding,
+        descriptor=replace(binding.descriptor, model_id=ModelId("other")),
+    )
+    with pytest.raises(ValueError, match="model binding"):
+        create_ollama_metadata_only_durable_compatibility_policy(
+            configuration=configuration,
+            registry=_sealed_compatibility_registry(),
+            provider_configuration=provider,
+            binding=substituted,
+        )
+
+    _provider, unpinned = _compatibility_provider_inputs(expected_digest=None)
+    with pytest.raises(ValueError, match="pinned Ollama model digest"):
+        create_ollama_metadata_only_durable_compatibility_policy(
+            configuration=configuration,
+            registry=_sealed_compatibility_registry(),
+            provider_configuration=provider,
+            binding=unpinned,
+        )

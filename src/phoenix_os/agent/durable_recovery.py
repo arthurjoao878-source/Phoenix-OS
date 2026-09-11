@@ -350,7 +350,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                 run_id,
                 limit=checkpoint.sequence.value,
             )
-            _validate_authoritative_history(checkpoint, history)
+            validate_authoritative_checkpoint_history(checkpoint, history)
             validate_durable_checkpoint_history(
                 self._history_validator,
                 checkpoint,
@@ -451,7 +451,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                 run_id,
                 limit=checkpoint.sequence.value,
             )
-            _validate_authoritative_history(checkpoint, history)
+            validate_authoritative_checkpoint_history(checkpoint, history)
             validate_durable_checkpoint_history(
                 self._history_validator,
                 checkpoint,
@@ -527,7 +527,7 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
                     run_id,
                     limit=checkpoint.sequence.value,
                 )
-                _validate_authoritative_history(checkpoint, post_history)
+                validate_authoritative_checkpoint_history(checkpoint, post_history)
                 validate_durable_checkpoint_history(
                     self._history_validator,
                     checkpoint,
@@ -921,7 +921,7 @@ def _validate_candidate_page(
         previous = run_id
 
 
-def _validate_authoritative_history(
+def validate_authoritative_checkpoint_history(
     current: CheckpointEnvelope,
     history: tuple[CheckpointEnvelope, ...],
 ) -> None:

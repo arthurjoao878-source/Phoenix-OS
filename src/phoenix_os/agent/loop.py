@@ -52,6 +52,7 @@ from phoenix_os.agent.errors import (
     AgentErrorCode,
     AgentLimitExceededError,
     AgentServiceUnavailableError,
+    AgentStateConflictError,
     AgentTimeoutError,
     ToolExecutionError,
 )
@@ -79,7 +80,11 @@ from phoenix_os.agent.observer import (
     resolved_resource_category,
 )
 from phoenix_os.agent.registry import ToolRegistry
-from phoenix_os.agent.state import AgentCancellationToken, AgentRunStateMachine
+from phoenix_os.agent.state import (
+    AgentBudgetSnapshot,
+    AgentCancellationToken,
+    AgentRunStateMachine,
+)
 from phoenix_os.agent.tools import (
     FinalAdmissionContextualToolAdapter,
     ToolAdapter,
@@ -169,6 +174,26 @@ class AgentModelTurnExecutionDriver(Protocol):
         cancellation: AgentCancellationToken,
         prepare_time: datetime,
     ) -> AgentModelTurnResult: ...
+
+
+@runtime_checkable
+class AgentToolExecutionDriver(Protocol):
+    """Execute one already-authorized tool invocation through a caller-owned path."""
+
+    async def execute(
+        self,
+        executor: BoundedAgentExecutor,
+        adapter: ToolAdapter,
+        invocation: ToolInvocationRequest,
+        descriptor: ToolDescriptor,
+        context: SecurityContext,
+        *,
+        final_admission: ToolFinalAdmissionValidator | None,
+        timeout_seconds: float,
+        cancellation_grace: float,
+        cancellation: AgentCancellationToken,
+        prepare_time: datetime,
+    ) -> ToolInvocationResult: ...
 
 
 @runtime_checkable
@@ -343,6 +368,8 @@ class AgentLoop:
         request: AgentRunRequest,
         context: SecurityContext,
         binding: AgentRunAuthorityBinding,
+        *,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> None:
         """Reapply current bound run policy and authority freshness without execution."""
 
@@ -352,7 +379,12 @@ class AgentLoop:
             raise TypeError("context must be SecurityContext")
         if not isinstance(binding, AgentRunAuthorityBinding):
             raise TypeError("binding must be AgentRunAuthorityBinding")
-        await self._authorize_fresh_run_admission(request, context, binding)
+        await self._authorize_fresh_run_admission(
+            request,
+            context,
+            binding,
+            authority_freshness=_authority_freshness,
+        )
 
     async def run(
         self,
@@ -361,7 +393,10 @@ class AgentLoop:
         *,
         cancellation: AgentCancellationToken | None = None,
         _authority_binding: AgentRunAuthorityBinding | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
         _model_turn_execution_driver: AgentModelTurnExecutionDriver | None = None,
+        _tool_execution_driver: AgentToolExecutionDriver | None = None,
+        _restored_budget: AgentBudgetSnapshot | None = None,
     ) -> AgentRunResult:
         """Execute one in-memory run to exactly one safe terminal result."""
 
@@ -384,14 +419,39 @@ class AgentLoop:
             raise TypeError(
                 "_model_turn_execution_driver must implement AgentModelTurnExecutionDriver"
             )
+        if _tool_execution_driver is not None and not isinstance(
+            _tool_execution_driver,
+            AgentToolExecutionDriver,
+        ):
+            raise TypeError("_tool_execution_driver must implement AgentToolExecutionDriver")
+        if _restored_budget is not None and not isinstance(
+            _restored_budget,
+            AgentBudgetSnapshot,
+        ):
+            raise TypeError("_restored_budget must be AgentBudgetSnapshot or None")
         run_lease: AgentAdmissionLease | None = None
 
-        state = AgentRunStateMachine(
-            request.run_id,
-            request.limits,
-            created_at=request.created_at,
-            deadline=request.deadline,
-        )
+        if _restored_budget is None:
+            state = AgentRunStateMachine(
+                request.run_id,
+                request.limits,
+                created_at=request.created_at,
+                deadline=request.deadline,
+            )
+        else:
+            if self._memory_context is not None or self._artifact_context is not None:
+                raise AgentStateConflictError()
+            if (
+                _restored_budget.started_at != request.created_at
+                or _restored_budget.deadline != request.deadline
+            ):
+                raise AgentStateConflictError()
+            state = AgentRunStateMachine.restore_model_turn_boundary(
+                request.run_id,
+                request.limits,
+                budget=_restored_budget,
+                restored_at=self._now(),
+            )
         messages = list(request.messages)
 
         try:
@@ -423,7 +483,12 @@ class AgentLoop:
 
             token.raise_if_cancelled()
             try:
-                await self._authorize_fresh_run_admission(request, context, _authority_binding)
+                await self._authorize_fresh_run_admission(
+                    request,
+                    context,
+                    _authority_binding,
+                    authority_freshness=_authority_freshness,
+                )
             except BaseException as exception:
                 await self._observe_exception(
                     AgentOperation.RUN_AUTHORIZATION,
@@ -443,17 +508,18 @@ class AgentLoop:
                 context,
             )
 
-            if self._memory_context is not None:
-                memory_block = await self._memory_context.context_for_run(request, context)
-                if memory_block is not None:
-                    messages.extend(memory_context_messages(memory_block))
-                    _require_prompt_limits(messages, request)
+            if _restored_budget is None:
+                if self._memory_context is not None:
+                    memory_block = await self._memory_context.context_for_run(request, context)
+                    if memory_block is not None:
+                        messages.extend(memory_context_messages(memory_block))
+                        _require_prompt_limits(messages, request)
 
-            if self._artifact_context is not None:
-                artifact_block = await self._artifact_context.context_for_run(request, context)
-                if artifact_block is not None:
-                    messages.extend(artifact_context_messages(artifact_block))
-                    _require_prompt_limits(messages, request)
+                if self._artifact_context is not None:
+                    artifact_block = await self._artifact_context.context_for_run(request, context)
+                    if artifact_block is not None:
+                        messages.extend(artifact_context_messages(artifact_block))
+                        _require_prompt_limits(messages, request)
 
             while True:
                 token.raise_if_cancelled()
@@ -508,6 +574,7 @@ class AgentLoop:
                         await self._authorize_fresh_model_admission(
                             inference_request,
                             context,
+                            authority_freshness=_authority_freshness,
                         )
                     except BaseException as exception:
                         await self._observe_exception(
@@ -731,6 +798,7 @@ class AgentLoop:
                             invocation,
                             resolution.descriptor,
                             context,
+                            authority_freshness=_authority_freshness,
                         )
                     except BaseException as exception:
                         await self._observe_exception(
@@ -781,20 +849,37 @@ class AgentLoop:
                                 resolution.descriptor,
                                 context,
                                 token,
+                                authority_freshness=_authority_freshness,
                             )
                             if isinstance(adapter, FinalAdmissionContextualToolAdapter)
                             else None
                         )
-                        tool_result = await self._executor.invoke_tool(
-                            adapter,
-                            invocation,
-                            resolution.descriptor,
-                            context=context,
-                            final_admission=final_admission,
-                            timeout_seconds=state.budget.tool_timeout_seconds(now=self._now()),
-                            cancellation_grace=request.limits.cancellation_grace.total_seconds(),
-                            cancellation=token,
-                        )
+                        timeout_seconds = state.budget.tool_timeout_seconds(now=self._now())
+                        cancellation_grace = request.limits.cancellation_grace.total_seconds()
+                        if _tool_execution_driver is None:
+                            tool_result = await self._executor.invoke_tool(
+                                adapter,
+                                invocation,
+                                resolution.descriptor,
+                                context=context,
+                                final_admission=final_admission,
+                                timeout_seconds=timeout_seconds,
+                                cancellation_grace=cancellation_grace,
+                                cancellation=token,
+                            )
+                        else:
+                            tool_result = await _tool_execution_driver.execute(
+                                self._executor,
+                                adapter,
+                                invocation,
+                                resolution.descriptor,
+                                context,
+                                final_admission=final_admission,
+                                timeout_seconds=timeout_seconds,
+                                cancellation_grace=cancellation_grace,
+                                cancellation=token,
+                                prepare_time=self._now(),
+                            )
                     except BaseException as exception:
                         await self._observe_exception(
                             AgentOperation.TOOL_INVOCATION,
@@ -909,12 +994,17 @@ class AgentLoop:
     async def _validate_authority_freshness(
         self,
         context: SecurityContext,
+        authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> None:
-        validator = self._authority_freshness
+        validator = (
+            self._authority_freshness if authority_freshness is None else authority_freshness
+        )
         if validator is None:
             if context.session_id is not None:
                 raise AgentAuthorizationRejectedError()
             return
+        if not isinstance(validator, AuthorityFreshnessValidator):
+            raise TypeError("authority_freshness must implement AuthorityFreshnessValidator")
         try:
             await validator.validate(context)
         except AuthorityFreshnessRejectedError as exception:
@@ -925,16 +1015,20 @@ class AgentLoop:
         request: AgentRunRequest,
         context: SecurityContext,
         authority_binding: AgentRunAuthorityBinding | None,
+        *,
+        authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> None:
-        await self._validate_authority_freshness(context)
+        await self._validate_authority_freshness(context, authority_freshness)
         await self._authorize_run(request, context, authority_binding)
 
     async def _authorize_fresh_model_admission(
         self,
         request: InferenceRequest,
         context: SecurityContext,
+        *,
+        authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> None:
-        await self._validate_authority_freshness(context)
+        await self._validate_authority_freshness(context, authority_freshness)
         await self._model_authorizer.authorize(request, context)
 
     async def _authorize_fresh_tool_admission(
@@ -942,8 +1036,10 @@ class AgentLoop:
         invocation: ToolInvocationRequest,
         descriptor: ToolDescriptor,
         context: SecurityContext,
+        *,
+        authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> None:
-        await self._validate_authority_freshness(context)
+        await self._validate_authority_freshness(context, authority_freshness)
         await self._tool_authorizer.authorize(invocation, descriptor, context)
 
     def _tool_final_admission_validator(
@@ -952,12 +1048,19 @@ class AgentLoop:
         descriptor: ToolDescriptor,
         context: SecurityContext,
         cancellation: AgentCancellationToken,
+        *,
+        authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> ToolFinalAdmissionValidator:
         async def validate(
             details: ToolFinalAdmissionContext | None = None,
         ) -> ToolFinalAdmissionGrant | None:
             cancellation.raise_if_cancelled()
-            await self._authorize_fresh_tool_admission(invocation, descriptor, context)
+            await self._authorize_fresh_tool_admission(
+                invocation,
+                descriptor,
+                context,
+                authority_freshness=authority_freshness,
+            )
             cancellation.raise_if_cancelled()
             grant = None
             if self._execution_interceptor is not None:

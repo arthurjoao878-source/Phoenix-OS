@@ -19,6 +19,7 @@ from phoenix_os.agent.durable_contracts import (
     ExecutionAttemptKind,
     ExecutionAttemptStatus,
 )
+from phoenix_os.agent.durable_lease_keepalive import DurableSubmissionStartedSignal
 from phoenix_os.agent.errors import AgentStateConflictError
 from phoenix_os.agent.fake import AgentModelTurnRequest
 from phoenix_os.agent.model_turn import validate_agent_model_turn_inference_binding
@@ -138,6 +139,7 @@ class DurableModelTurnSubmissionGate:
         lease: DurableLease,
         turn: AgentModelTurnRequest,
         external_request_digest: CheckpointDigest,
+        submission_started_signal: DurableSubmissionStartedSignal | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(recorder, DurableExecutionAttemptRecorder):
@@ -150,6 +152,13 @@ class DurableModelTurnSubmissionGate:
             raise TypeError("turn must be AgentModelTurnRequest")
         if not isinstance(external_request_digest, CheckpointDigest):
             raise TypeError("external_request_digest must be CheckpointDigest")
+        if submission_started_signal is not None and not isinstance(
+            submission_started_signal,
+            DurableSubmissionStartedSignal,
+        ):
+            raise TypeError(
+                "submission_started_signal must be DurableSubmissionStartedSignal or None"
+            )
         if not callable(clock):
             raise TypeError("clock must be callable")
 
@@ -165,6 +174,11 @@ class DurableModelTurnSubmissionGate:
         self._turn = turn
         self._external_request_digest = external_request_digest
         self._attempt_id = attempt.attempt_id
+        self._submission_started_signal = (
+            DurableSubmissionStartedSignal()
+            if submission_started_signal is None
+            else submission_started_signal
+        )
         self._clock = clock
         self._started_checkpoint: CheckpointEnvelope | None = None
 
@@ -218,6 +232,7 @@ class DurableModelTurnSubmissionGate:
         ):
             raise AgentStateConflictError()
         self._started_checkpoint = started
+        self._submission_started_signal.mark_started()
 
 
 async def prepare_durable_model_turn_submission(
@@ -225,6 +240,7 @@ async def prepare_durable_model_turn_submission(
     recorder: DurableExecutionAttemptRecorder,
     *,
     now: datetime,
+    submission_started_signal: DurableSubmissionStartedSignal | None = None,
     clock: Callable[[], datetime] = _utc_now,
 ) -> DurableModelTurnSubmissionGate:
     """Persist PREPARED and return the single-use exact STARTED submission gate."""
@@ -233,6 +249,11 @@ async def prepare_durable_model_turn_submission(
         raise TypeError("binding must be DurableModelTurnAttemptBinding")
     if not isinstance(recorder, DurableExecutionAttemptRecorder):
         raise TypeError("recorder must implement DurableExecutionAttemptRecorder")
+    if submission_started_signal is not None and not isinstance(
+        submission_started_signal,
+        DurableSubmissionStartedSignal,
+    ):
+        raise TypeError("submission_started_signal must be DurableSubmissionStartedSignal or None")
     _require_timezone_aware(now, label="now")
     if not callable(clock):
         raise TypeError("clock must be callable")
@@ -257,5 +278,6 @@ async def prepare_durable_model_turn_submission(
         lease=binding.lease,
         turn=binding.turn,
         external_request_digest=binding.external_request_digest,
+        submission_started_signal=submission_started_signal,
         clock=clock,
     )

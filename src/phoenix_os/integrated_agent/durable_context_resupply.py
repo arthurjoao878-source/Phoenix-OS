@@ -6,23 +6,25 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 
-from phoenix_os.agent.durable_codec import (
-    checkpoint_envelope_digest,
-    seal_checkpoint_envelope,
-)
+from phoenix_os.agent.durable_codec import seal_checkpoint_envelope
 from phoenix_os.agent.durable_compatibility import DurableCompatibilityValidator
 from phoenix_os.agent.durable_contracts import (
     CheckpointEnvelope,
     CheckpointId,
     CheckpointNextOperation,
     DurableAgentRunId,
+    DurableLease,
     DurableRunStatus,
     DurableRunStore,
     RecoveryDisposition,
     RecoveryPoint,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
-from phoenix_os.agent.durable_recovery import classify_recovery_checkpoint
+from phoenix_os.agent.durable_metadata import validate_durable_checkpoint_history
+from phoenix_os.agent.durable_recovery import (
+    classify_recovery_checkpoint,
+    validate_authoritative_checkpoint_history,
+)
 from phoenix_os.agent.errors import AgentStateConflictError
 from phoenix_os.integrated_agent.contracts import (
     IntegratedOrchestrationPhase,
@@ -89,6 +91,10 @@ class IntegratedDurableContextResupplyCoordinator:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def history_validator(self) -> IntegratedDurableRecoveryHistoryValidator:
+        return self._history_validator
+
     async def pause_candidate(
         self,
         run_id: DurableAgentRunId,
@@ -96,7 +102,7 @@ class IntegratedDurableContextResupplyCoordinator:
         owner_id: str,
         now: datetime,
     ) -> CheckpointEnvelope:
-        """Persist WAITING/CONTEXT_RESUPPLY without granting continuation authority."""
+        """Persist WAITING/CONTEXT_RESUPPLY with one coordinator-owned lease."""
 
         self._ensure_open()
         if not isinstance(run_id, DurableAgentRunId):
@@ -111,112 +117,147 @@ class IntegratedDurableContextResupplyCoordinator:
             now=now,
         )
         try:
-            self._ensure_open()
-            current = await self._store.get_current(run_id)
-            if current is None or current.status.terminal:
-                raise AgentStateConflictError()
-            history = await self._store.list_history(
+            return await self.pause_candidate_with_lease(
                 run_id,
-                limit=current.sequence.value,
-            )
-            _validate_authoritative_history(current, history)
-            self._history_validator.validate_history(current, history)
-
-            projection = decode_integrated_durable_projection(current)
-            if projection is None:
-                raise AgentStateConflictError()
-            if _is_context_resupply_pause(current, projection.waiting_reason):
-                return current
-
-            compatibility = self._compatibility_validator.validate(current)
-            if not compatibility.compatible:
-                raise AgentStateConflictError()
-            point, disposition = classify_recovery_checkpoint(current, now=now)
-            if (
-                point is not RecoveryPoint.SAFE_BOUNDARY
-                or disposition is not RecoveryDisposition.RESUME
-                or current.status not in {DurableRunStatus.CREATED, DurableRunStatus.ACTIVE}
-                or current.metadata.next_operation is not CheckpointNextOperation.MODEL_TURN
-                or current.metadata.active_attempt is not None
-            ):
-                raise AgentStateConflictError()
-
-            resume_state = await self._resume_gate.assess_resume_state(
-                current,
-                now=now,
-            )
-            if resume_state is not IntegratedDurableResumeState.CONTEXT_RESUPPLY:
-                raise AgentStateConflictError()
-
-            checkpoint_id = self._checkpoint_id_factory()
-            if not isinstance(checkpoint_id, CheckpointId):
-                raise TypeError("checkpoint_id_factory must return CheckpointId")
-            if checkpoint_id == current.checkpoint_id:
-                raise AgentStateConflictError()
-
-            waiting_projection = replace(
-                projection,
-                orchestration_phase=IntegratedOrchestrationPhase.WAITING,
-                waiting_reason=IntegratedWaitingReason.CONTEXT_RESUPPLY,
-                current_attempt_id=None,
-            )
-            unreserved = {
-                key: value
-                for key, value in current.metadata.metadata.items()
-                if not key.startswith(RFC0036_DURABLE_METADATA_PREFIX)
-            }
-            metadata_values = merge_integrated_durable_projection(
-                unreserved,
-                waiting_projection,
-            )
-            proposed = seal_checkpoint_envelope(
-                replace(
-                    current,
-                    checkpoint_id=checkpoint_id,
-                    sequence=current.sequence.next(),
-                    previous_digest=current.digest,
-                    run_version=current.run_version.next(),
-                    status=DurableRunStatus.PAUSED_OPERATOR,
-                    metadata=replace(
-                        current.metadata,
-                        active_attempt=None,
-                        metadata=metadata_values,
-                    ),
-                    created_at=now,
-                )
-            )
-            transitioned = await self._store.append(
-                proposed,
-                expected_version=current.run_version,
                 lease=lease,
                 now=now,
             )
-            authoritative = await self._store.get_current(run_id)
-            if authoritative != transitioned:
-                raise AgentStateConflictError()
-            post_history = await self._store.list_history(
-                run_id,
-                limit=transitioned.sequence.value,
-            )
-            _validate_authoritative_history(transitioned, post_history)
-            self._history_validator.validate_history(transitioned, post_history)
-            post_point, post_disposition = classify_recovery_checkpoint(
-                transitioned,
-                now=now,
-            )
-            post_projection = decode_integrated_durable_projection(transitioned)
-            if (
-                post_point is not RecoveryPoint.OPERATOR_PAUSE
-                or post_disposition is not RecoveryDisposition.PAUSE_OPERATOR
-                or post_projection is None
-                or post_projection.orchestration_phase is not IntegratedOrchestrationPhase.WAITING
-                or post_projection.waiting_reason is not IntegratedWaitingReason.CONTEXT_RESUPPLY
-                or post_projection.last_safe_boundary != projection.last_safe_boundary
-            ):
-                raise AgentStateConflictError()
-            return transitioned
         finally:
             await self._lease_manager.release(lease, now=now)
+
+    async def pause_candidate_with_lease(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        lease: DurableLease,
+        now: datetime,
+    ) -> CheckpointEnvelope:
+        """Persist the resupply pause using one caller-owned current fenced lease."""
+
+        self._ensure_open()
+        if not isinstance(run_id, DurableAgentRunId):
+            raise TypeError("run_id must be DurableAgentRunId")
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+        if lease.run_id != run_id:
+            raise AgentStateConflictError()
+        _require_timezone_aware(now)
+
+        authoritative_lease = await self._lease_manager.require_current(
+            lease,
+            now=now,
+        )
+        self._ensure_open()
+        if authoritative_lease.run_id != run_id:
+            raise AgentStateConflictError()
+
+        current = await self._store.get_current(run_id)
+        if current is None or current.status.terminal:
+            raise AgentStateConflictError()
+        history = await self._store.list_history(
+            run_id,
+            limit=current.sequence.value,
+        )
+        validate_authoritative_checkpoint_history(current, history)
+        validate_durable_checkpoint_history(self._history_validator, current, history)
+
+        projection = decode_integrated_durable_projection(current)
+        if projection is None:
+            raise AgentStateConflictError()
+        if _is_context_resupply_pause(current, projection.waiting_reason):
+            return current
+
+        compatibility = self._compatibility_validator.validate(current)
+        if not compatibility.compatible:
+            raise AgentStateConflictError()
+        point, disposition = classify_recovery_checkpoint(current, now=now)
+        if (
+            point is not RecoveryPoint.SAFE_BOUNDARY
+            or disposition is not RecoveryDisposition.RESUME
+            or current.status not in {DurableRunStatus.CREATED, DurableRunStatus.ACTIVE}
+            or current.metadata.next_operation is not CheckpointNextOperation.MODEL_TURN
+            or current.metadata.active_attempt is not None
+        ):
+            raise AgentStateConflictError()
+
+        resume_state = await self._resume_gate.assess_resume_state(
+            current,
+            now=now,
+        )
+        if resume_state is not IntegratedDurableResumeState.CONTEXT_RESUPPLY:
+            raise AgentStateConflictError()
+
+        checkpoint_id = self._checkpoint_id_factory()
+        if not isinstance(checkpoint_id, CheckpointId):
+            raise TypeError("checkpoint_id_factory must return CheckpointId")
+        if checkpoint_id == current.checkpoint_id:
+            raise AgentStateConflictError()
+
+        waiting_projection = replace(
+            projection,
+            orchestration_phase=IntegratedOrchestrationPhase.WAITING,
+            waiting_reason=IntegratedWaitingReason.CONTEXT_RESUPPLY,
+            current_attempt_id=None,
+        )
+        unreserved = {
+            key: value
+            for key, value in current.metadata.metadata.items()
+            if not key.startswith(RFC0036_DURABLE_METADATA_PREFIX)
+        }
+        metadata_values = merge_integrated_durable_projection(
+            unreserved,
+            waiting_projection,
+        )
+        proposed = seal_checkpoint_envelope(
+            replace(
+                current,
+                checkpoint_id=checkpoint_id,
+                sequence=current.sequence.next(),
+                previous_digest=current.digest,
+                run_version=current.run_version.next(),
+                status=DurableRunStatus.PAUSED_OPERATOR,
+                metadata=replace(
+                    current.metadata,
+                    active_attempt=None,
+                    metadata=metadata_values,
+                ),
+                created_at=now,
+            )
+        )
+        transitioned = await self._store.append(
+            proposed,
+            expected_version=current.run_version,
+            lease=authoritative_lease,
+            now=now,
+        )
+        authoritative = await self._store.get_current(run_id)
+        if authoritative != transitioned:
+            raise AgentStateConflictError()
+        post_history = await self._store.list_history(
+            run_id,
+            limit=transitioned.sequence.value,
+        )
+        validate_authoritative_checkpoint_history(transitioned, post_history)
+        validate_durable_checkpoint_history(
+            self._history_validator,
+            transitioned,
+            post_history,
+        )
+        post_point, post_disposition = classify_recovery_checkpoint(
+            transitioned,
+            now=now,
+        )
+        post_projection = decode_integrated_durable_projection(transitioned)
+        if (
+            post_point is not RecoveryPoint.OPERATOR_PAUSE
+            or post_disposition is not RecoveryDisposition.PAUSE_OPERATOR
+            or post_projection is None
+            or post_projection.orchestration_phase is not IntegratedOrchestrationPhase.WAITING
+            or post_projection.waiting_reason is not IntegratedWaitingReason.CONTEXT_RESUPPLY
+            or post_projection.last_safe_boundary != projection.last_safe_boundary
+        ):
+            raise AgentStateConflictError()
+        return transitioned
 
     async def close(self) -> None:
         self._closed = True
@@ -243,32 +284,3 @@ def _require_timezone_aware(now: datetime) -> None:
         raise TypeError("now must be a datetime")
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
-
-
-def _validate_authoritative_history(
-    current: CheckpointEnvelope,
-    history: tuple[CheckpointEnvelope, ...],
-) -> None:
-    if not history or history[-1] != current:
-        raise AgentStateConflictError()
-    if len(history) != current.sequence.value:
-        raise AgentStateConflictError()
-    previous: CheckpointEnvelope | None = None
-    for index, checkpoint in enumerate(history, start=1):
-        if checkpoint.sequence.value != index:
-            raise AgentStateConflictError()
-        if checkpoint.durable_run_id != current.durable_run_id:
-            raise AgentStateConflictError()
-        if checkpoint.agent_run_id != current.agent_run_id:
-            raise AgentStateConflictError()
-        if checkpoint.digest != checkpoint_envelope_digest(checkpoint):
-            raise AgentStateConflictError()
-        if previous is None:
-            if checkpoint.previous_digest is not None:
-                raise AgentStateConflictError()
-        else:
-            if checkpoint.previous_digest != previous.digest:
-                raise AgentStateConflictError()
-            if checkpoint.run_version != previous.run_version.next():
-                raise AgentStateConflictError()
-        previous = checkpoint

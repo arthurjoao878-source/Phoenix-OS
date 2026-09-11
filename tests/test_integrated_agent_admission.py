@@ -20,6 +20,7 @@ from phoenix_os.integrated_agent import (
     IntegratedAgentConfigurationError,
     IntegratedAgentError,
     IntegratedAgentErrorCode,
+    IntegratedBudgetExtension,
     IntegratedDataFlowDisposition,
     IntegratedDataFlowPolicy,
     IntegratedDataFlowRoute,
@@ -58,6 +59,7 @@ def _profile(
     agent_id: str = "research-agent",
     enabled: bool = True,
     limits: AgentLimits | None = None,
+    budget_extension: IntegratedBudgetExtension | None = None,
 ) -> IntegratedExecutionProfile:
     return IntegratedExecutionProfile(
         profile_id=IntegratedExecutionProfileId(profile_id),
@@ -76,6 +78,9 @@ def _profile(
         ),
         data_flow_policy=_policy(),
         limits=limits or AgentLimits(),
+        budget_extension=(
+            IntegratedBudgetExtension() if budget_extension is None else budget_extension
+        ),
         enabled=enabled,
     )
 
@@ -149,8 +154,9 @@ async def test_admission_binds_exact_task_profile_generation_and_existing_agent_
     profile_limits = AgentLimits(max_steps=6, max_model_turns=6, max_tool_calls=6)
     service_limits = AgentLimits(max_steps=5, max_model_turns=5, max_tool_calls=5)
     request_limits = AgentLimits(max_steps=4, max_model_turns=4, max_tool_calls=4)
+    budget_extension = IntegratedBudgetExtension(max_workspace_read_bytes=12_345_678)
     admission = _admission(
-        profile=_profile(limits=profile_limits),
+        profile=_profile(limits=profile_limits, budget_extension=budget_extension),
         configuration=_configuration(limits=service_limits),
     )
     task = _task()
@@ -172,6 +178,8 @@ async def test_admission_binds_exact_task_profile_generation_and_existing_agent_
     assert binding.profile_generation == IntegratedExecutionProfileGeneration(7)
     assert lease.request.limits.max_steps == 4
     assert binding.effective_limits == lease.request.limits
+    assert binding.budget_extension is budget_extension
+    assert binding.budget_extension.max_workspace_read_bytes == 12_345_678
 
     attributes = dict(binding.authority.attributes)
     assert attributes["integrated_task_id"] == str(task.task_id)

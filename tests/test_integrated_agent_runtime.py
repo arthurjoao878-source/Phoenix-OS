@@ -24,6 +24,7 @@ from phoenix_os.agent.errors import AgentErrorCode
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.service import AgentServiceState
 from phoenix_os.agent.state import AgentCancellationToken
+from phoenix_os.authority import AuthorityFreshnessValidator
 from phoenix_os.inference import ModelId, ModelProviderId
 from phoenix_os.integrated_agent import (
     INTEGRATED_PLAN_UPDATE_TOOL_ID,
@@ -31,11 +32,14 @@ from phoenix_os.integrated_agent import (
     IntegratedAgentConfigurationError,
     IntegratedAgentExecutionGuard,
     IntegratedAgentObservation,
+    IntegratedAgentRunBinding,
+    IntegratedAgentRunExecutor,
     IntegratedAgentRuntime,
     IntegratedAgentToolComposition,
     IntegratedDataFlowDisposition,
     IntegratedDataFlowPolicy,
     IntegratedDataFlowRoute,
+    IntegratedDataProvenance,
     IntegratedDataSink,
     IntegratedDataSourceKind,
     IntegratedExecutionProfile,
@@ -169,7 +173,9 @@ class _RecordingAgentService:
         *,
         cancellation: AgentCancellationToken | None = None,
         _authority_binding: AgentRunAuthorityBinding | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> AgentRunResult:
+        del _authority_freshness
         assert isinstance(context, SecurityContext)
         self.run_calls.append(request)
         self.authority_bindings.append(_authority_binding)
@@ -235,6 +241,97 @@ def test_runtime_rejects_mismatched_agent_service_configuration() -> None:
 
     with pytest.raises(IntegratedAgentConfigurationError):
         IntegratedAgentRuntime(_RecordingAgentService(other), admission)
+
+
+class _RecordingIntegratedRunExecutor:
+    def __init__(self, service: _RecordingAgentService) -> None:
+        self._service = service
+        self.requests: list[AgentRunRequest] = []
+        self.bindings: list[IntegratedAgentRunBinding] = []
+        self.provenance: list[IntegratedDataProvenance | None] = []
+        self.cancellations: list[AgentCancellationToken | None] = []
+
+    @property
+    def service(self) -> _RecordingAgentService:
+        return self._service
+
+    async def execute(
+        self,
+        request: AgentRunRequest,
+        binding: IntegratedAgentRunBinding,
+        provenance: IntegratedDataProvenance | None,
+        context: SecurityContext,
+        *,
+        cancellation: AgentCancellationToken | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
+    ) -> AgentRunResult:
+        self.requests.append(request)
+        self.bindings.append(binding)
+        self.provenance.append(provenance)
+        self.cancellations.append(cancellation)
+        return await self._service.run(
+            request,
+            context,
+            cancellation=cancellation,
+            _authority_binding=binding.authority,
+            _authority_freshness=_authority_freshness,
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_optional_run_executor_reuses_same_service_without_lifecycle_ownership() -> (
+    None
+):
+    configuration = _configuration()
+    service = _RecordingAgentService(configuration)
+    admission = _admission(configuration)
+    executor = _RecordingIntegratedRunExecutor(service)
+    assert isinstance(executor, IntegratedAgentRunExecutor)
+    runtime = IntegratedAgentRuntime(
+        service,
+        admission,
+        run_executor=executor,
+    )
+    context = RuntimeContext(services={})
+    security = _security_context()
+    cancellation = AgentCancellationToken()
+    request = _request()
+
+    await runtime.start(context)
+    result = await runtime.run(
+        _task(),
+        request,
+        security,
+        cancellation=cancellation,
+    )
+    await runtime.stop(context)
+
+    assert result.status is AgentRunStatus.COMPLETED
+    assert runtime.run_executor is executor
+    assert executor.requests == [request]
+    assert len(executor.bindings) == 1
+    assert executor.bindings[0].run_id == request.run_id
+    assert executor.bindings[0].authority is service.authority_bindings[0]
+    assert executor.provenance == [None]
+    assert executor.cancellations == [cancellation]
+    assert service.start_calls == 1
+    assert service.stop_calls == 1
+    assert len(service.run_calls) == 1
+    assert await admission.binding_for_run(request.run_id) is None
+
+
+def test_runtime_rejects_run_executor_bound_to_different_service() -> None:
+    configuration = _configuration()
+    service = _RecordingAgentService(configuration)
+    other_service = _RecordingAgentService(configuration)
+    executor = _RecordingIntegratedRunExecutor(other_service)
+
+    with pytest.raises(IntegratedAgentConfigurationError):
+        IntegratedAgentRuntime(
+            service,
+            _admission(configuration),
+            run_executor=executor,
+        )
 
 
 class _ToolRecordingAgentService(_RecordingAgentService):
@@ -306,6 +403,69 @@ def test_runtime_accepts_exact_reviewed_composition_and_registry() -> None:
 
     assert runtime.composition is composition
     assert registry.sealed is True
+
+
+def test_runtime_accepts_exact_reviewed_composition_in_unsealed_runtime_owned_registry() -> None:
+    profile = _profile()
+    planner = IntegratedPlanner(profile)
+    configuration = _tool_configuration(planner)
+    admission = IntegratedAgentAdmission(
+        IntegratedExecutionProfileCatalog((profile,)),
+        IntegratedExecutionProfileSelection(
+            profile_id=profile.profile_id,
+            generation=profile.generation,
+        ),
+        configuration,
+    )
+    binding = profile.require_tool_binding(INTEGRATED_PLAN_UPDATE_TOOL_ID)
+    assert isinstance(binding, IntegratedLocalTransformBinding)
+    registration = integrated_plan_update_registration(binding, planner)
+    composition = IntegratedAgentToolComposition(profile, (registration,))
+    registry = ToolRegistry()
+    registry.register_tool(
+        registration.descriptor,
+        resolver=registration.resolver,
+        adapter=registration.adapter,
+    )
+    assert registry.sealed is False
+
+    with pytest.raises(IntegratedAgentConfigurationError):
+        composition.require_registry(registry)
+    composition.require_runtime_registry(registry)
+
+    service = _ToolRecordingAgentService(configuration, registry)
+    runtime = IntegratedAgentRuntime(
+        service,
+        admission,
+        planner=planner,
+        composition=composition,
+    )
+
+    assert runtime.composition is composition
+    assert registry.sealed is False
+
+
+def test_runtime_owned_registry_validation_fails_closed_after_tool_disable() -> None:
+    profile = _profile()
+    planner = IntegratedPlanner(profile)
+    binding = profile.require_tool_binding(INTEGRATED_PLAN_UPDATE_TOOL_ID)
+    assert isinstance(binding, IntegratedLocalTransformBinding)
+    registration = integrated_plan_update_registration(binding, planner)
+    composition = IntegratedAgentToolComposition(profile, (registration,))
+    registry = ToolRegistry()
+    registry.register_tool(
+        registration.descriptor,
+        resolver=registration.resolver,
+        adapter=registration.adapter,
+    )
+    registry.set_enabled(
+        INTEGRATED_PLAN_UPDATE_TOOL_ID,
+        enabled=False,
+        expected_revision=1,
+    )
+
+    with pytest.raises(IntegratedAgentConfigurationError):
+        composition.require_runtime_registry(registry)
 
 
 def test_runtime_rejects_planner_not_bound_to_execution_guard_provenance() -> None:
@@ -456,7 +616,9 @@ class _RejectedResultAgentService(_RecordingAgentService):
         *,
         cancellation: AgentCancellationToken | None = None,
         _authority_binding: AgentRunAuthorityBinding | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> AgentRunResult:
+        del _authority_freshness
         assert isinstance(context, SecurityContext)
         self.run_calls.append(request)
         self.authority_bindings.append(_authority_binding)

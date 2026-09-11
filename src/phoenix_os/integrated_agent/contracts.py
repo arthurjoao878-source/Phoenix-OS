@@ -27,6 +27,7 @@ MAX_INTEGRATED_DATA_FLOW_ROUTES = 256
 MAX_INTEGRATED_PROFILE_GENERATION = 2_147_483_647
 MAX_INTEGRATED_PLAN_REVISION = 2_147_483_647
 MAX_INTEGRATED_BUDGET_COUNT = 1_000_000
+MAX_INTEGRATED_WORKSPACE_READ_BYTES = 1_073_741_824
 MAX_INTEGRATED_WORKSPACE_MUTATION_BYTES = 1_073_741_824
 MAX_INTEGRATED_TOTAL_DURATION = timedelta(hours=2)
 
@@ -654,6 +655,7 @@ class IntegratedBudgetExtension:
     max_network_operations: int = 32
     max_memory_operations: int = 32
     max_workspace_operations: int = 32
+    max_workspace_read_bytes: int = 16_777_216
     max_workspace_mutation_bytes: int = 16_777_216
     max_host_operations: int = 16
 
@@ -675,6 +677,11 @@ class IntegratedBudgetExtension:
             ("max_host_operations", self.max_host_operations),
         ):
             _positive_int(value, label=label, maximum=MAX_INTEGRATED_BUDGET_COUNT)
+        _positive_int(
+            self.max_workspace_read_bytes,
+            label="max_workspace_read_bytes",
+            maximum=MAX_INTEGRATED_WORKSPACE_READ_BYTES,
+        )
         _positive_int(
             self.max_workspace_mutation_bytes,
             label="max_workspace_mutation_bytes",

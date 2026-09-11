@@ -10,8 +10,9 @@ import os
 import re
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
+from phoenix_os.agent.checkout_workspace import canonical_checkout_logical_path
 from phoenix_os.inference.configuration import (
     InferenceProviderConfiguration,
     InferenceServiceConfiguration,
@@ -40,7 +41,9 @@ MAX_OPERATOR_PATH_TEXT = 32_768
 MAX_OPERATOR_PATH_ITEMS = 256
 
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
-_ALLOWED_TOP_LEVEL = frozenset({"schema_version", "providers", "models", "workspaces", "profiles"})
+_ALLOWED_TOP_LEVEL = frozenset(
+    {"schema_version", "runtime", "providers", "models", "workspaces", "profiles"}
+)
 _SCAFFOLD = """\
 schema_version = 1
 
@@ -53,6 +56,11 @@ schema_version = 1
 # provider = "ollama-local"
 # provider_model_name = "qwen3:4b-instruct"
 # expected_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+#
+# Durable runtime state is explicit. Phoenix does not select a hidden state directory.
+#
+# [runtime]
+# durable_state_path = "C:/Phoenix/state/agent-durable.sqlite3"
 #
 # Development-checkout declarations are operator-owned configuration only.
 #
@@ -89,6 +97,11 @@ class OperatorModelConfiguration:
 
 
 @dataclass(frozen=True, slots=True)
+class OperatorRuntimeConfiguration:
+    durable_state_path: Path
+
+
+@dataclass(frozen=True, slots=True)
 class OperatorWorkspaceConfiguration:
     workspace_name: str
     kind: str
@@ -109,6 +122,7 @@ class OperatorProfileConfiguration:
 @dataclass(frozen=True, slots=True)
 class OperatorConfiguration:
     source: Path
+    runtime: OperatorRuntimeConfiguration | None
     inference: InferenceServiceConfiguration | None
     models: tuple[OperatorModelConfiguration, ...]
     workspaces: tuple[OperatorWorkspaceConfiguration, ...]
@@ -210,7 +224,7 @@ def project_operator_configuration(configuration: OperatorConfiguration) -> dict
         }
         for profile in configuration.profiles
     }
-    return {
+    projected: dict[str, object] = {
         "schema_version": OPERATOR_CONFIG_SCHEMA_VERSION,
         "source": {
             "kind": "explicit",
@@ -221,6 +235,11 @@ def project_operator_configuration(configuration: OperatorConfiguration) -> dict
         "workspaces": workspaces,
         "profiles": profiles,
     }
+    if configuration.runtime is not None:
+        projected["runtime"] = {
+            "durable_state_path": str(configuration.runtime.durable_state_path),
+        }
+    return projected
 
 
 def _compile_document(source: Path, document: object) -> OperatorConfiguration:
@@ -230,6 +249,7 @@ def _compile_document(source: Path, document: object) -> OperatorConfiguration:
     if type(version) is not int or version != OPERATOR_CONFIG_SCHEMA_VERSION:
         raise OperatorConfigurationError("unsupported operator configuration schema version")
 
+    runtime = _compile_runtime(source, root)
     providers_document = _named_table(root, "providers")
     models_document = _named_table(root, "models")
     workspaces_document = _named_table(root, "workspaces")
@@ -262,11 +282,27 @@ def _compile_document(source: Path, document: object) -> OperatorConfiguration:
 
     return OperatorConfiguration(
         source=source,
+        runtime=runtime,
         inference=inference,
         models=models,
         workspaces=workspaces,
         profiles=profiles,
     )
+
+
+def _compile_runtime(
+    source: Path,
+    root: dict[str, object],
+) -> OperatorRuntimeConfiguration | None:
+    if "runtime" not in root:
+        return None
+    item = _mapping(root["runtime"], "runtime")
+    _exact_keys(item, frozenset({"durable_state_path"}), "runtime")
+    durable_state_path = _normalize_durable_state_path(
+        source,
+        _string(item.get("durable_state_path"), maximum=MAX_OPERATOR_PATH_TEXT),
+    )
+    return OperatorRuntimeConfiguration(durable_state_path=durable_state_path)
 
 
 def _compile_providers(document: dict[str, object]) -> tuple[str, ...]:
@@ -483,25 +519,44 @@ def _logical_path_list(value: object, label: str) -> tuple[str, ...]:
     seen: set[str] = set()
     for item in value:
         path = _string(item, maximum=MAX_OPERATOR_PATH_TEXT)
-        if "\\" in path:
-            raise OperatorConfigurationError(f"{label} must use logical POSIX paths")
-        parsed = PurePosixPath(path)
-        if (
-            parsed.is_absolute()
-            or path in {".", ".."}
-            or any(part in {"", ".", ".."} for part in parsed.parts)
-            or parsed.as_posix() != path
-        ):
-            raise OperatorConfigurationError(f"{label} contains a non-canonical logical path")
-        if path in seen:
+        try:
+            canonical = canonical_checkout_logical_path(path)
+        except (TypeError, ValueError) as exception:
+            raise OperatorConfigurationError(
+                f"{label} contains a non-canonical logical path"
+            ) from exception
+        if canonical in seen:
             raise OperatorConfigurationError(f"{label} contains a duplicate logical path")
-        seen.add(path)
-        result.append(path)
+        seen.add(canonical)
+        result.append(canonical)
     return tuple(result)
 
 
 def _within_prefix(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith(prefix + "/")
+
+
+def _normalize_durable_state_path(source: Path, value: str) -> Path:
+    namespace_form = value.replace("/", "\\")
+    if os.name == "nt" and (
+        namespace_form.startswith("\\\\?\\") or namespace_form.startswith("\\\\.\\")
+    ):
+        raise OperatorConfigurationError("durable state path uses a device namespace")
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        raise OperatorConfigurationError("durable state path must be native and absolute")
+    try:
+        resolved = candidate.resolve(strict=False)
+        is_directory = resolved.exists() and resolved.is_dir()
+    except (OSError, RuntimeError) as exception:
+        raise OperatorConfigurationError("durable state path cannot be resolved") from exception
+    if not resolved.is_absolute():
+        raise OperatorConfigurationError("durable state path must be native and absolute")
+    if resolved == source:
+        raise OperatorConfigurationError("durable state path conflicts with configuration source")
+    if is_directory:
+        raise OperatorConfigurationError("durable state path must identify a file")
+    return resolved
 
 
 def _normalize_host_path(value: str) -> str:

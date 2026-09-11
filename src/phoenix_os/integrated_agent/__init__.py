@@ -165,6 +165,7 @@ from phoenix_os.integrated_agent.profiles import (
     IntegratedToolBindingKind,
 )
 from phoenix_os.integrated_agent.runtime import (
+    IntegratedAgentRunExecutor,
     IntegratedAgentRuntime,
     IntegratedAgentServiceDelegate,
 )
@@ -226,6 +227,7 @@ __all__ = [
     "IntegratedAgentRedactedRunInspection",
     "IntegratedAgentRejectedError",
     "IntegratedAgentRunBinding",
+    "IntegratedAgentRunExecutor",
     "IntegratedAgentRuntime",
     "IntegratedAgentServiceDelegate",
     "IntegratedAgentStaleError",

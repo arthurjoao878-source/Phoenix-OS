@@ -17,7 +17,11 @@ from phoenix_os.agent.configuration import AgentServiceConfiguration
 from phoenix_os.agent.contracts import ToolId
 from phoenix_os.agent.execution import BoundedAgentExecutor
 from phoenix_os.agent.fake import AgentModelTurnAdapter
-from phoenix_os.agent.loop import AgentLoop, ToolApprovalResolver
+from phoenix_os.agent.loop import (
+    AgentExecutionInterceptor,
+    AgentLoop,
+    ToolApprovalResolver,
+)
 from phoenix_os.agent.memory_retrieval import AgentMemoryContextProvider
 from phoenix_os.agent.observer import AgentObserver, ContentFreeAgentObserver
 from phoenix_os.agent.registry import ToolRegistry
@@ -62,6 +66,7 @@ def create_agent_runtime_stack(
     approval_service: ToolApprovalService | None = None,
     approval_resolver: ToolApprovalResolver | None = None,
     memory_context: AgentMemoryContextProvider | None = None,
+    execution_interceptor: AgentExecutionInterceptor | None = None,
     audit: AuditLedger | None = None,
     observability: ObservabilityHub | None = None,
 ) -> AgentRuntimeStack:
@@ -94,6 +99,11 @@ def create_agent_runtime_stack(
         raise ValueError("approval_service and approval_resolver must be configured together")
     if memory_context is not None and not isinstance(memory_context, AgentMemoryContextProvider):
         raise TypeError("memory_context must implement AgentMemoryContextProvider")
+    if execution_interceptor is not None and not isinstance(
+        execution_interceptor,
+        AgentExecutionInterceptor,
+    ):
+        raise TypeError("execution_interceptor must implement AgentExecutionInterceptor")
     if (
         any(
             tool_descriptor_requires_approval(descriptor)
@@ -171,6 +181,7 @@ def create_agent_runtime_stack(
             admission=admission,
             observer=observer,
             memory_context=memory_context,
+            execution_interceptor=execution_interceptor,
         )
         service = AgentService(
             runtime,
