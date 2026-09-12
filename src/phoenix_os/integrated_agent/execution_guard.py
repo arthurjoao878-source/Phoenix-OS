@@ -10,6 +10,18 @@ from threading import RLock
 from typing import cast
 from uuid import UUID
 
+from phoenix_os.agent.checkout_agent_tools import (
+    CHECKOUT_LIST_TOOL_ID,
+    CHECKOUT_READ_TOOL_ID,
+    CheckoutToolAdapter,
+    checkout_integrated_binding_id,
+    checkout_tool_surface_resource,
+)
+from phoenix_os.agent.checkout_workspace import (
+    MAX_CHECKOUT_LIST_ENTRIES,
+    checkout_path_resource,
+    checkout_prefix_resource,
+)
 from phoenix_os.agent.contracts import (
     AgentJsonValue,
     AgentRunId,
@@ -20,6 +32,7 @@ from phoenix_os.agent.contracts import (
     ToolInvocationRequest,
     ToolInvocationResult,
     ToolResultStatus,
+    canonical_agent_json_bytes,
 )
 from phoenix_os.agent.errors import (
     AgentAuthorizationRejectedError,
@@ -734,6 +747,8 @@ def _downstream_result_atoms(
     if isinstance(binding, IntegratedLocalTransformBinding):
         return ()
     output = _validated_result_output(result)
+    if isinstance(adapter, CheckoutToolAdapter):
+        return _checkout_result_atoms(binding, invocation, output, adapter)
     if binding.boundary is IntegratedDownstreamBoundary.MEMORY:
         return _memory_result_atoms(binding, invocation, output)
     if binding.boundary is IntegratedDownstreamBoundary.WORKSPACE:
@@ -834,6 +849,184 @@ def _memory_record_atom(
             f"version:{version}",
         ),
     )
+
+
+def _checkout_result_atoms(
+    binding: IntegratedToolBinding,
+    invocation: ToolInvocationRequest,
+    output: Mapping[str, AgentJsonValue],
+    adapter: CheckoutToolAdapter,
+) -> tuple[IntegratedDataProvenanceAtom, ...]:
+    """Derive exact content-free provenance for the RFC-0039 development checkout."""
+
+    registration = adapter.registration
+    if (
+        not isinstance(binding, IntegratedDownstreamBridgeBinding)
+        or binding.boundary is not IntegratedDownstreamBoundary.WORKSPACE
+        or binding.binding_id != checkout_integrated_binding_id(registration)
+        or binding.generation != registration.generation
+        or binding.tool_id != adapter.tool_id
+        or invocation.tool_id != adapter.tool_id
+        or invocation.resolved_resource != checkout_tool_surface_resource(registration)
+    ):
+        raise IntegratedAgentValidationError("development checkout result binding changed")
+
+    common = (
+        f"tool-call:{invocation.call_id}",
+        f"registration-generation:{registration.generation}",
+        f"root-identity:{registration.root_identity}",
+    )
+
+    if adapter.tool_id == CHECKOUT_LIST_TOOL_ID:
+        if binding.action_family != WORKSPACE_LIST_ACTION:
+            raise IntegratedAgentValidationError("development checkout list action changed")
+        workspace_id = _required_uuid_text(
+            output.get("workspace_id"),
+            label="development checkout workspace id",
+        )
+        generation = _required_positive_int(
+            output.get("registration_generation"),
+            label="development checkout registration generation",
+        )
+        if workspace_id != str(registration.workspace_id) or generation != registration.generation:
+            raise IntegratedAgentValidationError("development checkout result identity changed")
+        prefix = output.get("prefix")
+        requested_prefix = invocation.arguments.get("prefix")
+        if (
+            not isinstance(prefix, str)
+            or not isinstance(requested_prefix, str)
+            or prefix != requested_prefix
+        ):
+            raise IntegratedAgentValidationError("development checkout list prefix changed")
+
+        raw_limit = invocation.arguments.get("max_entries", MAX_CHECKOUT_LIST_ENTRIES)
+        if (
+            isinstance(raw_limit, bool)
+            or not isinstance(raw_limit, int)
+            or not 1 <= raw_limit <= MAX_CHECKOUT_LIST_ENTRIES
+        ):
+            raise IntegratedAgentValidationError("development checkout list limit is invalid")
+
+        entries = _required_sequence(
+            output.get("entries"),
+            label="development checkout list entries",
+        )
+        excluded_count = output.get("excluded_count")
+        if (
+            isinstance(excluded_count, bool)
+            or not isinstance(excluded_count, int)
+            or excluded_count < 0
+            or len(entries) > raw_limit
+        ):
+            raise IntegratedAgentValidationError("development checkout list result is invalid")
+        for value in entries:
+            entry = _required_mapping(value, label="development checkout list entry")
+            logical_path = entry.get("logical_path")
+            category = entry.get("category")
+            if not isinstance(logical_path, str) or category not in {"file", "directory"}:
+                raise IntegratedAgentValidationError("development checkout list entry is invalid")
+            try:
+                checkout_path_resource(registration, logical_path)
+            except (AgentError, TypeError, ValueError) as exception:
+                raise IntegratedAgentValidationError(
+                    "development checkout list entry path is invalid"
+                ) from exception
+
+        try:
+            resource = checkout_prefix_resource(registration, prefix)
+            listing_digest = (
+                "sha256:" + hashlib.sha256(canonical_agent_json_bytes(output)).hexdigest()
+            )
+        except (AgentError, TypeError, ValueError) as exception:
+            raise IntegratedAgentValidationError(
+                "development checkout list provenance is invalid"
+            ) from exception
+        return (
+            IntegratedDataProvenanceAtom(
+                source_kind=IntegratedDataSourceKind.WORKSPACE,
+                source_binding=resource,
+                freshness_bindings=(
+                    *common,
+                    "operation:list",
+                    f"list-limit:{raw_limit}",
+                    f"listing-digest:{listing_digest}",
+                ),
+            ),
+        )
+
+    if adapter.tool_id == CHECKOUT_READ_TOOL_ID:
+        if binding.action_family != WORKSPACE_READ_ACTION:
+            raise IntegratedAgentValidationError("development checkout read action changed")
+        snapshot = _required_mapping(
+            output.get("snapshot"),
+            label="development checkout read snapshot",
+        )
+        run_id = _required_uuid_text(
+            snapshot.get("run_id"),
+            label="development checkout read run id",
+        )
+        snapshot_workspace_id = _required_uuid_text(
+            snapshot.get("workspace_id"),
+            label="development checkout read workspace id",
+        )
+        snapshot_generation = _required_positive_int(
+            snapshot.get("registration_generation"),
+            label="development checkout read registration generation",
+        )
+        logical_path = snapshot.get("logical_path")
+        requested_path = invocation.arguments.get("logical_path")
+        root_identity = _required_digest(
+            snapshot.get("root_identity"),
+            label="development checkout root identity",
+        )
+        file_identity = _required_digest(
+            snapshot.get("file_identity"),
+            label="development checkout file identity",
+        )
+        content_digest = _required_digest(
+            snapshot.get("content_digest"),
+            label="development checkout content digest",
+        )
+        byte_length = snapshot.get("byte_length")
+        if (
+            run_id != str(invocation.run_id)
+            or snapshot_workspace_id != str(registration.workspace_id)
+            or snapshot_generation != registration.generation
+            or not isinstance(logical_path, str)
+            or not isinstance(requested_path, str)
+            or logical_path != requested_path
+            or root_identity != registration.root_identity
+            or isinstance(byte_length, bool)
+            or not isinstance(byte_length, int)
+            or byte_length < 0
+            or output.get("content_encoding") != "base64-utf8"
+        ):
+            raise IntegratedAgentValidationError("development checkout read snapshot changed")
+        _required_sequence(
+            output.get("content_base64_chunks"),
+            label="development checkout read content chunks",
+        )
+        try:
+            resource = checkout_path_resource(registration, logical_path)
+        except (AgentError, TypeError, ValueError) as exception:
+            raise IntegratedAgentValidationError(
+                "development checkout read path is invalid"
+            ) from exception
+        return (
+            IntegratedDataProvenanceAtom(
+                source_kind=IntegratedDataSourceKind.WORKSPACE,
+                source_binding=resource,
+                freshness_bindings=(
+                    *common,
+                    "operation:read",
+                    f"file-identity:{file_identity}",
+                    f"content-digest:{content_digest}",
+                    f"byte-length:{byte_length}",
+                ),
+            ),
+        )
+
+    raise IntegratedAgentValidationError("unsupported development checkout result tool")
 
 
 def _workspace_result_atoms(

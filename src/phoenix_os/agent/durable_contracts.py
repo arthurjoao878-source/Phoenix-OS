@@ -823,6 +823,31 @@ class ResumeRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class DurableCancellationRequest:
+    """Authorized request to cancel one exact durable run version."""
+
+    run_id: DurableAgentRunId
+    actor_id: str
+    expected_version: DurableRunVersion
+    generation: FencingGeneration
+    requested_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, DurableAgentRunId):
+            raise TypeError("run_id must be DurableAgentRunId")
+        object.__setattr__(
+            self,
+            "actor_id",
+            _normalize_identifier(self.actor_id, label="cancellation actor id"),
+        )
+        if not isinstance(self.expected_version, DurableRunVersion):
+            raise TypeError("expected_version must be DurableRunVersion")
+        if not isinstance(self.generation, FencingGeneration):
+            raise TypeError("generation must be FencingGeneration")
+        _require_timezone_aware(self.requested_at, label="requested_at")
+
+
+@dataclass(frozen=True, slots=True)
 class ReconciliationEvidence:
     evidence_type: str
     evidence_digest: CheckpointDigest

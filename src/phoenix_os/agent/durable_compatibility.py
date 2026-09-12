@@ -2,22 +2,214 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 import re
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from datetime import timedelta
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
+from phoenix_os.agent.configuration import AgentServiceConfiguration
 from phoenix_os.agent.contracts import AgentId
 from phoenix_os.agent.durable_contracts import (
+    CURRENT_CHECKPOINT_SCHEMA_VERSION,
     CheckpointDigest,
     CheckpointEnvelope,
     CheckpointPayloadProfile,
     CompatibilityDigests,
 )
+from phoenix_os.agent.registry import ToolRegistry
+from phoenix_os.agent.tools import canonical_tool_descriptor_bytes
+from phoenix_os.inference.configuration import InferenceProviderConfiguration
+from phoenix_os.inference.ollama import (
+    OLLAMA_PROVIDER_ID,
+    OllamaModelBinding,
+    OllamaModelProvider,
+    OllamaTransportLimits,
+)
 
 _KEY_VERSION_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
+
+_COMPATIBILITY_DOCUMENT_VERSION = 1
+_CHECKPOINT_CODEC_COMPATIBILITY_VERSION = 1
+_OLLAMA_PROVIDER_COMPATIBILITY_VERSION = 1
+
+_CONFIGURATION_COMPATIBILITY_KIND = "phoenix.agent.durable-configuration-compatibility"
+_TOOL_REGISTRY_COMPATIBILITY_KIND = "phoenix.agent.durable-tool-registry-compatibility"
+_MODEL_PROVIDER_COMPATIBILITY_KIND = "phoenix.agent.durable-model-provider-compatibility"
+_CHECKPOINT_CODEC_COMPATIBILITY_KIND = "phoenix.agent.durable-checkpoint-codec-compatibility"
+
+
+def _duration_microseconds(value: timedelta) -> int:
+    if not isinstance(value, timedelta):
+        raise TypeError("compatibility duration must be timedelta")
+    return value.days * 86_400_000_000 + value.seconds * 1_000_000 + value.microseconds
+
+
+def _compatibility_value(value: object) -> object:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("compatibility floats must be finite")
+        return value
+    if isinstance(value, StrEnum):
+        return value.value
+    if isinstance(value, timedelta):
+        return {"microseconds": _duration_microseconds(value)}
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("compatibility mappings must use string keys")
+        return {cast(str, key): _compatibility_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_compatibility_value(item) for item in value]
+    if isinstance(value, frozenset):
+        converted = [_compatibility_value(item) for item in value]
+        return sorted(converted, key=_compatibility_sort_key)
+    if is_dataclass(value) and not isinstance(value, type):
+        typed = cast(Any, value)
+        return {
+            item.name: _compatibility_value(getattr(typed, item.name)) for item in fields(typed)
+        }
+    raise TypeError("unsupported typed compatibility value")
+
+
+def _compatibility_sort_key(value: object) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _compatibility_digest(kind: str, record: Mapping[str, object]) -> CheckpointDigest:
+    document = {
+        "schema_version": _COMPATIBILITY_DOCUMENT_VERSION,
+        "kind": kind,
+        "record": _compatibility_value(record),
+    }
+    try:
+        encoded = json.dumps(
+            document,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError, UnicodeEncodeError) as exception:
+        raise ValueError("compatibility evidence is not canonically encodable") from exception
+    return CheckpointDigest(hashlib.sha256(encoded).hexdigest())
+
+
+def _configuration_compatibility_digest(
+    configuration: AgentServiceConfiguration,
+) -> CheckpointDigest:
+    return _compatibility_digest(
+        _CONFIGURATION_COMPATIBILITY_KIND,
+        {
+            "agent_id": str(configuration.agent_id),
+            "provider_id": str(configuration.provider_id),
+            "model_id": str(configuration.model_id),
+            "tool_ids": tuple(str(tool_id) for tool_id in configuration.tool_ids),
+            "limits": configuration.limits,
+            "observability": configuration.observability,
+            "source": configuration.source,
+            "metadata": configuration.metadata,
+        },
+    )
+
+
+def _require_registry_matches_configuration(
+    configuration: AgentServiceConfiguration,
+    registry: ToolRegistry,
+) -> None:
+    if registry.closed:
+        raise ValueError("durable compatibility requires an open tool registry")
+    if not registry.sealed:
+        raise ValueError("durable compatibility requires a sealed tool registry")
+    states = registry.list_states()
+    if len(states) != len(configuration.tools):
+        raise ValueError("tool registry does not match agent configuration")
+    for configured, state in zip(configuration.tools, states, strict=True):
+        expected = configured.descriptor
+        current = state.descriptor
+        if current.tool_id != expected.tool_id:
+            raise ValueError("tool registry order does not match agent configuration")
+        normalized = replace(current, availability=expected.availability)
+        if normalized != expected:
+            raise ValueError("tool registry descriptor does not match agent configuration")
+
+
+def _tool_registry_compatibility_digest(
+    configuration: AgentServiceConfiguration,
+    registry: ToolRegistry,
+) -> CheckpointDigest:
+    _require_registry_matches_configuration(configuration, registry)
+    entries: list[dict[str, object]] = []
+    for state in registry.list_states():
+        descriptor_bytes = canonical_tool_descriptor_bytes(state.descriptor)
+        entries.append(
+            {
+                "tool_id": str(state.descriptor.tool_id),
+                "revision": state.revision,
+                "descriptor_sha256": hashlib.sha256(descriptor_bytes).hexdigest(),
+            }
+        )
+    return _compatibility_digest(
+        _TOOL_REGISTRY_COMPATIBILITY_KIND,
+        {"entries": tuple(entries)},
+    )
+
+
+def _ollama_model_provider_compatibility_digest(
+    configuration: AgentServiceConfiguration,
+    provider_configuration: InferenceProviderConfiguration,
+    binding: OllamaModelBinding,
+    transport_limits: OllamaTransportLimits,
+) -> CheckpointDigest:
+    if configuration.provider_id != OLLAMA_PROVIDER_ID:
+        raise ValueError("agent configuration is not bound to the Ollama provider")
+    if provider_configuration.provider_id != configuration.provider_id:
+        raise ValueError("provider configuration does not match agent configuration")
+    if binding.descriptor.provider_id != configuration.provider_id:
+        raise ValueError("model binding provider does not match agent configuration")
+    if binding.descriptor.model_id != configuration.model_id:
+        raise ValueError("model binding does not match agent configuration")
+    if binding.expected_digest is None:
+        raise ValueError("durable compatibility requires a pinned Ollama model digest")
+
+    provider = OllamaModelProvider(
+        provider_configuration,
+        (binding,),
+        transport_limits=transport_limits,
+    )
+    return _compatibility_digest(
+        _MODEL_PROVIDER_COMPATIBILITY_KIND,
+        {
+            "implementation": "phoenix.inference.ollama.OllamaModelProvider",
+            "implementation_compatibility_version": _OLLAMA_PROVIDER_COMPATIBILITY_VERSION,
+            "provider_configuration": provider.provider_configuration,
+            "model_binding": provider.model_bindings[0],
+            "transport_limits": transport_limits,
+        },
+    )
+
+
+def _checkpoint_codec_compatibility_digest() -> CheckpointDigest:
+    return _compatibility_digest(
+        _CHECKPOINT_CODEC_COMPATIBILITY_KIND,
+        {
+            "implementation": "phoenix.agent.durable_codec.CanonicalCheckpointCodec",
+            "implementation_compatibility_version": _CHECKPOINT_CODEC_COMPATIBILITY_VERSION,
+            "checkpoint_schema_version": CURRENT_CHECKPOINT_SCHEMA_VERSION,
+        },
+    )
 
 
 class DurableCompatibilityCategory(StrEnum):
@@ -147,6 +339,46 @@ class DurableCompatibilityPolicy:
                 raise ValueError("protected-content compatibility requires a payload codec")
             if not key_versions:
                 raise ValueError("protected-content compatibility requires protection keys")
+
+
+def create_ollama_metadata_only_durable_compatibility_policy(
+    *,
+    configuration: AgentServiceConfiguration,
+    registry: ToolRegistry,
+    provider_configuration: InferenceProviderConfiguration,
+    binding: OllamaModelBinding,
+    transport_limits: OllamaTransportLimits | None = None,
+) -> DurableCompatibilityPolicy:
+    """Derive one recovery policy from the exact trusted live composition."""
+
+    if not isinstance(configuration, AgentServiceConfiguration):
+        raise TypeError("configuration must be AgentServiceConfiguration")
+    if not isinstance(registry, ToolRegistry):
+        raise TypeError("registry must be ToolRegistry")
+    if not isinstance(provider_configuration, InferenceProviderConfiguration):
+        raise TypeError("provider_configuration must be InferenceProviderConfiguration")
+    if not isinstance(binding, OllamaModelBinding):
+        raise TypeError("binding must be OllamaModelBinding")
+    selected_limits = OllamaTransportLimits() if transport_limits is None else transport_limits
+    if not isinstance(selected_limits, OllamaTransportLimits):
+        raise TypeError("transport_limits must be OllamaTransportLimits or None")
+
+    current = CompatibilityDigests(
+        configuration=_configuration_compatibility_digest(configuration),
+        tool_registry=_tool_registry_compatibility_digest(configuration, registry),
+        model_provider=_ollama_model_provider_compatibility_digest(
+            configuration,
+            provider_configuration,
+            binding,
+            selected_limits,
+        ),
+        checkpoint_codec=_checkpoint_codec_compatibility_digest(),
+    )
+    return DurableCompatibilityPolicy(
+        agent_id=configuration.agent_id,
+        current=current,
+        payload_profile=CheckpointPayloadProfile.METADATA_ONLY,
+    )
 
 
 @runtime_checkable

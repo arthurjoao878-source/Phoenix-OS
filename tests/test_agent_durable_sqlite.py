@@ -39,6 +39,7 @@ from phoenix_os.agent.durable_reliability import (
 from phoenix_os.agent.durable_retention import DurableRetentionStore
 from phoenix_os.agent.durable_sqlite import (
     DURABLE_SQLITE_SCHEMA_VERSION,
+    CheckoutRegistrationIdentity,
     SQLiteDurableLeaseManager,
     SQLiteDurableRunStore,
 )
@@ -251,6 +252,149 @@ async def test_create_reopen_and_current_checkpoint_are_durable(tmp_path: Path) 
     assert await reopened.get_current(DURABLE_RUN_ID) == first
     assert await reopened.list_history(DURABLE_RUN_ID, limit=1) == (first,)
     await reopened.close()
+
+
+async def test_checkout_registration_identity_is_stable_and_digest_change_bumps_generation(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    registration_key = "1" * 64
+    first_digest = "a" * 64
+    second_digest = "b" * 64
+    store = SQLiteDurableRunStore(path)
+
+    first = await store.resolve_checkout_registration_identity(
+        registration_key=registration_key,
+        registration_digest=first_digest,
+    )
+    assert isinstance(first, CheckoutRegistrationIdentity)
+    assert first.generation == 1
+
+    same = await store.resolve_checkout_registration_identity(
+        registration_key=registration_key,
+        registration_digest=first_digest,
+    )
+    assert same == first
+
+    freshness = await store.get_store_freshness()
+    assert freshness.store_generation == 1
+    assert freshness.witness_generation == 1
+
+    changed = await store.resolve_checkout_registration_identity(
+        registration_key=registration_key,
+        registration_digest=second_digest,
+    )
+    assert changed.workspace_id == first.workspace_id
+    assert changed.generation == 2
+
+    freshness = await store.get_store_freshness()
+    assert freshness.store_generation == 2
+    assert freshness.witness_generation == 2
+
+    connection = _connect(path)
+    try:
+        columns = tuple(
+            row[1]
+            for row in connection.execute("PRAGMA table_info(checkout_registrations)").fetchall()
+        )
+        assert columns == (
+            "registration_key",
+            "workspace_id",
+            "generation",
+            "registration_digest",
+            "created_at",
+            "updated_at",
+        )
+        row = connection.execute(
+            """
+            SELECT registration_key, workspace_id, generation, registration_digest
+            FROM checkout_registrations
+            WHERE registration_key = ?
+            """,
+            (registration_key,),
+        ).fetchone()
+        assert row == (
+            registration_key,
+            str(first.workspace_id),
+            2,
+            second_digest,
+        )
+    finally:
+        connection.close()
+
+    await store.close()
+
+    reopened = SQLiteDurableRunStore(path)
+    resumed = await reopened.resolve_checkout_registration_identity(
+        registration_key=registration_key,
+        registration_digest=second_digest,
+    )
+    assert resumed == changed
+    await reopened.close()
+
+
+async def test_checkout_registration_identity_rejects_noncanonical_digest_before_io(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    store = SQLiteDurableRunStore(path)
+
+    with pytest.raises(ValueError, match="canonical sha256"):
+        await store.resolve_checkout_registration_identity(
+            registration_key="not-a-digest",
+            registration_digest="a" * 64,
+        )
+
+    assert not path.exists()
+    await store.close()
+
+
+async def test_sqlite_schema_five_migrates_checkout_registration_identity_table(
+    tmp_path: Path,
+) -> None:
+    path = _path(tmp_path)
+    seeded = SQLiteDurableRunStore(path)
+    initial_freshness = await seeded.get_store_freshness()
+    assert initial_freshness.store_generation == 0
+    assert initial_freshness.witness_generation == 0
+    await seeded.close()
+
+    legacy = _connect(path)
+    try:
+        legacy.execute("DROP TABLE checkout_registrations")
+        legacy.execute("UPDATE durable_meta SET schema_version = 5 WHERE singleton = 1")
+        legacy.execute("PRAGMA user_version = 5")
+    finally:
+        legacy.close()
+
+    migrated = SQLiteDurableRunStore(path)
+    identity = await migrated.resolve_checkout_registration_identity(
+        registration_key="2" * 64,
+        registration_digest="c" * 64,
+    )
+    assert identity.generation == 1
+
+    connection = _connect(path)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert (
+            connection.execute(
+                "SELECT schema_version FROM durable_meta WHERE singleton = 1"
+            ).fetchone()[0]
+            == 6
+        )
+        table = connection.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'checkout_registrations'
+            """
+        ).fetchone()
+        assert table is not None
+    finally:
+        connection.close()
+
+    await migrated.close()
 
 
 async def test_create_is_atomic_and_duplicate_run_fails_closed(tmp_path: Path) -> None:

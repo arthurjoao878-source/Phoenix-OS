@@ -59,12 +59,20 @@ def add_operator_commands(commands: Any) -> None:
     doctor = commands.add_parser("doctor", help="run bounded read-only diagnostics")
     doctor.add_argument("--config", required=True, help="explicit TOML configuration path")
 
+    from phoenix_os.control_plane.task_cli import add_task_commands
+
+    add_task_commands(commands)
+
 
 def run_operator_command(arguments: argparse.Namespace) -> int:
     if arguments.command == "config":
         return _run_config(arguments)
     if arguments.command == "doctor":
         return _run_doctor(Path(arguments.config))
+    if arguments.command == "task":
+        from phoenix_os.control_plane.task_cli import run_task_command
+
+        return run_task_command(arguments)
     raise RuntimeError("unreachable operator CLI command")
 
 

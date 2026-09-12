@@ -121,6 +121,25 @@ class DurableExecutionAttemptRecorder(Protocol):
     ) -> Awaitable[CheckpointEnvelope]: ...
 
 
+@runtime_checkable
+class DurableTerminalMetadataProjectingAttemptRecorder(Protocol):
+    """Persist one terminal attempt while applying one server-owned transition projector."""
+
+    def mark_terminal_projected(
+        self,
+        run_id: DurableAgentRunId,
+        attempt_id: ExecutionAttemptId,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        status: ExecutionAttemptStatus,
+        now: datetime,
+        metadata_projector: DurableCheckpointMetadataProjector,
+        next_operation: CheckpointNextOperation | None = None,
+        error_code: str | None = None,
+    ) -> Awaitable[CheckpointEnvelope]: ...
+
+
 class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder):
     """Record exact attempt transitions through the configured durable store."""
 
@@ -357,6 +376,60 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
     ) -> CheckpointEnvelope:
         """Persist one reviewed terminal outcome without transparent repetition."""
 
+        return await self._mark_terminal(
+            run_id,
+            attempt_id,
+            expected_version=expected_version,
+            lease=lease,
+            status=status,
+            now=now,
+            next_operation=next_operation,
+            error_code=error_code,
+            transition_metadata_projector=None,
+        )
+
+    async def mark_terminal_projected(
+        self,
+        run_id: DurableAgentRunId,
+        attempt_id: ExecutionAttemptId,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        status: ExecutionAttemptStatus,
+        now: datetime,
+        metadata_projector: DurableCheckpointMetadataProjector,
+        next_operation: CheckpointNextOperation | None = None,
+        error_code: str | None = None,
+    ) -> CheckpointEnvelope:
+        """Persist one terminal outcome with one non-retained transition metadata projector."""
+
+        if not isinstance(metadata_projector, DurableCheckpointMetadataProjector):
+            raise TypeError("metadata_projector must implement DurableCheckpointMetadataProjector")
+        return await self._mark_terminal(
+            run_id,
+            attempt_id,
+            expected_version=expected_version,
+            lease=lease,
+            status=status,
+            now=now,
+            next_operation=next_operation,
+            error_code=error_code,
+            transition_metadata_projector=metadata_projector,
+        )
+
+    async def _mark_terminal(
+        self,
+        run_id: DurableAgentRunId,
+        attempt_id: ExecutionAttemptId,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        status: ExecutionAttemptStatus,
+        now: datetime,
+        next_operation: CheckpointNextOperation | None,
+        error_code: str | None,
+        transition_metadata_projector: DurableCheckpointMetadataProjector | None,
+    ) -> CheckpointEnvelope:
         self._require_attempt_id(attempt_id)
         if not isinstance(status, ExecutionAttemptStatus):
             raise TypeError("status must be ExecutionAttemptStatus")
@@ -410,6 +483,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             status=resulting_status,
             next_operation=resulting_operation,
             attempt=terminal,
+            transition_metadata_projector=transition_metadata_projector,
         )
 
     async def _load_current(
@@ -562,10 +636,21 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         status: DurableRunStatus,
         next_operation: CheckpointNextOperation,
         attempt: ExecutionAttempt,
+        transition_metadata_projector: DurableCheckpointMetadataProjector | None = None,
     ) -> CheckpointEnvelope:
         checkpoint_id = self._checkpoint_id_factory()
         if not isinstance(checkpoint_id, CheckpointId):
             raise TypeError("checkpoint_id_factory must return CheckpointId")
+        metadata_values = project_durable_checkpoint_metadata(
+            transition_metadata_projector,
+            current,
+            checkpoint_id=checkpoint_id,
+            status=status,
+            step_id=current.step_id,
+            next_operation=next_operation,
+            active_attempt=attempt,
+            metadata=current.metadata.metadata,
+        )
         metadata_values = project_durable_checkpoint_metadata(
             self._metadata_projector,
             current,
@@ -574,7 +659,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             step_id=current.step_id,
             next_operation=next_operation,
             active_attempt=attempt,
-            metadata=current.metadata.metadata,
+            metadata=metadata_values,
         )
         metadata = replace(
             current.metadata,

@@ -164,7 +164,7 @@ async def test_fresh_sqlite_database_uses_v3_tombstone_schema(
         ).DurableAgentRunId(__import__("uuid").UUID(int=1))
     )
 
-    assert DURABLE_SQLITE_SCHEMA_VERSION == 5
+    assert DURABLE_SQLITE_SCHEMA_VERSION == 6
 
     connection = _connect(path)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == DURABLE_SQLITE_SCHEMA_VERSION

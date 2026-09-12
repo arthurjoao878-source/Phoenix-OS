@@ -35,6 +35,7 @@ from phoenix_os.agent.errors import AgentSchemaError, ToolExecutionError
 from phoenix_os.agent.service import AgentServiceState
 from phoenix_os.agent.state import AgentCancellationToken
 from phoenix_os.agent.tools import ToolDescriptor, ToolResourceResolutionContext
+from phoenix_os.authority import AuthorityFreshnessValidator
 from phoenix_os.inference import InferenceRequest, ModelId, ModelProviderId
 from phoenix_os.integrated_agent import (
     INTEGRATED_PLAN_UPDATE_TOOL_ID,
@@ -465,8 +466,9 @@ class _RecordingService:
         *,
         cancellation: AgentCancellationToken | None = None,
         _authority_binding: AgentRunAuthorityBinding | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> AgentRunResult:
-        del cancellation
+        del cancellation, _authority_freshness
         assert context.authenticated
         assert _authority_binding is not None
         self.seen_revisions.append(self._planner.current_revision(request.run_id))

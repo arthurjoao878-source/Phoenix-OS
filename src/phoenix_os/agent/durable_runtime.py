@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from phoenix_os.agent.durable_administration import (
     DurableAdministrationConfiguration,
@@ -16,8 +18,13 @@ from phoenix_os.agent.durable_attempts import (
     StoreBackedDurableExecutionAttemptRecorder,
 )
 from phoenix_os.agent.durable_authorization import (
+    DurableCancellationAuthorizer,
     DurableReconciliationAuthorizer,
     DurableResumeAuthorizer,
+)
+from phoenix_os.agent.durable_cancellation import (
+    DurableCancellationCoordinator,
+    StoreBackedDurableCancellationCoordinator,
 )
 from phoenix_os.agent.durable_cleanup_administration import DurableCleanupAdministration
 from phoenix_os.agent.durable_compatibility import DurableCompatibilityValidator
@@ -28,12 +35,17 @@ from phoenix_os.agent.durable_contracts import (
     RetentionPolicy,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
+from phoenix_os.agent.durable_lease_keepalive import (
+    StoreBackedDurableLeaseKeepaliveFactory,
+)
 from phoenix_os.agent.durable_live_binding import (
     StoreBackedDurableModelTurnBindingProvider,
+    StoreBackedDurableToolInvocationBindingProvider,
 )
 from phoenix_os.agent.durable_live_model_turn import (
     DurableAgentModelTurnExecutionDriver,
 )
+from phoenix_os.agent.durable_live_tool import DurableAgentToolExecutionDriver
 from phoenix_os.agent.durable_metadata import (
     DurableCheckpointHistoryValidator,
     DurableCheckpointMetadataProjector,
@@ -61,6 +73,8 @@ from phoenix_os.agent.durable_retention_worker import (
     DurableRetentionWorker,
     DurableRetentionWorkerConfiguration,
 )
+from phoenix_os.agent.durable_tool import DurableToolPreSubmitValidator
+from phoenix_os.agent.durable_tool_execution import DurableToolResultMetadataProjectorFactory
 from phoenix_os.agent.durable_worker import (
     BoundedDurableRecoveryWorker,
     DurableRecoveryWorker,
@@ -69,6 +83,10 @@ from phoenix_os.agent.durable_worker import (
 from phoenix_os.audit import AuditLedger
 from phoenix_os.policy import SecurityContext
 from phoenix_os.runtime import RuntimeContext
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class DurableStorageLifecycle:
@@ -215,8 +233,10 @@ class DurableAgentRuntimeStack:
     recovery_lifecycle: DurableRecoveryLifecycle
     observer: DurableRunObserver
     administration: DurableRunAdministration
+    cancellation: DurableCancellationCoordinator | None = None
     attempt_recorder: DurableExecutionAttemptRecorder | None = None
     metadata_projector: DurableCheckpointMetadataProjector | None = None
+    history_validator: DurableCheckpointHistoryValidator | None = None
     reconciliation_administration: DurableReconciliationAdministration | None = None
     cleanup_administration: DurableCleanupAdministration | None = None
     protector: CheckpointProtector | None = None
@@ -228,6 +248,8 @@ class DurableAgentRuntimeStack:
         self,
         *,
         lease: DurableLease,
+        lease_renewal_interval: timedelta | None = None,
+        clock: Callable[[], datetime] = _utc_now,
     ) -> DurableAgentModelTurnExecutionDriver:
         """Compose live durable model execution without taking lease ownership."""
 
@@ -244,10 +266,72 @@ class DurableAgentRuntimeStack:
             lease=lease,
             metadata_projector=self.metadata_projector,
         )
+        keepalive_factory = self._create_lease_keepalive_factory(
+            lease=lease,
+            lease_renewal_interval=lease_renewal_interval,
+            clock=clock,
+        )
         return DurableAgentModelTurnExecutionDriver(
             binding_provider=binding_provider,
             recorder=recorder,
+            lease_keepalive_factory=keepalive_factory,
+            clock=clock,
         )
+
+    def create_tool_execution_driver(
+        self,
+        *,
+        lease: DurableLease,
+        lease_renewal_interval: timedelta | None = None,
+        pre_submit_validator: DurableToolPreSubmitValidator | None = None,
+        result_metadata_projector_factory: DurableToolResultMetadataProjectorFactory | None = None,
+        clock: Callable[[], datetime] = _utc_now,
+    ) -> DurableAgentToolExecutionDriver:
+        """Compose live durable tool execution without taking lease ownership."""
+
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+
+        recorder = self.attempt_recorder
+        if recorder is None:
+            raise RuntimeError("durable attempt recorder is unavailable")
+
+        binding_provider = StoreBackedDurableToolInvocationBindingProvider(
+            store=self.store,
+            lease_manager=self.lease_manager,
+            lease=lease,
+            metadata_projector=self.metadata_projector,
+        )
+        keepalive_factory = self._create_lease_keepalive_factory(
+            lease=lease,
+            lease_renewal_interval=lease_renewal_interval,
+            clock=clock,
+        )
+        return DurableAgentToolExecutionDriver(
+            binding_provider=binding_provider,
+            recorder=recorder,
+            lease_keepalive_factory=keepalive_factory,
+            pre_submit_validator=pre_submit_validator,
+            result_metadata_projector_factory=result_metadata_projector_factory,
+            clock=clock,
+        )
+
+    def _create_lease_keepalive_factory(
+        self,
+        *,
+        lease: DurableLease,
+        lease_renewal_interval: timedelta | None,
+        clock: Callable[[], datetime],
+    ) -> StoreBackedDurableLeaseKeepaliveFactory | None:
+        if lease_renewal_interval is None:
+            return None
+        factory = StoreBackedDurableLeaseKeepaliveFactory(
+            lease_manager=self.lease_manager,
+            renewal_interval=lease_renewal_interval,
+            clock=clock,
+        )
+        factory.require_compatible(lease)
+        return factory
 
     async def close(self) -> None:
         """Rollback composed durable resources in reverse lifecycle order."""
@@ -297,6 +381,7 @@ def create_durable_agent_runtime_stack(
     observer: DurableRunObserver | None = None,
     administration_configuration: DurableAdministrationConfiguration | None = None,
     machine_guard: DurableMachineAdministrationGuard | None = None,
+    cancellation_authorizer: DurableCancellationAuthorizer | None = None,
     reconciliation_authorizer: DurableReconciliationAuthorizer | None = None,
     reconciliation_audit: AuditLedger | None = None,
     reconciliation_status_lookup: DurableReconciliationStatusLookup | None = None,
@@ -354,6 +439,11 @@ def create_durable_agent_runtime_stack(
         DurableMachineAdministrationGuard,
     ):
         raise TypeError("machine_guard must implement DurableMachineAdministrationGuard")
+    if cancellation_authorizer is not None and not isinstance(
+        cancellation_authorizer,
+        DurableCancellationAuthorizer,
+    ):
+        raise TypeError("cancellation_authorizer must implement DurableCancellationAuthorizer")
     if reconciliation_authorizer is not None and not isinstance(
         reconciliation_authorizer,
         DurableReconciliationAuthorizer,
@@ -460,6 +550,14 @@ def create_durable_agent_runtime_stack(
         )
 
     selected_observer = NullDurableRunObserver() if observer is None else observer
+    cancellation: DurableCancellationCoordinator | None = None
+    if cancellation_authorizer is not None:
+        cancellation = StoreBackedDurableCancellationCoordinator(
+            store=store,
+            lease_manager=lease_manager,
+            authorizer=cancellation_authorizer,
+            metadata_projector=metadata_projector,
+        )
     administration = DurableRunAdministration(
         store=store,
         lease_manager=lease_manager,
@@ -500,8 +598,10 @@ def create_durable_agent_runtime_stack(
         recovery_lifecycle=DurableRecoveryLifecycle(worker),
         observer=selected_observer,
         administration=administration,
+        cancellation=cancellation,
         attempt_recorder=attempt_recorder,
         metadata_projector=metadata_projector,
+        history_validator=history_validator,
         reconciliation_administration=reconciliation_administration,
         cleanup_administration=cleanup_administration,
         protector=protector,

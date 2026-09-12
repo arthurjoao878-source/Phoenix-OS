@@ -14,6 +14,10 @@ from phoenix_os.agent.durable_contracts import (
     ExecutionAttemptStatus,
     IndeterminateReason,
 )
+from phoenix_os.agent.durable_lease_keepalive import (
+    DurableLeaseCallKeepalive,
+    DurableSubmissionStartedSignal,
+)
 from phoenix_os.agent.durable_model_turn import (
     DurableModelTurnAttemptBinding,
     DurableModelTurnSubmissionGate,
@@ -152,6 +156,7 @@ async def execute_durable_model_turn(
     cancellation_grace: float,
     cancellation: AgentCancellationToken,
     prepare_time: datetime,
+    lease_keepalive: DurableLeaseCallKeepalive | None = None,
     clock: Callable[[], datetime] = _utc_now,
 ) -> DurableModelTurnExecutionResult:
     """Execute exactly once and persist only content-free durable attempt outcomes."""
@@ -168,59 +173,102 @@ async def execute_durable_model_turn(
         raise TypeError("context must be SecurityContext or None")
     if not isinstance(cancellation, AgentCancellationToken):
         raise TypeError("cancellation must be AgentCancellationToken")
+    if lease_keepalive is not None and not isinstance(
+        lease_keepalive,
+        DurableLeaseCallKeepalive,
+    ):
+        raise TypeError("lease_keepalive must be DurableLeaseCallKeepalive or None")
     _require_timezone_aware(prepare_time, label="prepare_time")
     if not callable(clock):
         raise TypeError("clock must be callable")
 
-    gate = await prepare_durable_model_turn_submission(
-        binding,
-        recorder,
-        now=prepare_time,
-        clock=clock,
-    )
-
-    try:
-        result = await executor.complete_model_turn(
-            adapter,
-            binding.turn,
-            inference_request=binding.inference_request,
-            context=context,
-            submission_gate=gate,
-            timeout_seconds=timeout_seconds,
-            cancellation_grace=cancellation_grace,
+    started_signal = None if lease_keepalive is None else DurableSubmissionStartedSignal()
+    if lease_keepalive is not None:
+        assert started_signal is not None
+        lease_keepalive.start(
+            started_signal=started_signal,
             cancellation=cancellation,
         )
-    except (
-        AgentAuthorizationRejectedError,
-        AgentCancelledError,
-        AgentLimitExceededError,
-        AgentMalformedProposalError,
-        AgentServiceUnavailableError,
-        AgentTimeoutError,
-    ) as exception:
+
+    try:
+        gate = await prepare_durable_model_turn_submission(
+            binding,
+            recorder,
+            now=prepare_time,
+            submission_started_signal=started_signal,
+            clock=clock,
+        )
+
+        try:
+            result = await executor.complete_model_turn(
+                adapter,
+                binding.turn,
+                inference_request=binding.inference_request,
+                context=context,
+                submission_gate=gate,
+                timeout_seconds=timeout_seconds,
+                cancellation_grace=cancellation_grace,
+                cancellation=cancellation,
+            )
+        except (
+            AgentAuthorizationRejectedError,
+            AgentCancelledError,
+            AgentLimitExceededError,
+            AgentMalformedProposalError,
+            AgentServiceUnavailableError,
+            AgentTimeoutError,
+        ) as exception:
+            if lease_keepalive is not None:
+                await lease_keepalive.stop()
+            now = clock()
+            _require_timezone_aware(now, label="clock result")
+            await _record_known_model_failure(
+                binding,
+                gate,
+                recorder,
+                exception,
+                now=now,
+            )
+            if lease_keepalive is not None:
+                keepalive_failure = lease_keepalive.failure
+                if keepalive_failure is not None:
+                    raise keepalive_failure from exception
+            raise
+
+        if lease_keepalive is not None:
+            await lease_keepalive.stop()
+            keepalive_failure = lease_keepalive.failure
+            if keepalive_failure is not None:
+                started = gate.started_checkpoint
+                if started is None:
+                    raise keepalive_failure
+                now = clock()
+                _require_timezone_aware(now, label="clock result")
+                await recorder.mark_indeterminate(
+                    started.durable_run_id,
+                    gate.attempt_id,
+                    expected_version=started.run_version,
+                    lease=binding.lease,
+                    reason=IndeterminateReason.PROVIDER_STATUS_UNKNOWN,
+                    now=now,
+                )
+                raise keepalive_failure
+
+        started = gate.started_checkpoint
+        if started is None:
+            raise AgentStateConflictError()
         now = clock()
         _require_timezone_aware(now, label="clock result")
-        await _record_known_model_failure(
-            binding,
-            gate,
-            recorder,
-            exception,
+        terminal = await recorder.mark_terminal(
+            started.durable_run_id,
+            gate.attempt_id,
+            expected_version=started.run_version,
+            lease=binding.lease,
+            status=ExecutionAttemptStatus.SUCCEEDED,
             now=now,
+            next_operation=_success_next_operation(result),
         )
-        raise
-
-    started = gate.started_checkpoint
-    if started is None:
-        raise AgentStateConflictError()
-    now = clock()
-    _require_timezone_aware(now, label="clock result")
-    terminal = await recorder.mark_terminal(
-        started.durable_run_id,
-        gate.attempt_id,
-        expected_version=started.run_version,
-        lease=binding.lease,
-        status=ExecutionAttemptStatus.SUCCEEDED,
-        now=now,
-        next_operation=_success_next_operation(result),
-    )
-    return DurableModelTurnExecutionResult(result=result, checkpoint=terminal)
+        return DurableModelTurnExecutionResult(result=result, checkpoint=terminal)
+    finally:
+        if lease_keepalive is not None:
+            await lease_keepalive.stop()

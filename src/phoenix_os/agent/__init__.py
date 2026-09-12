@@ -286,14 +286,22 @@ from phoenix_os.agent.durable_attempts import (
     StoreBackedDurableExecutionAttemptRecorder,
 )
 from phoenix_os.agent.durable_authorization import (
+    AGENT_CANCEL_ACTION,
     AGENT_RECONCILE_ACTION,
     AGENT_RESUME_ACTION,
+    DurableCancellationAuthorizer,
     DurableReconciliationAuthorizer,
     DurableResumeAuthorizer,
+    PolicyEngineDurableCancellationAuthorizer,
     PolicyEngineDurableReconciliationAuthorizer,
     PolicyEngineDurableResumeAuthorizer,
     durable_agent_run_resource,
     durable_reconciliation_resource,
+)
+from phoenix_os.agent.durable_cancellation import (
+    DurableCancellationCoordinator,
+    StoreBackedDurableCancellationCoordinator,
+    durable_cancellation_requested,
 )
 from phoenix_os.agent.durable_cleanup_administration import (
     DurableCleanupAdministration,
@@ -352,6 +360,7 @@ from phoenix_os.agent.durable_contracts import (
     CheckpointSequence,
     CompatibilityDigests,
     DurableAgentRunId,
+    DurableCancellationRequest,
     DurableLease,
     DurableLeaseId,
     DurableRunLimits,
@@ -827,6 +836,7 @@ from phoenix_os.agent.workspace_transfer_runtime import (
 )
 
 __all__ = [
+    "AGENT_CANCEL_ACTION",
     "AGENT_COORDINATION_DELEGATION_READ_PERMISSION",
     "AGENT_COORDINATION_HEALTH_READ_PERMISSION",
     "AGENT_DELEGATE_ACTION",
@@ -1217,6 +1227,9 @@ __all__ = [
     "DurableAttemptStatusLookupResult",
     "DurableAttemptStatusObservation",
     "DurableAttemptStatusQuery",
+    "DurableCancellationAuthorizer",
+    "DurableCancellationCoordinator",
+    "DurableCancellationRequest",
     "DurableCheckpointBoundary",
     "DurableCleanupAdministration",
     "DurableCleanupAdministrationBounds",
@@ -1338,6 +1351,7 @@ __all__ = [
     "NullDurableRunObserver",
     "PolicyEngineAgentRunAuthorizer",
     "PolicyEngineDelegationAuthorizer",
+    "PolicyEngineDurableCancellationAuthorizer",
     "PolicyEngineDurableReconciliationAuthorizer",
     "PolicyEngineDurableResumeAuthorizer",
     "PolicyEngineMemoryAuthorizer",
@@ -1365,6 +1379,7 @@ __all__ = [
     "StateStoreWorkspaceStore",
     "StaticDurableCompatibilityValidator",
     "StaticToolResourceResolver",
+    "StoreBackedDurableCancellationCoordinator",
     "StoreBackedDurableExecutionAttemptRecorder",
     "StoreBackedDurableReconciliationDispositionApplier",
     "ToolAdapter",
@@ -1471,6 +1486,7 @@ __all__ = [
     "delegation_budget_fits_agent_limits",
     "durable_agent_run_resource",
     "durable_attempt_status_query",
+    "durable_cancellation_requested",
     "durable_delegation_request_digest",
     "durable_reconciliation_resource",
     "durable_transition_allowed",

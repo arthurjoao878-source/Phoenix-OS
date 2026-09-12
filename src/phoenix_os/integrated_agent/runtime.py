@@ -10,13 +10,19 @@ from phoenix_os.agent.authorization import AgentRunAuthorityBinding
 from phoenix_os.agent.configuration import AgentServiceConfiguration
 from phoenix_os.agent.contracts import AgentRunRequest, AgentRunResult, AgentRunStatus
 from phoenix_os.agent.errors import AgentErrorCode
-from phoenix_os.agent.loop import AgentLoop
+from phoenix_os.agent.execution_interceptors import ChainedAgentExecutionInterceptor
+from phoenix_os.agent.loop import AgentExecutionInterceptor, AgentLoop
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.service import AgentServiceState
 from phoenix_os.agent.state import AgentCancellationToken
-from phoenix_os.integrated_agent.admission import IntegratedAgentAdmission
+from phoenix_os.authority import AuthorityFreshnessValidator
+from phoenix_os.integrated_agent.admission import (
+    IntegratedAgentAdmission,
+    IntegratedAgentRunBinding,
+)
 from phoenix_os.integrated_agent.composition import IntegratedAgentToolComposition
 from phoenix_os.integrated_agent.contracts import (
+    IntegratedDataProvenance,
     IntegratedFailureClass,
     IntegratedOrchestrationPhase,
     IntegratedTaskRequest,
@@ -97,7 +103,64 @@ class IntegratedAgentServiceDelegate(Protocol):
         *,
         cancellation: AgentCancellationToken | None = None,
         _authority_binding: AgentRunAuthorityBinding | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> AgentRunResult: ...
+
+
+@runtime_checkable
+class IntegratedAgentRunExecutor(Protocol):
+    """Execute one admitted integrated run without taking runtime lifecycle ownership."""
+
+    @property
+    def service(self) -> IntegratedAgentServiceDelegate: ...
+
+    async def execute(
+        self,
+        request: AgentRunRequest,
+        binding: IntegratedAgentRunBinding,
+        provenance: IntegratedDataProvenance | None,
+        context: SecurityContext,
+        *,
+        cancellation: AgentCancellationToken | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
+    ) -> AgentRunResult: ...
+
+
+def _integrated_execution_guards(
+    interceptor: AgentExecutionInterceptor | None,
+    *,
+    seen: set[int] | None = None,
+) -> tuple[IntegratedAgentExecutionGuard, ...]:
+    if interceptor is None:
+        return ()
+    if isinstance(interceptor, IntegratedAgentExecutionGuard):
+        return (interceptor,)
+    if not isinstance(interceptor, ChainedAgentExecutionInterceptor):
+        return ()
+
+    chain_id = id(interceptor)
+    active = set() if seen is None else seen
+    if chain_id in active:
+        raise IntegratedAgentConfigurationError()
+    active.add(chain_id)
+    try:
+        guards: list[IntegratedAgentExecutionGuard] = []
+        for item in interceptor.interceptors:
+            guards.extend(_integrated_execution_guards(item, seen=active))
+            if len(guards) > 1:
+                break
+        return tuple(guards)
+    finally:
+        active.remove(chain_id)
+
+
+def _require_integrated_execution_interceptor(
+    interceptor: AgentExecutionInterceptor | None,
+    execution_guard: IntegratedAgentExecutionGuard,
+) -> None:
+    guards = _integrated_execution_guards(interceptor)
+    if len(guards) != 1 or guards[0] is not execution_guard:
+        raise IntegratedAgentConfigurationError()
 
 
 class IntegratedAgentRuntime:
@@ -112,6 +175,7 @@ class IntegratedAgentRuntime:
         composition: IntegratedAgentToolComposition | None = None,
         execution_guard: IntegratedAgentExecutionGuard | None = None,
         observer: IntegratedAgentObserver | None = None,
+        run_executor: IntegratedAgentRunExecutor | None = None,
     ) -> None:
         if not isinstance(service, IntegratedAgentServiceDelegate):
             raise TypeError("service must implement IntegratedAgentServiceDelegate")
@@ -133,6 +197,10 @@ class IntegratedAgentRuntime:
             raise TypeError("execution_guard must be IntegratedAgentExecutionGuard or None")
         if observer is not None and not isinstance(observer, IntegratedAgentObserver):
             raise TypeError("observer must implement IntegratedAgentObserver or be None")
+        if run_executor is not None and not isinstance(run_executor, IntegratedAgentRunExecutor):
+            raise TypeError("run_executor must implement IntegratedAgentRunExecutor or be None")
+        if run_executor is not None and run_executor.service is not service:
+            raise IntegratedAgentConfigurationError()
         if execution_guard is not None:
             if execution_guard.profile != admission.profile:
                 raise IntegratedAgentConfigurationError()
@@ -141,11 +209,14 @@ class IntegratedAgentRuntime:
             service_runtime = getattr(service, "runtime", None)
             if (
                 not isinstance(service_runtime, AgentLoop)
-                or service_runtime.execution_interceptor is not execution_guard
                 or service_runtime.memory_context_provider is not None
                 or service_runtime.artifact_context_provider is not None
             ):
                 raise IntegratedAgentConfigurationError()
+            _require_integrated_execution_interceptor(
+                service_runtime.execution_interceptor,
+                execution_guard,
+            )
 
         registry: ToolRegistry | None = None
         if service.configuration.tool_ids:
@@ -155,7 +226,7 @@ class IntegratedAgentRuntime:
             candidate = getattr(service, "registry", None)
             if not isinstance(candidate, ToolRegistry):
                 raise IntegratedAgentConfigurationError()
-            composition.require_registry(candidate)
+            composition.require_runtime_registry(candidate)
             service_runtime = getattr(service, "runtime", None)
             if service_runtime is not None and (
                 not isinstance(service_runtime, AgentLoop)
@@ -196,6 +267,7 @@ class IntegratedAgentRuntime:
         self._execution_guard = execution_guard
         self._registry = registry
         self._observer = observer if observer is not None else NullIntegratedAgentObserver()
+        self._run_executor = run_executor
         self._observer_tasks: set[asyncio.Task[None]] = set()
 
     @property
@@ -223,6 +295,10 @@ class IntegratedAgentRuntime:
         return self._service.state
 
     @property
+    def run_executor(self) -> IntegratedAgentRunExecutor | None:
+        return self._run_executor
+
+    @property
     def observer(self) -> IntegratedAgentObserver:
         return self._observer
 
@@ -230,7 +306,7 @@ class IntegratedAgentRuntime:
         if self._composition is None:
             return
         assert self._registry is not None
-        self._composition.require_registry(self._registry)
+        self._composition.require_runtime_registry(self._registry)
 
     async def start(self, context: RuntimeContext) -> None:
         if not isinstance(context, RuntimeContext):
@@ -258,6 +334,7 @@ class IntegratedAgentRuntime:
         context: SecurityContext,
         *,
         cancellation: AgentCancellationToken | None = None,
+        _authority_freshness: AuthorityFreshnessValidator | None = None,
     ) -> AgentRunResult:
         if not isinstance(task, IntegratedTaskRequest):
             raise TypeError("task must be IntegratedTaskRequest")
@@ -267,6 +344,11 @@ class IntegratedAgentRuntime:
             raise TypeError("context must be SecurityContext")
         if cancellation is not None and not isinstance(cancellation, AgentCancellationToken):
             raise TypeError("cancellation must be AgentCancellationToken")
+        if _authority_freshness is not None and not isinstance(
+            _authority_freshness,
+            AuthorityFreshnessValidator,
+        ):
+            raise TypeError("_authority_freshness must implement AuthorityFreshnessValidator")
         self._require_current_tool_surface()
 
         started_ns = monotonic_ns()
@@ -295,12 +377,46 @@ class IntegratedAgentRuntime:
                 IntegratedOrchestrationPhase.EXECUTING,
                 context,
             )
-            result = await self._service.run(
-                lease.request,
-                context,
-                cancellation=cancellation,
-                _authority_binding=lease.binding.authority,
-            )
+            run_executor = self._run_executor
+            if run_executor is None:
+                if _authority_freshness is None:
+                    result = await self._service.run(
+                        lease.request,
+                        context,
+                        cancellation=cancellation,
+                        _authority_binding=lease.binding.authority,
+                    )
+                else:
+                    result = await self._service.run(
+                        lease.request,
+                        context,
+                        cancellation=cancellation,
+                        _authority_binding=lease.binding.authority,
+                        _authority_freshness=_authority_freshness,
+                    )
+            else:
+                provenance = (
+                    None
+                    if self._execution_guard is None
+                    else self._execution_guard.current_provenance(lease.binding.run_id)
+                )
+                if _authority_freshness is None:
+                    result = await run_executor.execute(
+                        lease.request,
+                        lease.binding,
+                        provenance,
+                        context,
+                        cancellation=cancellation,
+                    )
+                else:
+                    result = await run_executor.execute(
+                        lease.request,
+                        lease.binding,
+                        provenance,
+                        context,
+                        cancellation=cancellation,
+                        _authority_freshness=_authority_freshness,
+                    )
             self._record_run_observation(
                 lease.binding,
                 IntegratedOrchestrationPhase.TERMINAL,

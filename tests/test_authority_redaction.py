@@ -141,6 +141,7 @@ def test_builtin_catalog_is_exact_closed_world_authority_inventory() -> None:
         "tool.invoke",
         "agent.delegate",
         "agent.resume",
+        "agent.cancel",
         "agent.reconcile",
         "memory.search",
         "memory.read",

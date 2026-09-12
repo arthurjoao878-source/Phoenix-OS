@@ -89,23 +89,13 @@ class IntegratedDurableRecoveryResumeGate:
         guard = self._execution_guard
         if admission.closed or guard.closed:
             return IntegratedDurableResumeState.DENIED
-        binding = await admission.binding_for_run(checkpoint.agent_run_id)
-        request = await admission.request_for_run(checkpoint.agent_run_id)
-        if binding is None or request is None:
-            return IntegratedDurableResumeState.DENIED
         profile = admission.profile
         configuration = admission.service_configuration
         if (
-            binding.run_id != checkpoint.agent_run_id
-            or binding.task_id != projection.task_id
-            or binding.task_digest != projection.task_digest
-            or binding.profile_id != projection.execution_profile_id
-            or binding.profile_generation != projection.execution_profile_generation
-            or binding.agent_id != checkpoint.metadata.agent_id
-            or configuration.agent_id != binding.agent_id
-            or profile.agent_id != binding.agent_id
-            or profile.profile_id != binding.profile_id
-            or profile.generation != binding.profile_generation
+            configuration.agent_id != checkpoint.metadata.agent_id
+            or profile.agent_id != checkpoint.metadata.agent_id
+            or profile.profile_id != projection.execution_profile_id
+            or profile.generation != projection.execution_profile_generation
             or guard.profile != profile
         ):
             return IntegratedDurableResumeState.DENIED
@@ -113,16 +103,6 @@ class IntegratedDurableRecoveryResumeGate:
             return IntegratedDurableResumeState.DENIED
         planner = self._planner
         if planner is not None and (planner.closed or planner.profile != profile):
-            return IntegratedDurableResumeState.DENIED
-        run_current = await live_revalidator.revalidate_run(
-            checkpoint,
-            binding,
-            request,
-            now=now,
-        )
-        if type(run_current) is not bool:
-            raise TypeError("live run revalidation must return bool")
-        if not run_current:
             return IntegratedDurableResumeState.DENIED
 
         budget_usage = guard.current_budget_usage(checkpoint.agent_run_id)
@@ -132,7 +112,7 @@ class IntegratedDurableRecoveryResumeGate:
         )
         current_plan = None if planner is None else planner.current_plan(checkpoint.agent_run_id)
         expected_context_digest = projection.data_flow_context_digest
-        if (
+        missing_reviewed_context = (
             planner is not None
             and checkpoint.metadata.next_operation is CheckpointNextOperation.MODEL_TURN
             and checkpoint.metadata.active_attempt is None
@@ -146,7 +126,38 @@ class IntegratedDurableRecoveryResumeGate:
             and provenance is None
             and current_revision is None
             and current_plan is None
+        )
+
+        binding = await admission.binding_for_run(checkpoint.agent_run_id)
+        request = await admission.request_for_run(checkpoint.agent_run_id)
+        if binding is None or request is None:
+            if binding is not None or request is not None:
+                return IntegratedDurableResumeState.DENIED
+            if missing_reviewed_context:
+                return IntegratedDurableResumeState.CONTEXT_RESUPPLY
+            return IntegratedDurableResumeState.DENIED
+        if (
+            binding.run_id != checkpoint.agent_run_id
+            or binding.task_id != projection.task_id
+            or binding.task_digest != projection.task_digest
+            or binding.profile_id != projection.execution_profile_id
+            or binding.profile_generation != projection.execution_profile_generation
+            or binding.agent_id != checkpoint.metadata.agent_id
+            or configuration.agent_id != binding.agent_id
+            or profile.agent_id != binding.agent_id
         ):
+            return IntegratedDurableResumeState.DENIED
+        run_current = await live_revalidator.revalidate_run(
+            checkpoint,
+            binding,
+            request,
+            now=now,
+        )
+        if type(run_current) is not bool:
+            raise TypeError("live run revalidation must return bool")
+        if not run_current:
+            return IntegratedDurableResumeState.DENIED
+        if missing_reviewed_context:
             return IntegratedDurableResumeState.CONTEXT_RESUPPLY
 
         expected_revision = projection.plan_revision

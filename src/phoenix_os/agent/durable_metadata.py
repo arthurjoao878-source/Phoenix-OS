@@ -98,3 +98,83 @@ def validate_durable_checkpoint_history(
         raise
     except Exception as exception:
         raise AgentCodecError("durable checkpoint extension history is invalid") from exception
+
+
+class ChainedDurableCheckpointMetadataProjector:
+    """Apply multiple durable metadata projectors in one deterministic fail-closed chain."""
+
+    def __init__(
+        self,
+        projectors: tuple[DurableCheckpointMetadataProjector, ...],
+    ) -> None:
+        if not isinstance(projectors, tuple):
+            raise TypeError("projectors must be a tuple")
+        if not projectors:
+            raise ValueError("projectors must not be empty")
+        if any(
+            not isinstance(projector, DurableCheckpointMetadataProjector)
+            for projector in projectors
+        ):
+            raise TypeError("projectors must implement DurableCheckpointMetadataProjector")
+        self._projectors = projectors
+
+    @property
+    def projectors(self) -> tuple[DurableCheckpointMetadataProjector, ...]:
+        return self._projectors
+
+    def project_metadata(
+        self,
+        current: CheckpointEnvelope,
+        *,
+        checkpoint_id: CheckpointId,
+        status: DurableRunStatus,
+        step_id: AgentStepId | None,
+        next_operation: CheckpointNextOperation,
+        active_attempt: ExecutionAttempt | None,
+        metadata: Mapping[str, str],
+    ) -> Mapping[str, str]:
+        if not isinstance(metadata, Mapping):
+            raise TypeError("metadata must be a mapping")
+        projected: Mapping[str, str] = dict(metadata)
+        for projector in self._projectors:
+            projected = project_durable_checkpoint_metadata(
+                projector,
+                current,
+                checkpoint_id=checkpoint_id,
+                status=status,
+                step_id=step_id,
+                next_operation=next_operation,
+                active_attempt=active_attempt,
+                metadata=projected,
+            )
+        return projected
+
+
+class ChainedDurableCheckpointHistoryValidator:
+    """Run multiple durable history validators in one deterministic fail-closed chain."""
+
+    def __init__(
+        self,
+        validators: tuple[DurableCheckpointHistoryValidator, ...],
+    ) -> None:
+        if not isinstance(validators, tuple):
+            raise TypeError("validators must be a tuple")
+        if not validators:
+            raise ValueError("validators must not be empty")
+        if any(
+            not isinstance(validator, DurableCheckpointHistoryValidator) for validator in validators
+        ):
+            raise TypeError("validators must implement DurableCheckpointHistoryValidator")
+        self._validators = validators
+
+    @property
+    def validators(self) -> tuple[DurableCheckpointHistoryValidator, ...]:
+        return self._validators
+
+    def validate_history(
+        self,
+        current: CheckpointEnvelope,
+        history: tuple[CheckpointEnvelope, ...],
+    ) -> None:
+        for validator in self._validators:
+            validate_durable_checkpoint_history(validator, current, history)

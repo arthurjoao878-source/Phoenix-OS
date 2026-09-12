@@ -1,4 +1,5 @@
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +37,10 @@ from phoenix_os.agent import (
     ToolSchema,
     ToolSchemaType,
 )
+from phoenix_os.agent.durable_compatibility import StaticDurableCompatibilityValidator
+from phoenix_os.agent.durable_runtime import DurableAgentRuntimeStack
+from phoenix_os.agent.durable_sqlite import SQLiteDurableRunStore
+from phoenix_os.agent.model_turn import InferenceBackedAgentModelTurnAdapter
 from phoenix_os.configuration import Configuration
 from phoenix_os.events import Event
 from phoenix_os.inference import (
@@ -46,6 +51,12 @@ from phoenix_os.inference import (
     ModelDescriptor,
     ModelId,
     ModelProviderId,
+)
+from phoenix_os.integrated_agent.durable_recovery import (
+    IntegratedDurableRecoveryHistoryValidator,
+)
+from phoenix_os.integrated_agent.durable_transitions import (
+    IntegratedDurableCheckpointMetadataProjector,
 )
 from phoenix_os.policy import PolicyEngine
 
@@ -107,6 +118,26 @@ def _agent_configuration(descriptor: ToolDescriptor) -> AgentServiceConfiguratio
 
 def _model_adapter() -> DeterministicModelTurnAdapter:
     return DeterministicModelTurnAdapter((DeterministicFinalTurn("done"),))
+
+
+class _NoopExecutionInterceptor:
+    async def before_model_turn(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def before_tool_authorization(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def before_tool_invocation(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def final_tool_admission(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def after_tool_result(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def before_final_output(self, *_args: object, **_kwargs: object) -> None:
+        return None
 
 
 def _inference_configuration() -> InferenceServiceConfiguration:
@@ -259,6 +290,144 @@ async def test_enabled_agent_requires_policy_configuration_and_model_adapter() -
 
 
 @pytest.mark.asyncio
+async def test_runtime_assembler_rejects_execution_interceptor_without_agent_enablement() -> None:
+    configuration, events, kernel, capabilities = await _base()
+
+    with pytest.raises(ValueError, match="agent options require agent_enabled"):
+        RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            agent_execution_interceptor=_NoopExecutionInterceptor(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_rejects_invalid_execution_interceptor() -> None:
+    configuration, events, kernel, capabilities = await _base()
+
+    with pytest.raises(TypeError, match="agent execution interceptor"):
+        RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            policy=PolicyEngine(),
+            agent_enabled=True,
+            agent_configuration=AgentServiceConfiguration(
+                agent_id=AgentId("nova"),
+                provider_id=ModelProviderId("deterministic"),
+                model_id=ModelId("chat"),
+            ),
+            agent_model_adapter=_model_adapter(),
+            agent_execution_interceptor=object(),  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_forwards_exact_execution_interceptor() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    interceptor = _NoopExecutionInterceptor()
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        agent_enabled=True,
+        agent_configuration=AgentServiceConfiguration(
+            agent_id=AgentId("nova"),
+            provider_id=ModelProviderId("deterministic"),
+            model_id=ModelId("chat"),
+        ),
+        agent_model_adapter=_model_adapter(),
+        agent_execution_interceptor=interceptor,
+    ).assemble()
+
+    agent_loop = runtime.service("agent.runtime")
+    assert isinstance(agent_loop, AgentLoop)
+    assert agent_loop.execution_interceptor is interceptor
+
+    await runtime.start()
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_auto_binds_inference_backed_agent_model_adapter() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        inference_enabled=True,
+        inference_configuration=_inference_configuration(),
+        inference_providers=(
+            DeterministicModelProvider(
+                {"chat": "inference"},
+                provider_id="deterministic",
+            ),
+        ),
+        agent_enabled=True,
+        agent_configuration=AgentServiceConfiguration(
+            agent_id=AgentId("nova"),
+            provider_id=ModelProviderId("deterministic"),
+            model_id=ModelId("chat"),
+        ),
+    ).assemble()
+
+    inference = runtime.service("inference")
+    agent_loop = runtime.service("agent.runtime")
+
+    assert isinstance(agent_loop, AgentLoop)
+    assert isinstance(
+        agent_loop._model_adapter,
+        InferenceBackedAgentModelTurnAdapter,
+    )
+    assert agent_loop._model_adapter._inference_service is inference
+
+    await runtime.start()
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_preserves_explicit_model_adapter_with_inference() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    explicit_adapter = _model_adapter()
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        inference_enabled=True,
+        inference_configuration=_inference_configuration(),
+        inference_providers=(
+            DeterministicModelProvider(
+                {"chat": "inference"},
+                provider_id="deterministic",
+            ),
+        ),
+        agent_enabled=True,
+        agent_configuration=AgentServiceConfiguration(
+            agent_id=AgentId("nova"),
+            provider_id=ModelProviderId("deterministic"),
+            model_id=ModelId("chat"),
+        ),
+        agent_model_adapter=explicit_adapter,
+    ).assemble()
+
+    agent_loop = runtime.service("agent.runtime")
+    assert isinstance(agent_loop, AgentLoop)
+    assert agent_loop._model_adapter is explicit_adapter
+
+    await runtime.start()
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
 async def test_runtime_shutdown_stops_agent_before_inference() -> None:
     configuration, events, kernel, capabilities = await _base()
     descriptor = _descriptor()
@@ -309,3 +478,72 @@ async def test_runtime_shutdown_stops_agent_before_inference() -> None:
     assert "agent" in stopped
     assert "inference" in stopped
     assert stopped.index("agent") < stopped.index("inference")
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_rejects_metadata_projector_without_durable_enablement() -> None:
+    configuration, events, kernel, capabilities = await _base()
+    projector = IntegratedDurableCheckpointMetadataProjector()
+
+    with pytest.raises(ValueError, match="durable agent options require agent_durable_enabled"):
+        RuntimeAssembler(
+            kernel=kernel,
+            events=events,
+            capabilities=capabilities,
+            configuration=configuration,
+            agent_durable_metadata_projector=projector,
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_assembler_composes_explicit_sqlite_durable_state(
+    tmp_path: Path,
+) -> None:
+    configuration, events, kernel, capabilities = await _base()
+    durable_state = tmp_path / "state" / "agent-durable.sqlite3"
+    projector = IntegratedDurableCheckpointMetadataProjector()
+    history_validator = IntegratedDurableRecoveryHistoryValidator()
+    runtime = await RuntimeAssembler(
+        kernel=kernel,
+        events=events,
+        capabilities=capabilities,
+        configuration=configuration,
+        policy=PolicyEngine(),
+        agent_enabled=True,
+        agent_configuration=AgentServiceConfiguration(
+            agent_id=AgentId("nova"),
+            provider_id=ModelProviderId("deterministic"),
+            model_id=ModelId("chat"),
+        ),
+        agent_model_adapter=_model_adapter(),
+        agent_durable_enabled=True,
+        agent_durable_sqlite_path=durable_state,
+        agent_durable_compatibility_validator=StaticDurableCompatibilityValidator(()),
+        agent_durable_metadata_projector=projector,
+        agent_durable_history_validator=history_validator,
+    ).assemble()
+
+    stack = runtime.service("agent.durable")
+    store = runtime.service("agent.durable.storage")
+    leases = runtime.service("agent.durable.leases")
+
+    assert isinstance(stack, DurableAgentRuntimeStack)
+    assert stack.metadata_projector is projector
+    assert stack.history_validator is history_validator
+    assert isinstance(store, SQLiteDurableRunStore)
+    assert store.path == durable_state.resolve(strict=False)
+    assert leases is store.lease_manager
+    assert store.freshness_witness_path == durable_state.with_name(
+        f"{durable_state.name}.freshness"
+    ).resolve(strict=False)
+
+    await runtime.start()
+    try:
+        await store.get_store_freshness()
+        assert durable_state.exists()
+        assert store.freshness_witness_path.exists()
+    finally:
+        await runtime.stop()
+
+    assert store.closed
+    assert store.lease_manager.closed

@@ -168,6 +168,13 @@ class ModelTurnSubmissionGate(Protocol):
     async def before_submit(self) -> None: ...
 
 
+@runtime_checkable
+class ToolSubmissionGate(Protocol):
+    """One trusted pre-submit gate invoked exactly before tool adapter dispatch."""
+
+    async def before_submit(self) -> None: ...
+
+
 class BoundedAgentExecutor:
     """Execute exactly once with finite timeout, cancellation, and safe outcomes."""
 
@@ -272,6 +279,7 @@ class BoundedAgentExecutor:
         *,
         context: SecurityContext | None = None,
         final_admission: ToolFinalAdmissionValidator | None = None,
+        submission_gate: ToolSubmissionGate | None = None,
         timeout_seconds: float,
         cancellation_grace: float,
         cancellation: AgentCancellationToken,
@@ -290,6 +298,11 @@ class BoundedAgentExecutor:
             raise TypeError("context must be SecurityContext or None")
         if final_admission is not None and not callable(final_admission):
             raise TypeError("final_admission must be callable or None")
+        if submission_gate is not None and not isinstance(
+            submission_gate,
+            ToolSubmissionGate,
+        ):
+            raise TypeError("submission_gate must implement ToolSubmissionGate or None")
         if not isinstance(cancellation, AgentCancellationToken):
             raise TypeError("cancellation must be AgentCancellationToken")
         if adapter.tool_id != request.tool_id or descriptor.tool_id != request.tool_id:
@@ -311,6 +324,16 @@ class BoundedAgentExecutor:
             raise ToolExecutionError()
         elif isinstance(adapter, ContextualToolAdapter) and context is None:
             raise ToolExecutionError()
+
+        if submission_gate is not None:
+            try:
+                await submission_gate.before_submit()
+            except AgentError:
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exception:
+                raise AgentServiceUnavailableError() from exception
 
         try:
             if isinstance(adapter, FinalAdmissionContextualToolAdapter):

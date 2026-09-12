@@ -10,6 +10,7 @@ from phoenix_os.agent.durable_contracts import (
     CheckpointEnvelope,
     CheckpointNextOperation,
     DurableAgentRunId,
+    DurableCancellationRequest,
     DurableLease,
     DurableRunStatus,
     ExecutionAttemptId,
@@ -30,6 +31,7 @@ from phoenix_os.policy import (
     SecurityContext,
 )
 
+AGENT_CANCEL_ACTION = "agent.cancel"
 AGENT_RECONCILE_ACTION = "agent.reconcile"
 AGENT_RESUME_ACTION = "agent.resume"
 
@@ -67,6 +69,19 @@ def durable_reconciliation_resource(
 
 
 @runtime_checkable
+class DurableCancellationAuthorizer(Protocol):
+    """Authorize one exact durable cancellation request without mutating state."""
+
+    async def authorize(
+        self,
+        request: DurableCancellationRequest,
+        checkpoint: CheckpointEnvelope,
+        lease: DurableLease,
+        context: SecurityContext,
+    ) -> None: ...
+
+
+@runtime_checkable
 class DurableResumeAuthorizer(Protocol):
     """Authorize orchestration for one exact durable resume request."""
 
@@ -90,6 +105,95 @@ class DurableReconciliationAuthorizer(Protocol):
         lease: DurableLease,
         context: SecurityContext,
     ) -> None: ...
+
+
+class PolicyEngineDurableCancellationAuthorizer:
+    """Apply exact ``agent.cancel`` policy under current fenced lease authority."""
+
+    def __init__(
+        self,
+        policy: PolicyEngine,
+        lease_manager: DurableLeaseManager,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        if not isinstance(policy, PolicyEngine):
+            raise TypeError("policy must be PolicyEngine")
+        if not isinstance(lease_manager, DurableLeaseManager):
+            raise TypeError("lease_manager must implement DurableLeaseManager")
+        selected_clock = (lambda: datetime.now(UTC)) if clock is None else clock
+        if not callable(selected_clock):
+            raise TypeError("clock must be callable")
+        self._policy = policy
+        self._lease_manager = lease_manager
+        self._clock: Callable[[], datetime] = selected_clock
+
+    async def authorize(
+        self,
+        request: DurableCancellationRequest,
+        checkpoint: CheckpointEnvelope,
+        lease: DurableLease,
+        context: SecurityContext,
+    ) -> None:
+        if not isinstance(request, DurableCancellationRequest):
+            raise TypeError("request must be DurableCancellationRequest")
+        if not isinstance(checkpoint, CheckpointEnvelope):
+            raise TypeError("checkpoint must be CheckpointEnvelope")
+        if not isinstance(lease, DurableLease):
+            raise TypeError("lease must be DurableLease")
+        _require_authenticated_actor(context, actor_id=request.actor_id)
+        _validate_cancellation_request(request, checkpoint, lease)
+
+        admission_started_at = self._now()
+        _validate_cancellation_admission_time(
+            request,
+            checkpoint,
+            now=admission_started_at,
+        )
+        await self._require_current_lease(lease, now=admission_started_at)
+
+        try:
+            await self._policy.enforce(
+                PolicyRequest(
+                    action=AGENT_CANCEL_ACTION,
+                    resource=durable_agent_run_resource(request.run_id),
+                    context=context,
+                    attributes=_cancellation_attributes(request, checkpoint),
+                    created_at=request.requested_at,
+                )
+            )
+        except PhoenixPolicyError as exception:
+            raise AgentAuthorizationRejectedError() from exception
+
+        admitted_at = self._now()
+        if admitted_at < admission_started_at:
+            raise AgentAuthorizationRejectedError()
+        _validate_cancellation_admission_time(request, checkpoint, now=admitted_at)
+        await self._require_current_lease(lease, now=admitted_at)
+
+    async def _require_current_lease(
+        self,
+        lease: DurableLease,
+        *,
+        now: datetime,
+    ) -> None:
+        try:
+            current = await self._lease_manager.require_current(lease, now=now)
+        except AgentStateConflictError as exception:
+            raise AgentAuthorizationRejectedError() from exception
+        _validate_authoritative_cancellation_lease(
+            current,
+            supplied=lease,
+            now=now,
+        )
+
+    def _now(self) -> datetime:
+        value = self._clock()
+        if not isinstance(value, datetime):
+            raise TypeError("clock must return datetime")
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware datetime")
+        return value
 
 
 class PolicyEngineDurableResumeAuthorizer:
@@ -194,6 +298,37 @@ class PolicyEngineDurableResumeAuthorizer:
         return value
 
 
+def _validate_cancellation_admission_time(
+    request: DurableCancellationRequest,
+    checkpoint: CheckpointEnvelope,
+    *,
+    now: datetime,
+) -> None:
+    if (
+        now < request.requested_at
+        or now < checkpoint.created_at
+        or now >= checkpoint.metadata.retention_deadline
+    ):
+        raise AgentAuthorizationRejectedError()
+
+
+def _validate_authoritative_cancellation_lease(
+    current: DurableLease,
+    *,
+    supplied: DurableLease,
+    now: datetime,
+) -> None:
+    if (
+        not isinstance(current, DurableLease)
+        or current.run_id != supplied.run_id
+        or current.lease_id != supplied.lease_id
+        or current.owner_id != supplied.owner_id
+        or current.generation != supplied.generation
+        or not current.active_at(now)
+    ):
+        raise AgentAuthorizationRejectedError()
+
+
 def _validate_resume_admission_time(
     request: ResumeRequest,
     checkpoint: CheckpointEnvelope,
@@ -285,6 +420,24 @@ def _require_authenticated_actor(
         raise AgentAuthorizationRejectedError()
 
 
+def _validate_cancellation_request(
+    request: DurableCancellationRequest,
+    checkpoint: CheckpointEnvelope,
+    lease: DurableLease,
+) -> None:
+    if (
+        request.run_id != checkpoint.durable_run_id
+        or request.expected_version != checkpoint.run_version
+        or lease.run_id != request.run_id
+        or lease.generation != request.generation
+        or not lease.active_at(request.requested_at)
+        or request.requested_at < checkpoint.created_at
+        or request.requested_at >= checkpoint.metadata.retention_deadline
+        or (checkpoint.status.terminal and checkpoint.status is not DurableRunStatus.CANCELLED)
+    ):
+        raise AgentAuthorizationRejectedError()
+
+
 def _validate_resume_request(
     request: ResumeRequest,
     checkpoint: CheckpointEnvelope,
@@ -365,6 +518,26 @@ def _attempt_attributes(checkpoint: CheckpointEnvelope) -> dict[str, str]:
         "attempt_status": attempt.status.value,
         "effect": attempt.tool_effect.value if attempt.tool_effect is not None else "none",
     }
+
+
+def _cancellation_attributes(
+    request: DurableCancellationRequest,
+    checkpoint: CheckpointEnvelope,
+) -> dict[str, str]:
+    attributes = {
+        "agent_id": str(checkpoint.metadata.agent_id),
+        "agent_run_id": str(checkpoint.agent_run_id),
+        "actor_id": request.actor_id,
+        "checkpoint_sequence": str(checkpoint.sequence.value),
+        "current_status": checkpoint.status.value,
+        "expected_version": str(request.expected_version.value),
+        "fencing_generation": str(request.generation.value),
+        "next_operation": checkpoint.metadata.next_operation.value,
+        "payload_profile": checkpoint.metadata.payload_profile.value,
+        "run_id": str(request.run_id),
+    }
+    attributes.update(_attempt_attributes(checkpoint))
+    return attributes
 
 
 def _resume_attributes(

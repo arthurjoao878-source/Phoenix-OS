@@ -337,6 +337,17 @@ def test_waiting_and_terminal_phase_must_match_authoritative_next_operation() ->
         )
 
 
+def test_checkpointing_none_is_one_valid_nonterminal_projection_boundary() -> None:
+    projection = _projection()
+    checkpoint = _checkpoint(
+        _encoded(projection),
+        status=DurableRunStatus.CHECKPOINTING,
+        next_operation=CheckpointNextOperation.NONE,
+    )
+
+    assert decode_integrated_durable_projection(checkpoint) == projection
+
+
 def test_valid_waiting_and_terminal_projection_combinations_decode() -> None:
     approval_projection = _projection(
         phase=IntegratedOrchestrationPhase.WAITING,

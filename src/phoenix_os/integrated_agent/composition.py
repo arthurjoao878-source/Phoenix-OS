@@ -5,6 +5,19 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import InitVar, dataclass, field
 
+from phoenix_os.agent.checkout_agent_tools import (
+    CHECKOUT_LIST_TOOL_ID,
+    CHECKOUT_READ_TOOL_ID,
+    CheckoutToolAdapter,
+    CheckoutToolResourceResolver,
+    checkout_integrated_binding_id,
+    checkout_tool_descriptors,
+)
+from phoenix_os.agent.checkout_authorization import CheckoutWorkspaceAuthorizer
+from phoenix_os.agent.checkout_workspace import (
+    RegisteredDevelopmentCheckout,
+    RegisteredDevelopmentCheckoutAdapter,
+)
 from phoenix_os.agent.configuration import AgentServiceConfiguration
 from phoenix_os.agent.contracts import AgentId, AgentLimits, ToolId
 from phoenix_os.agent.errors import AgentError
@@ -232,6 +245,22 @@ class IntegratedAgentToolComposition:
         return tuple(item.resolver for item in self._registrations)
 
     @property
+    def runtime_resolvers(self) -> tuple[ToolResourceResolver, ...]:
+        """Return one physical resolver per id, requiring shared identity for reuse."""
+
+        installed: dict[str, ToolResourceResolver] = {}
+        ordered: list[ToolResourceResolver] = []
+        for registration in self._registrations:
+            resolver = registration.resolver
+            existing = installed.get(resolver.resolver_id)
+            if existing is None:
+                installed[resolver.resolver_id] = resolver
+                ordered.append(resolver)
+            elif existing is not resolver:
+                raise IntegratedAgentConfigurationError()
+        return tuple(ordered)
+
+    @property
     def adapters(self) -> tuple[ToolAdapter, ...]:
         return tuple(item.adapter for item in self._registrations)
 
@@ -261,6 +290,26 @@ class IntegratedAgentToolComposition:
         except (AgentError, TypeError, ValueError) as exception:
             if not registry.closed:
                 registry.close()
+            raise IntegratedAgentConfigurationError() from exception
+
+    def require_runtime_registry(self, registry: ToolRegistry) -> None:
+        """Require the exact runtime-owned registry without taking mutation ownership."""
+
+        if not isinstance(registry, ToolRegistry):
+            raise TypeError("registry must be ToolRegistry")
+        try:
+            states = registry.list_states()
+            if tuple(state.descriptor.tool_id for state in states) != self.tool_ids:
+                raise IntegratedAgentConfigurationError()
+            for state, registration in zip(states, self._registrations, strict=True):
+                if (
+                    not state.enabled
+                    or state.descriptor != registration.descriptor
+                    or registry.resolve_adapter(registration.tool_id) is not registration.adapter
+                    or registry.resolve_resolver(registration.tool_id) is not registration.resolver
+                ):
+                    raise IntegratedAgentConfigurationError()
+        except AgentError as exception:
             raise IntegratedAgentConfigurationError() from exception
 
     def require_registry(self, registry: ToolRegistry) -> None:
@@ -612,6 +661,80 @@ def integrated_plan_update_registration(
     )
 
 
+def integrated_checkout_tool_registration(
+    binding: IntegratedDownstreamBridgeBinding,
+    checkout: RegisteredDevelopmentCheckoutAdapter,
+    authorizer: CheckoutWorkspaceAuthorizer,
+    *,
+    resolver: CheckoutToolResourceResolver | None = None,
+) -> IntegratedToolRegistration:
+    """Bind one exact registered development checkout tool into the integrated surface."""
+
+    if not isinstance(checkout, RegisteredDevelopmentCheckoutAdapter):
+        raise TypeError("checkout must be RegisteredDevelopmentCheckoutAdapter")
+    if not isinstance(authorizer, CheckoutWorkspaceAuthorizer):
+        raise TypeError("authorizer must implement CheckoutWorkspaceAuthorizer")
+
+    registration = checkout.registration
+    tool_id = binding.tool_id
+    if tool_id == CHECKOUT_LIST_TOOL_ID:
+        action = WORKSPACE_LIST_ACTION
+    elif tool_id == CHECKOUT_READ_TOOL_ID:
+        action = WORKSPACE_READ_ACTION
+    else:
+        raise IntegratedAgentConfigurationError()
+
+    _require_downstream_bridge(
+        binding,
+        boundary=IntegratedDownstreamBoundary.WORKSPACE,
+        binding_id=checkout_integrated_binding_id(registration),
+        generation=registration.generation,
+        tool_id=tool_id,
+        action_family=action,
+    )
+    descriptors = {descriptor.tool_id: descriptor for descriptor in checkout_tool_descriptors()}
+    resolved_resolver = CheckoutToolResourceResolver(registration) if resolver is None else resolver
+    if not isinstance(resolved_resolver, CheckoutToolResourceResolver):
+        raise TypeError("resolver must be CheckoutToolResourceResolver or None")
+    if resolved_resolver.registration is not registration:
+        raise IntegratedAgentConfigurationError()
+    return _issue_integrated_tool_registration(
+        binding=binding,
+        descriptor=descriptors[tool_id],
+        resolver=resolved_resolver,
+        adapter=CheckoutToolAdapter(
+            checkout,
+            authorizer,
+            tool_id=tool_id,
+        ),
+    )
+
+
+def integrated_checkout_tool_registrations(
+    list_binding: IntegratedDownstreamBridgeBinding,
+    read_binding: IntegratedDownstreamBridgeBinding,
+    checkout: RegisteredDevelopmentCheckoutAdapter,
+    authorizer: CheckoutWorkspaceAuthorizer,
+) -> tuple[IntegratedToolRegistration, IntegratedToolRegistration]:
+    """Issue list/read registrations sharing the one installed checkout resolver."""
+
+    resolver = CheckoutToolResourceResolver(checkout.registration)
+    return (
+        integrated_checkout_tool_registration(
+            list_binding,
+            checkout,
+            authorizer,
+            resolver=resolver,
+        ),
+        integrated_checkout_tool_registration(
+            read_binding,
+            checkout,
+            authorizer,
+            resolver=resolver,
+        ),
+    )
+
+
 def integrated_memory_tool_registration(
     binding: IntegratedDownstreamBridgeBinding,
     service: AgentMemoryService,
@@ -685,6 +808,54 @@ def _require_downstream_bridge(
         or binding.action_family != action_family
     ):
         raise IntegratedAgentConfigurationError()
+
+
+def integrated_development_checkout_dogfood_profile(
+    *,
+    profile_id: IntegratedExecutionProfileId,
+    generation: IntegratedExecutionProfileGeneration,
+    agent_id: AgentId,
+    data_flow_policy: IntegratedDataFlowPolicy,
+    registration: RegisteredDevelopmentCheckout,
+    limits: AgentLimits | None = None,
+    budget_extension: IntegratedBudgetExtension | None = None,
+    durability_profile: str | None = None,
+) -> IntegratedDogfoodProfile:
+    """Compose the development profile over one exact server-registered checkout."""
+
+    if not isinstance(registration, RegisteredDevelopmentCheckout):
+        raise TypeError("registration must be RegisteredDevelopmentCheckout")
+    workspace = IntegratedCapabilityProfileBinding(
+        boundary=IntegratedDownstreamBoundary.WORKSPACE,
+        binding_id=checkout_integrated_binding_id(registration),
+        generation=registration.generation,
+    )
+    execution = IntegratedExecutionProfile(
+        profile_id=profile_id,
+        generation=generation,
+        agent_id=agent_id,
+        tool_bindings=(
+            _dogfood_plan_binding(),
+            _dogfood_bridge(
+                CHECKOUT_LIST_TOOL_ID,
+                workspace,
+                WORKSPACE_LIST_ACTION,
+            ),
+            _dogfood_bridge(
+                CHECKOUT_READ_TOOL_ID,
+                workspace,
+                WORKSPACE_READ_ACTION,
+            ),
+        ),
+        data_flow_policy=data_flow_policy,
+        limits=AgentLimits() if limits is None else limits,
+        budget_extension=(
+            IntegratedBudgetExtension() if budget_extension is None else budget_extension
+        ),
+        workspace_binding=workspace,
+        durability_profile=durability_profile,
+    )
+    return IntegratedDogfoodProfile(DogfoodTaskClass.DEVELOPMENT, execution)
 
 
 def integrated_development_dogfood_profile(

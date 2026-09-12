@@ -9,6 +9,9 @@ from typing import Protocol, runtime_checkable
 from phoenix_os.agent.contracts import AgentRunId
 from phoenix_os.agent.durable_attempts import DurableExecutionAttemptRecorder
 from phoenix_os.agent.durable_contracts import CheckpointEnvelope
+from phoenix_os.agent.durable_lease_keepalive import (
+    StoreBackedDurableLeaseKeepaliveFactory,
+)
 from phoenix_os.agent.durable_model_turn import DurableModelTurnAttemptBinding
 from phoenix_os.agent.durable_model_turn_execution import execute_durable_model_turn
 from phoenix_os.agent.errors import AgentStateConflictError
@@ -59,16 +62,25 @@ class DurableAgentModelTurnExecutionDriver:
         *,
         binding_provider: DurableModelTurnBindingProvider,
         recorder: DurableExecutionAttemptRecorder,
+        lease_keepalive_factory: StoreBackedDurableLeaseKeepaliveFactory | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(binding_provider, DurableModelTurnBindingProvider):
             raise TypeError("binding_provider must implement DurableModelTurnBindingProvider")
         if not isinstance(recorder, DurableExecutionAttemptRecorder):
             raise TypeError("recorder must implement DurableExecutionAttemptRecorder")
+        if lease_keepalive_factory is not None and not isinstance(
+            lease_keepalive_factory,
+            StoreBackedDurableLeaseKeepaliveFactory,
+        ):
+            raise TypeError(
+                "lease_keepalive_factory must be StoreBackedDurableLeaseKeepaliveFactory or None"
+            )
         if not callable(clock):
             raise TypeError("clock must be callable")
         self._binding_provider = binding_provider
         self._recorder = recorder
+        self._lease_keepalive_factory = lease_keepalive_factory
         self._clock = clock
         self._agent_run_id: AgentRunId | None = None
         self._last_checkpoint: CheckpointEnvelope | None = None
@@ -121,6 +133,11 @@ class DurableAgentModelTurnExecutionDriver:
         if binding.turn is not turn or binding.inference_request is not inference_request:
             raise AgentStateConflictError()
 
+        keepalive = (
+            None
+            if self._lease_keepalive_factory is None
+            else self._lease_keepalive_factory.create(binding.lease)
+        )
         executed = await execute_durable_model_turn(
             binding,
             self._recorder,
@@ -131,6 +148,7 @@ class DurableAgentModelTurnExecutionDriver:
             cancellation_grace=cancellation_grace,
             cancellation=cancellation,
             prepare_time=prepare_time,
+            lease_keepalive=keepalive,
             clock=self._clock,
         )
         self._last_checkpoint = executed.checkpoint
