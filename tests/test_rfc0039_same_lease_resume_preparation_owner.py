@@ -51,7 +51,6 @@ from phoenix_os.control_plane.task_policy_binding import (
     TaskToolAuthorityTarget,
 )
 from phoenix_os.control_plane.task_resume_preparation import (
-    TaskResumePreparationError,
     prepare_same_lease_durable_task_resume,
 )
 from phoenix_os.control_plane.task_runtime_bridge import TaskExecutionAuthority
