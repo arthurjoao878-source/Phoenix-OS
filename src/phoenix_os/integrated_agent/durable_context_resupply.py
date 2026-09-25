@@ -215,7 +215,10 @@ class IntegratedDurableContextResupplyCoordinator:
         _require_timezone_aware(mutation_now)
         if mutation_now < now:
             raise AgentStateConflictError()
-        authoritative_lease = await self._lease_manager.require_current(authoritative_lease, now=mutation_now)
+        authoritative_lease = await self._lease_manager.require_current(
+            authoritative_lease,
+            now=mutation_now,
+        )
         if authoritative_lease != lease or await self._store.get_current(run_id) != current:
             raise AgentStateConflictError()
 
@@ -232,7 +235,11 @@ class IntegratedDurableContextResupplyCoordinator:
             current_agent_step_id=target_step_id,
             current_attempt_id=None,
         )
-        unreserved = {key: value for key, value in current.metadata.metadata.items() if not key.startswith(RFC0036_DURABLE_METADATA_PREFIX)}
+        unreserved = {
+            key: value
+            for key, value in current.metadata.metadata.items()
+            if not key.startswith(RFC0036_DURABLE_METADATA_PREFIX)
+        }
         metadata_values = merge_integrated_durable_projection(unreserved, waiting_projection)
         proposed = seal_checkpoint_envelope(
             replace(
@@ -305,7 +312,10 @@ def _is_safe_cancelled_model_attempt(
         return False
     if attempt.started_at is None:
         return waiting_reason in {None, IntegratedWaitingReason.CONTEXT_RESUPPLY}
-    if waiting_reason not in {IntegratedWaitingReason.RECONCILIATION, IntegratedWaitingReason.CONTEXT_RESUPPLY}:
+    if waiting_reason not in {
+        IntegratedWaitingReason.RECONCILIATION,
+        IntegratedWaitingReason.CONTEXT_RESUPPLY,
+    }:
         return False
     return _reconciliation_proves_not_started(checkpoint, attempt)
 
@@ -349,29 +359,40 @@ def _is_exact_rfc0039_recovering_orphan(
     current_projection = decode_integrated_durable_projection(checkpoint)
     if previous_projection is None or current_projection is None:
         return False
+
+    expected_projection = replace(
+        previous_projection,
+        orchestration_phase=IntegratedOrchestrationPhase.EXECUTING,
+        waiting_reason=None,
+        current_agent_step_id=None,
+        current_attempt_id=None,
+    )
+    previous_unreserved = {
+        key: value
+        for key, value in previous.metadata.metadata.items()
+        if not key.startswith(RFC0036_DURABLE_METADATA_PREFIX)
+    }
+    expected_metadata_values = merge_integrated_durable_projection(
+        previous_unreserved,
+        expected_projection,
+    )
+    expected_metadata = replace(
+        previous.metadata,
+        next_operation=CheckpointNextOperation.MODEL_TURN,
+        active_attempt=None,
+        metadata=expected_metadata_values,
+    )
     return (
         previous.status is DurableRunStatus.PAUSED_OPERATOR
         and previous.metadata.next_operation is CheckpointNextOperation.MODEL_TURN
         and previous.metadata.active_attempt is None
         and previous_projection.orchestration_phase is IntegratedOrchestrationPhase.WAITING
         and previous_projection.waiting_reason is IntegratedWaitingReason.CONTEXT_RESUPPLY
-        and current_projection.orchestration_phase is IntegratedOrchestrationPhase.EXECUTING
-        and current_projection.waiting_reason is None
-        and current_projection.current_agent_step_id is None
-        and current_projection.current_attempt_id is None
+        and current_projection == expected_projection
         and checkpoint.previous_digest == previous.digest
         and checkpoint.sequence == previous.sequence.next()
         and checkpoint.run_version == previous.run_version.next()
-        and checkpoint.metadata.budget == previous.metadata.budget
-        and current_projection.task_id == previous_projection.task_id
-        and current_projection.task_digest == previous_projection.task_digest
-        and current_projection.execution_profile_id == previous_projection.execution_profile_id
-        and current_projection.execution_profile_generation == previous_projection.execution_profile_generation
-        and current_projection.budget_extension_usage == previous_projection.budget_extension_usage
-        and current_projection.plan_revision == previous_projection.plan_revision
-        and current_projection.plan_digest == previous_projection.plan_digest
-        and current_projection.data_flow_context_digest == previous_projection.data_flow_context_digest
-        and current_projection.last_safe_boundary == previous_projection.last_safe_boundary
+        and checkpoint.metadata == expected_metadata
     )
 
 
