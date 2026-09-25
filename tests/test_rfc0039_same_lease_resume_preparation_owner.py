@@ -509,24 +509,43 @@ async def test_same_lease_resume_preparation_restores_authorizes_and_holds_one_l
 
 
 @pytest.mark.asyncio
-async def test_same_lease_resume_preparation_rejects_active_checkpoint_and_releases_lease() -> None:
+async def test_same_lease_resume_preparation_materializes_active_context_resupply() -> None:
+    from phoenix_os.integrated_agent.contracts import (
+        IntegratedOrchestrationPhase,
+        IntegratedWaitingReason,
+    )
+    from phoenix_os.integrated_agent.durable_projection import (
+        decode_integrated_durable_projection,
+    )
+
     environment = await _environment(pause_for_context_resupply=False)
+    prepared = None
     try:
-        with pytest.raises(TaskResumePreparationError):
-            await prepare_same_lease_durable_task_resume(
-                owner=environment.owner,
-                support=environment.support,
-                durable_run_id=environment.durable_run_id,
-                authority=environment.authority,
-                lease_owner_id="operator-resume",
-                task=environment.task,
-                request=environment.request,
-                provenance=environment.provenance,
-                budget_usage=IntegratedBudgetUsage(),
-                plan=None,
-                now=_NOW,
-            )
+        prepared = await prepare_same_lease_durable_task_resume(
+            owner=environment.owner,
+            support=environment.support,
+            durable_run_id=environment.durable_run_id,
+            authority=environment.authority,
+            lease_owner_id="operator-resume",
+            task=environment.task,
+            request=environment.request,
+            provenance=environment.provenance,
+            budget_usage=IntegratedBudgetUsage(),
+            plan=None,
+            now=_NOW,
+        )
         assert environment.checkpoint.status is DurableRunStatus.ACTIVE
+        assert prepared.checkpoint.status is DurableRunStatus.PAUSED_OPERATOR
+        assert prepared.checkpoint.previous_digest == environment.checkpoint.digest
+        assert prepared.checkpoint.sequence == environment.checkpoint.sequence.next()
+        projection = decode_integrated_durable_projection(prepared.checkpoint)
+        assert projection is not None
+        assert projection.orchestration_phase is IntegratedOrchestrationPhase.WAITING
+        assert projection.waiting_reason is IntegratedWaitingReason.CONTEXT_RESUPPLY
+        assert prepared.checkpoint.metadata.active_attempt is None
+    finally:
+        if prepared is not None:
+            await prepared.release(now=_NOW)
         assert (
             await environment.durable_stack.lease_manager.get_current(
                 environment.durable_run_id,
@@ -534,12 +553,6 @@ async def test_same_lease_resume_preparation_rejects_active_checkpoint_and_relea
             )
             is None
         )
-        assert await environment.owner.admission.request_for_run(_RUN_ID) is None
-        assert environment.owner.execution_guard.current_provenance(_RUN_ID) is None
-        planner = environment.owner.planner
-        assert planner is not None
-        assert planner.current_revision(_RUN_ID) is None
-    finally:
         await environment.close()
 
 
