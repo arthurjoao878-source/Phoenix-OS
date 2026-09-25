@@ -165,7 +165,7 @@ async def prepare_same_lease_durable_task_resume(
     budget_usage: IntegratedBudgetUsage,
     plan: NormalizedPlan | None,
     now: datetime,
-    clock: Callable[[], datetime] = _utc_now,
+    clock: Callable[[], datetime] | None = None,
 ) -> PreparedSameLeaseDurableTaskResume:
     """Prepare an existing paused run for continuation without executing it."""
 
@@ -192,8 +192,9 @@ async def prepare_same_lease_durable_task_resume(
     if plan is not None and not isinstance(plan, NormalizedPlan):
         raise TypeError("plan must be NormalizedPlan or None")
     _require_timezone_aware(now)
-    if not callable(clock):
-        raise TypeError("clock must be callable")
+    if clock is not None and not callable(clock):
+        raise TypeError("clock must be callable or None")
+    selected_clock = (lambda: now) if clock is None else clock
 
     planner = owner.planner
     if planner is None:
@@ -264,7 +265,7 @@ async def prepare_same_lease_durable_task_resume(
             recorder = owner.durable_stack.attempt_recorder
             if not isinstance(recorder, DurablePreparedAttemptRecoveryRecorder):
                 raise TaskResumePreparationError()
-            mutation_now = _clock_now(clock, not_before=now)
+            mutation_now = _clock_now(selected_clock, not_before=now)
             checkpoint = await recorder.cancel_prepared_not_started(
                 durable_run_id,
                 expected_version=checkpoint.run_version,
@@ -286,7 +287,7 @@ async def prepare_same_lease_durable_task_resume(
                 durable_run_id,
                 lease=authoritative_lease,
                 now=now,
-                clock=clock,
+                clock=selected_clock,
                 reason=IndeterminateReason.PROVIDER_STATUS_UNKNOWN,
             )
             if (
@@ -296,12 +297,12 @@ async def prepare_same_lease_durable_task_resume(
                 raise TaskResumePreparationError()
             raise TaskResumePreparationError()
 
-        normalization_now = _clock_now(clock, not_before=now)
+        normalization_now = _clock_now(selected_clock, not_before=now)
         checkpoint = await support.context_resupply.pause_candidate_with_lease(
             durable_run_id,
             lease=authoritative_lease,
             now=normalization_now,
-            clock=clock,
+            clock=selected_clock,
         )
         now = normalization_now
         _require_resumable_checkpoint(checkpoint, durable_run_id=durable_run_id, request=request)
@@ -333,16 +334,16 @@ async def prepare_same_lease_durable_task_resume(
             budget_usage=budget_usage,
             plan=plan,
         )
-        gate_now = _clock_now(clock, not_before=now)
+        gate_now = _clock_now(selected_clock, not_before=now)
         resume_state = await support.resume_gate.assess_resume_state(
             checkpoint,
             now=gate_now,
         )
         if resume_state is not IntegratedDurableResumeState.READY:
             raise TaskResumePreparationError()
-        renew_now = _clock_now(clock, not_before=gate_now)
+        renew_now = _clock_now(selected_clock, not_before=gate_now)
         durable_lease = await lease_manager.renew(durable_lease, now=renew_now)
-        authorization_now = _clock_now(clock, not_before=renew_now)
+        authorization_now = _clock_now(selected_clock, not_before=renew_now)
         resume_request = await authorize_operator_durable_task_resume(
             checkpoint=checkpoint,
             lease_manager=lease_manager,
@@ -351,7 +352,7 @@ async def prepare_same_lease_durable_task_resume(
             actor_id=authority.context.principal,
             now=authorization_now,
         )
-        final_now = _clock_now(clock, not_before=authorization_now)
+        final_now = _clock_now(selected_clock, not_before=authorization_now)
         if await lease_manager.require_current(durable_lease, now=final_now) != durable_lease:
             raise TaskResumePreparationError()
         return PreparedSameLeaseDurableTaskResume(
@@ -364,7 +365,7 @@ async def prepare_same_lease_durable_task_resume(
     except BaseException as primary:
         cleanup_now: datetime | None = None
         try:
-            candidate_now = clock()
+            candidate_now = selected_clock()
             _require_timezone_aware(candidate_now)
             if candidate_now >= now:
                 cleanup_now = candidate_now
