@@ -38,9 +38,15 @@ from phoenix_os.agent.durable_contracts import (
     DurableRunVersion,
     ExecutionAttemptStatus,
     IndeterminateReason,
+    ReconciliationDecision,
     ResumeReason,
 )
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
+from phoenix_os.agent.durable_reconciliation import DurableReconciliationDispositionRecord
+from phoenix_os.agent.durable_status_lookup import (
+    DurableAttemptExternalStatus,
+    DurableAttemptStatusLookupOutcome,
+)
 from phoenix_os.agent.durable_runtime import (
     DurableAgentRuntimeStack,
     create_durable_agent_runtime_stack,
@@ -678,6 +684,159 @@ async def test_same_lease_resume_preparation_marks_started_attempt_indeterminate
             is None
         )
     finally:
+        await environment.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_not_started_reconciliation_resumes_and_consumes_head_metadata() -> None:
+    from phoenix_os.control_plane.task_resume_activation import (
+        activate_prepared_same_lease_durable_task_resume,
+    )
+
+    environment = await _environment(pause_for_context_resupply=False)
+    prepared_resume = None
+    try:
+        setup_lease = await environment.durable_stack.lease_manager.acquire(
+            environment.durable_run_id,
+            owner_id="reconciliation-bridge-setup",
+            now=_NOW,
+        )
+        try:
+            prepared_attempt = await environment.durable_stack.attempt_recorder.prepare_model_attempt(
+                environment.durable_run_id,
+                expected_version=environment.checkpoint.run_version,
+                lease=setup_lease,
+                external_request_digest=_digest("d"),
+                now=_NOW,
+            )
+            prepared_state = prepared_attempt.metadata.active_attempt
+            assert prepared_state is not None
+            started = await environment.durable_stack.attempt_recorder.mark_started(
+                environment.durable_run_id,
+                prepared_state.attempt_id,
+                expected_version=prepared_attempt.run_version,
+                lease=setup_lease,
+                now=_NOW,
+            )
+            indeterminate = await environment.durable_stack.attempt_recorder.mark_indeterminate(
+                environment.durable_run_id,
+                prepared_state.attempt_id,
+                expected_version=started.run_version,
+                lease=setup_lease,
+                reason=IndeterminateReason.PROVIDER_STATUS_UNKNOWN,
+                now=_NOW,
+            )
+            indeterminate_attempt = indeterminate.metadata.active_attempt
+            assert indeterminate_attempt is not None
+            assert indeterminate_attempt.started_at is not None
+
+            record = DurableReconciliationDispositionRecord(
+                reconciliation_id=UUID("55000000-0000-4000-8000-000000000005"),
+                run_id=environment.durable_run_id,
+                source_checkpoint_id=indeterminate.checkpoint_id,
+                source_checkpoint_digest=indeterminate.digest,
+                source_version=indeterminate.run_version,
+                source_status=DurableRunStatus.INDETERMINATE_MODEL,
+                attempt_id=indeterminate_attempt.attempt_id,
+                actor_id="operator-1",
+                generation=setup_lease.generation,
+                decision=ReconciliationDecision.CONFIRM_NOT_STARTED,
+                external_request_digest=indeterminate_attempt.external_request_digest,
+                requested_at=_NOW,
+                applied_at=_NOW,
+                result_status=DurableRunStatus.PAUSED_OPERATOR,
+                result_attempt_status=ExecutionAttemptStatus.CANCELLED,
+                lookup_id=UUID("56000000-0000-4000-8000-000000000006"),
+                lookup_outcome=DurableAttemptStatusLookupOutcome.OBSERVED,
+                lookup_adapter_id="reviewed.status",
+                external_status=DurableAttemptExternalStatus.NOT_STARTED,
+                evidence_type="adapter-receipt",
+                evidence_digest=_digest("c"),
+                evidence_observed_at=_NOW,
+            )
+            cancelled_attempt = replace(
+                indeterminate_attempt,
+                status=ExecutionAttemptStatus.CANCELLED,
+                completed_at=_NOW,
+                indeterminate_reason=None,
+                error_code=None,
+            )
+            projector = environment.durable_stack.metadata_projector
+            assert isinstance(projector, IntegratedDurableCheckpointMetadataProjector)
+            reconciliation_checkpoint_id = CheckpointId(
+                UUID("57000000-0000-4000-8000-000000000007")
+            )
+            reconciliation_metadata = dict(indeterminate.metadata.metadata)
+            reconciliation_metadata.update(record.to_metadata())
+            projected_metadata = projector.project_metadata(
+                indeterminate,
+                checkpoint_id=reconciliation_checkpoint_id,
+                status=DurableRunStatus.PAUSED_OPERATOR,
+                step_id=indeterminate.step_id,
+                next_operation=CheckpointNextOperation.MODEL_TURN,
+                active_attempt=cancelled_attempt,
+                metadata=reconciliation_metadata,
+            )
+            reconciled = seal_checkpoint_envelope(
+                replace(
+                    indeterminate,
+                    checkpoint_id=reconciliation_checkpoint_id,
+                    sequence=indeterminate.sequence.next(),
+                    previous_digest=indeterminate.digest,
+                    run_version=indeterminate.run_version.next(),
+                    status=DurableRunStatus.PAUSED_OPERATOR,
+                    metadata=replace(
+                        indeterminate.metadata,
+                        next_operation=CheckpointNextOperation.MODEL_TURN,
+                        active_attempt=cancelled_attempt,
+                        metadata=projected_metadata,
+                    ),
+                    created_at=_NOW,
+                )
+            )
+            await environment.durable_stack.store.append(
+                reconciled,
+                expected_version=indeterminate.run_version,
+                lease=setup_lease,
+                now=_NOW,
+            )
+        finally:
+            await environment.durable_stack.lease_manager.release(setup_lease, now=_NOW)
+
+        prepared_resume = await prepare_same_lease_durable_task_resume(
+            owner=environment.owner,
+            support=environment.support,
+            durable_run_id=environment.durable_run_id,
+            authority=environment.authority,
+            lease_owner_id="operator-resume-reconciled",
+            task=environment.task,
+            request=environment.request,
+            provenance=environment.provenance,
+            budget_usage=IntegratedBudgetUsage(),
+            plan=None,
+            now=_NOW,
+        )
+        source = prepared_resume.checkpoint
+        assert source.status is DurableRunStatus.PAUSED_OPERATOR
+        assert source.metadata.active_attempt is None
+        assert any(key.startswith("reconciliation.") for key in source.metadata.metadata)
+
+        activation = await activate_prepared_same_lease_durable_task_resume(
+            owner=environment.owner,
+            support=environment.support,
+            prepared=prepared_resume,
+            authority=environment.authority,
+            now=_NOW,
+        )
+        recovering = activation.recovering_checkpoint
+        active = activation.checkpoint
+        assert any(key.startswith("reconciliation.") for key in recovering.metadata.metadata)
+        assert not any(key.startswith("reconciliation.") for key in active.metadata.metadata)
+        assert active.status is DurableRunStatus.ACTIVE
+        assert active.metadata.active_attempt is None
+    finally:
+        if prepared_resume is not None:
+            await prepared_resume.release(now=_NOW)
         await environment.close()
 
 
