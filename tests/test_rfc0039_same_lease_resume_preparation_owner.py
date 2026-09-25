@@ -567,6 +567,8 @@ async def test_same_lease_resume_preparation_materializes_active_context_resuppl
 @pytest.mark.asyncio
 async def test_same_lease_resume_preparation_recovers_prepared_without_started_work() -> None:
     environment = await _environment(pause_for_context_resupply=False)
+    recorder = environment.durable_stack.attempt_recorder
+    assert recorder is not None
     prepared_resume = None
     try:
         setup_lease = await environment.durable_stack.lease_manager.acquire(
@@ -576,7 +578,7 @@ async def test_same_lease_resume_preparation_recovers_prepared_without_started_w
         )
         try:
             prepared_attempt = (
-                await environment.durable_stack.attempt_recorder.prepare_model_attempt(
+                await recorder.prepare_model_attempt(
                     environment.durable_run_id,
                     expected_version=environment.checkpoint.run_version,
                     lease=setup_lease,
@@ -631,6 +633,8 @@ async def test_same_lease_resume_preparation_marks_started_attempt_indeterminate
     None
 ):
     environment = await _environment(pause_for_context_resupply=False)
+    recorder = environment.durable_stack.attempt_recorder
+    assert recorder is not None
     try:
         setup_lease = await environment.durable_stack.lease_manager.acquire(
             environment.durable_run_id,
@@ -639,7 +643,7 @@ async def test_same_lease_resume_preparation_marks_started_attempt_indeterminate
         )
         try:
             prepared_attempt = (
-                await environment.durable_stack.attempt_recorder.prepare_model_attempt(
+                await recorder.prepare_model_attempt(
                     environment.durable_run_id,
                     expected_version=environment.checkpoint.run_version,
                     lease=setup_lease,
@@ -649,7 +653,7 @@ async def test_same_lease_resume_preparation_marks_started_attempt_indeterminate
             )
             attempt = prepared_attempt.metadata.active_attempt
             assert attempt is not None
-            started = await environment.durable_stack.attempt_recorder.mark_started(
+            started = await recorder.mark_started(
                 environment.durable_run_id,
                 attempt.attempt_id,
                 expected_version=prepared_attempt.run_version,
@@ -700,6 +704,8 @@ async def test_confirm_not_started_reconciliation_resumes_and_consumes_head_meta
     )
 
     environment = await _environment(pause_for_context_resupply=False)
+    recorder = environment.durable_stack.attempt_recorder
+    assert recorder is not None
     prepared_resume = None
     try:
         setup_lease = await environment.durable_stack.lease_manager.acquire(
@@ -709,7 +715,7 @@ async def test_confirm_not_started_reconciliation_resumes_and_consumes_head_meta
         )
         try:
             prepared_attempt = (
-                await environment.durable_stack.attempt_recorder.prepare_model_attempt(
+                await recorder.prepare_model_attempt(
                     environment.durable_run_id,
                     expected_version=environment.checkpoint.run_version,
                     lease=setup_lease,
@@ -719,14 +725,14 @@ async def test_confirm_not_started_reconciliation_resumes_and_consumes_head_meta
             )
             prepared_state = prepared_attempt.metadata.active_attempt
             assert prepared_state is not None
-            started = await environment.durable_stack.attempt_recorder.mark_started(
+            started = await recorder.mark_started(
                 environment.durable_run_id,
                 prepared_state.attempt_id,
                 expected_version=prepared_attempt.run_version,
                 lease=setup_lease,
                 now=_NOW,
             )
-            indeterminate = await environment.durable_stack.attempt_recorder.mark_indeterminate(
+            indeterminate = await recorder.mark_indeterminate(
                 environment.durable_run_id,
                 prepared_state.attempt_id,
                 expected_version=started.run_version,
@@ -737,6 +743,8 @@ async def test_confirm_not_started_reconciliation_resumes_and_consumes_head_meta
             indeterminate_attempt = indeterminate.metadata.active_attempt
             assert indeterminate_attempt is not None
             assert indeterminate_attempt.started_at is not None
+            external_request_digest = indeterminate_attempt.external_request_digest
+            assert external_request_digest is not None
 
             record = DurableReconciliationDispositionRecord(
                 reconciliation_id=UUID("55000000-0000-4000-8000-000000000005"),
@@ -749,7 +757,7 @@ async def test_confirm_not_started_reconciliation_resumes_and_consumes_head_meta
                 actor_id="operator-1",
                 generation=setup_lease.generation,
                 decision=ReconciliationDecision.CONFIRM_NOT_STARTED,
-                external_request_digest=indeterminate_attempt.external_request_digest,
+                external_request_digest=external_request_digest,
                 requested_at=_NOW,
                 applied_at=_NOW,
                 result_status=DurableRunStatus.PAUSED_OPERATOR,
