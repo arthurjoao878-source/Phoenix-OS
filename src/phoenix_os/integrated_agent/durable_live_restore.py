@@ -141,7 +141,6 @@ async def restore_integrated_durable_recovery_live_state(
     admission_lease = await admission.restore_run(task, request)
     guard_restored = False
     planner_restored = False
-    run_id = admission_lease.binding.run_id
 
     try:
         execution_guard.restore_run(
