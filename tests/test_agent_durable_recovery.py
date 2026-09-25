@@ -447,10 +447,7 @@ async def test_same_lease_started_model_is_marked_indeterminate_without_reacquir
     assert attempt.indeterminate_reason is IndeterminateReason.PROVIDER_STATUS_UNKNOWN
     assert assessment.status is DurableRunStatus.INDETERMINATE_MODEL
     assert assessment.disposition is RecoveryDisposition.PAUSE_OPERATOR
-    assert (
-        await store.lease_manager.require_current(lease, now=mutation_time)
-        == lease
-    )
+    assert await store.lease_manager.require_current(lease, now=mutation_time) == lease
     assert lease.generation.value == 1
 
 
