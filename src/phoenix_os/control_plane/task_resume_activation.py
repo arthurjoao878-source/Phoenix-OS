@@ -146,7 +146,7 @@ async def activate_prepared_same_lease_durable_task_resume(
     if not callable(checkpoint_id_factory):
         raise TypeError("checkpoint_id_factory must be callable")
     _require_timezone_aware(now)
-    selected_clock = (lambda: now) if clock is None else clock
+    selected_clock: Callable[[], datetime] = (lambda: now) if clock is None else clock
 
     if (
         prepared.released
