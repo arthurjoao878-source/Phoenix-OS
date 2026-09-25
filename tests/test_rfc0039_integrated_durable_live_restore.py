@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -104,6 +105,32 @@ def _admission(profile: IntegratedExecutionProfile) -> IntegratedAgentAdmission:
     )
 
 
+class _BlockingReleaseAdmission(IntegratedAgentAdmission):
+    def __init__(
+        self,
+        profile: IntegratedExecutionProfile,
+    ) -> None:
+        super().__init__(
+            IntegratedExecutionProfileCatalog((profile,)),
+            IntegratedExecutionProfileSelection(
+                profile_id=profile.profile_id,
+                generation=profile.generation,
+            ),
+            AgentServiceConfiguration(
+                agent_id=_AGENT_ID,
+                provider_id=_LOCAL_PROVIDER_ID,
+                model_id=ModelId("chat"),
+            ),
+        )
+        self.release_started = asyncio.Event()
+        self.allow_release = asyncio.Event()
+
+    async def _release(self, binding: IntegratedAgentRunBinding) -> None:
+        self.release_started.set()
+        await self.allow_release.wait()
+        await super()._release(binding)
+
+
 def _task() -> IntegratedTaskRequest:
     return IntegratedTaskRequest(
         task_id=_TASK_ID,
@@ -202,6 +229,46 @@ async def test_restore_live_state_reuses_exact_reviewed_identity_and_releases_as
         assert planner.current_revision(_RUN_ID) == 0
     finally:
         await restored_again.release()
+
+
+@pytest.mark.asyncio
+async def test_live_state_release_defers_cancellation_until_all_cleanup_finishes() -> None:
+    profile = _profile()
+    task = _task()
+    effective_request, seed = await _reviewed_seed(profile)
+    _binding, provenance = seed
+
+    admission = _BlockingReleaseAdmission(profile)
+    guard = IntegratedAgentExecutionGuard(profile, clock=lambda: _NOW)
+    planner = IntegratedPlanner(profile, provenance_provider=guard)
+    live = await restore_integrated_durable_recovery_live_state(
+        admission=admission,
+        execution_guard=guard,
+        planner=planner,
+        task=task,
+        request=effective_request,
+        provenance=provenance,
+        budget_usage=IntegratedBudgetUsage(),
+        plan=None,
+    )
+
+    release_task = asyncio.create_task(live.release())
+    await asyncio.wait_for(admission.release_started.wait(), timeout=1)
+    release_task.cancel()
+    await asyncio.sleep(0)
+    assert release_task.done() is False
+
+    admission.allow_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await release_task
+
+    assert live.released is True
+    assert await admission.binding_for_run(_RUN_ID) is None
+    assert await admission.request_for_run(_RUN_ID) is None
+    assert guard.current_provenance(_RUN_ID) is None
+    assert guard.current_budget_usage(_RUN_ID) is None
+    assert planner.current_revision(_RUN_ID) is None
+    assert planner.current_plan(_RUN_ID) is None
 
 
 @pytest.mark.asyncio
