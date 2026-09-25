@@ -231,6 +231,7 @@ class IntegratedPlanner:
         self._adapter = _IntegratedPlanUpdateAdapter(self)
         self._active: dict[AgentRunId, _PlannerRunState] = {}
         self._seen: set[AgentRunId] = set()
+        self._seen_bindings: dict[AgentRunId, IntegratedAgentRunBinding] = {}
         self._closed = False
         self._lock = RLock()
 
@@ -275,6 +276,7 @@ class IntegratedPlanner:
                     "agent run id cannot be reused for integrated planning"
                 )
             self._seen.add(binding.run_id)
+            self._seen_bindings[binding.run_id] = binding
             self._active[binding.run_id] = _PlannerRunState(binding=binding)
 
     def restore_run(
@@ -309,11 +311,17 @@ class IntegratedPlanner:
         )
         with self._lock:
             self._require_open()
-            if binding.run_id in self._seen or binding.run_id in self._active:
+            if binding.run_id in self._active:
                 raise IntegratedAgentRejectedError(
-                    "agent run id cannot be reused for integrated planning"
+                    "agent run id is already active for integrated planning"
+                )
+            seen_binding = self._seen_bindings.get(binding.run_id)
+            if seen_binding is not None and seen_binding != binding:
+                raise IntegratedAgentRejectedError(
+                    "integrated planning run binding changed during recovery"
                 )
             self._seen.add(binding.run_id)
+            self._seen_bindings.setdefault(binding.run_id, binding)
             self._active[binding.run_id] = state
 
     def release_run(self, run_id: AgentRunId) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 
 from phoenix_os.agent.durable_codec import seal_checkpoint_envelope
 from phoenix_os.agent.durable_contracts import (
@@ -14,6 +14,7 @@ from phoenix_os.agent.durable_contracts import (
     CheckpointNextOperation,
     DurableLease,
     DurableRunStatus,
+    ReconciliationDecision,
     ResumeReason,
     ResumeRequest,
 )
@@ -22,6 +23,7 @@ from phoenix_os.agent.durable_metadata import (
     validate_durable_checkpoint_history,
 )
 from phoenix_os.agent.durable_mutation import append_durable_checkpoint_confirmed
+from phoenix_os.agent.durable_reconciliation import DurableReconciliationDispositionRecord
 from phoenix_os.agent.durable_recovery import validate_authoritative_checkpoint_history
 from phoenix_os.agent.durable_state import DurableRunStateMachine
 from phoenix_os.agent.errors import AgentStateConflictError
@@ -47,6 +49,10 @@ from phoenix_os.integrated_agent.durable_projection import (
     merge_integrated_durable_projection,
 )
 from phoenix_os.integrated_agent.durable_recovery import IntegratedDurableResumeState
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class TaskResumeActivationError(RuntimeError):
@@ -122,6 +128,7 @@ async def activate_prepared_same_lease_durable_task_resume(
     prepared: PreparedSameLeaseDurableTaskResume,
     authority: TaskExecutionAuthority,
     now: datetime,
+    clock: Callable[[], datetime] = _utc_now,
     checkpoint_id_factory: Callable[[], CheckpointId] = CheckpointId,
 ) -> SameLeaseDurableTaskResumeActivation:
     """Activate one prepared operator resume without acquiring or releasing a lease."""
@@ -134,6 +141,8 @@ async def activate_prepared_same_lease_durable_task_resume(
         raise TypeError("prepared must be PreparedSameLeaseDurableTaskResume")
     if not isinstance(authority, TaskExecutionAuthority):
         raise TypeError("authority must be TaskExecutionAuthority")
+    if not callable(clock):
+        raise TypeError("clock must be callable")
     if not callable(checkpoint_id_factory):
         raise TypeError("checkpoint_id_factory must be callable")
     _require_timezone_aware(now)
@@ -180,78 +189,61 @@ async def activate_prepared_same_lease_durable_task_resume(
     ):
         raise TaskResumeActivationError()
 
-    authoritative_lease = await stack.lease_manager.require_current(lease, now=now)
-    if authoritative_lease != lease:
+    reconciliation_keys = _reconciliation_keys_to_consume(source)
+    gate_now = _clock_now(clock, not_before=now)
+    authoritative_lease = await stack.lease_manager.require_current(lease, now=gate_now)
+    if authoritative_lease != lease or await stack.store.get_current(lease.run_id) != source:
         raise TaskResumeActivationError()
-
-    current = await stack.store.get_current(lease.run_id)
-    if current != source:
-        raise TaskResumeActivationError()
-
     current_request = await owner.admission.request_for_run(source.agent_run_id)
     current_binding = await owner.admission.binding_for_run(source.agent_run_id)
     if current_request != live_request or current_binding != live_binding:
         raise TaskResumeActivationError()
-
-    history = await stack.store.list_history(
-        source.durable_run_id,
-        limit=source.sequence.value,
-    )
+    history = await stack.store.list_history(source.durable_run_id, limit=source.sequence.value)
     validate_authoritative_checkpoint_history(source, history)
-    validate_durable_checkpoint_history(
-        stack.history_validator,
-        source,
-        history,
-    )
+    validate_durable_checkpoint_history(stack.history_validator, source, history)
     compatibility = stack.compatibility_validator.validate(source)
     if compatibility.agent_id != source.metadata.agent_id or not compatibility.compatible:
         raise TaskResumeActivationError()
-
-    resume_state = await support.resume_gate.assess_resume_state(source, now=now)
-    if resume_state is not IntegratedDurableResumeState.READY:
+    if await support.resume_gate.assess_resume_state(source, now=gate_now) is not IntegratedDurableResumeState.READY:
         raise TaskResumeActivationError()
-
+    authorization_now = _clock_now(clock, not_before=gate_now)
     current_authorization = await authorize_operator_durable_task_resume(
         checkpoint=source,
         lease_manager=stack.lease_manager,
         lease=lease,
         authority=authority,
         actor_id=resume_request.actor_id,
-        now=now,
+        now=authorization_now,
     )
-    _require_same_resume_authorization(
-        current_authorization,
-        prepared=resume_request,
-        now=now,
-    )
-
+    _require_same_resume_authorization(current_authorization, prepared=resume_request, now=authorization_now)
+    recovering_now = _clock_now(clock, not_before=authorization_now)
+    authoritative_lease = await stack.lease_manager.require_current(authoritative_lease, now=recovering_now)
+    if authoritative_lease != lease or await stack.store.get_current(lease.run_id) != source:
+        raise TaskResumeActivationError()
     machine = DurableRunStateMachine.from_checkpoint(source)
-    machine.transition(DurableRunStatus.RECOVERING, now=now)
+    machine.transition(DurableRunStatus.RECOVERING, now=recovering_now)
     recovering = await _append_recovering_status(
         owner,
         source,
         source_projection=source_projection,
         lease=authoritative_lease,
-        now=now,
+        now=recovering_now,
         checkpoint_id_factory=checkpoint_id_factory,
     )
     await _validate_persisted_history(owner, recovering)
-
-    authoritative_lease = await stack.lease_manager.require_current(
-        authoritative_lease,
-        now=now,
-    )
-    if authoritative_lease != lease:
+    active_now = _clock_now(clock, not_before=recovering_now)
+    authoritative_lease = await stack.lease_manager.require_current(authoritative_lease, now=active_now)
+    if authoritative_lease != lease or await stack.store.get_current(lease.run_id) != recovering:
         raise TaskResumeActivationError()
-
-    machine.transition(DurableRunStatus.ACTIVE, now=now)
+    machine.transition(DurableRunStatus.ACTIVE, now=active_now)
     active = await _append_projected_status(
         owner,
         recovering,
         lease=authoritative_lease,
         status=DurableRunStatus.ACTIVE,
-        now=now,
+        now=active_now,
         checkpoint_id_factory=checkpoint_id_factory,
+        metadata_keys_to_drop=reconciliation_keys,
     )
     await _validate_persisted_history(owner, active)
 
@@ -317,11 +309,17 @@ async def _append_projected_status(
     status: DurableRunStatus,
     now: datetime,
     checkpoint_id_factory: Callable[[], CheckpointId],
+    metadata_keys_to_drop: frozenset[str] = frozenset(),
 ) -> CheckpointEnvelope:
     checkpoint_id = checkpoint_id_factory()
     if not isinstance(checkpoint_id, CheckpointId):
         raise TypeError("checkpoint_id_factory must return CheckpointId")
 
+    base_metadata = {
+        key: value
+        for key, value in current.metadata.metadata.items()
+        if key not in metadata_keys_to_drop
+    }
     metadata_values = project_durable_checkpoint_metadata(
         owner.durable_stack.metadata_projector,
         current,
@@ -330,7 +328,7 @@ async def _append_projected_status(
         step_id=current.step_id,
         next_operation=CheckpointNextOperation.MODEL_TURN,
         active_attempt=None,
-        metadata=current.metadata.metadata,
+        metadata=base_metadata,
     )
     candidate = _candidate(
         current,
@@ -418,6 +416,27 @@ async def _validate_persisted_history(
             raise TaskResumeActivationError()
     else:
         raise TaskResumeActivationError()
+
+
+def _reconciliation_keys_to_consume(checkpoint: CheckpointEnvelope) -> frozenset[str]:
+    prefixed = frozenset(key for key in checkpoint.metadata.metadata if key.startswith("reconciliation."))
+    if not prefixed:
+        return frozenset()
+    try:
+        record = DurableReconciliationDispositionRecord.from_metadata(checkpoint.metadata.metadata)
+    except (TypeError, ValueError, OverflowError) as exception:
+        raise TaskResumeActivationError() from exception
+    if record.decision is not ReconciliationDecision.CONFIRM_NOT_STARTED:
+        raise TaskResumeActivationError()
+    return frozenset(record.to_metadata())
+
+
+def _clock_now(clock: Callable[[], datetime], *, not_before: datetime) -> datetime:
+    value = clock()
+    _require_timezone_aware(value)
+    if value < not_before:
+        raise TaskResumeActivationError()
+    return value
 
 
 def _require_same_resume_authorization(
