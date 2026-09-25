@@ -280,7 +280,7 @@ async def test_restore_live_state_rolls_back_guard_and_admission_when_planner_re
     profile = _profile()
     task = _task()
     effective_request, seed = await _reviewed_seed(profile)
-    binding, provenance = seed
+    _binding, provenance = seed
 
     admission = _admission(profile)
     guard = IntegratedAgentExecutionGuard(profile, clock=lambda: _NOW)
