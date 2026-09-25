@@ -301,7 +301,6 @@ def _recovering_from_pause(
     paused: CheckpointEnvelope,
     *,
     checkpoint_id: CheckpointId,
-    step_id: AgentStepId | None = None,
 ) -> CheckpointEnvelope:
     projection = decode_integrated_durable_projection(paused)
     assert projection is not None
@@ -325,7 +324,7 @@ def _recovering_from_pause(
             previous_digest=paused.digest,
             run_version=paused.run_version.next(),
             status=DurableRunStatus.RECOVERING,
-            step_id=step_id,
+            step_id=None,
             metadata=replace(
                 paused.metadata,
                 next_operation=CheckpointNextOperation.MODEL_TURN,
@@ -438,10 +437,20 @@ async def test_non_exact_recovering_checkpoint_is_rejected() -> None:
         owner_id="invalid-recovery-pause",
         now=_NOW,
     )
-    invalid = _recovering_from_pause(
+    candidate = _recovering_from_pause(
         paused,
         checkpoint_id=_INVALID_RECOVERING_ID,
-        step_id=_STEP_ID,
+    )
+    invalid_metadata = dict(candidate.metadata.metadata)
+    invalid_metadata["safe.non-exact"] = "value"
+    invalid = seal_checkpoint_envelope(
+        replace(
+            candidate,
+            metadata=replace(
+                candidate.metadata,
+                metadata=invalid_metadata,
+            ),
+        )
     )
     writer = await store.lease_manager.acquire(
         _DURABLE_RUN_ID,
