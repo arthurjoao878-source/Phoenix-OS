@@ -115,7 +115,7 @@ class IntegratedDurableContextResupplyCoordinator:
         *,
         owner_id: str,
         now: datetime,
-        clock: Callable[[], datetime] = _utc_now,
+        clock: Callable[[], datetime] | None = None,
     ) -> CheckpointEnvelope:
         """Persist WAITING/CONTEXT_RESUPPLY with one coordinator-owned lease."""
 
@@ -125,6 +125,9 @@ class IntegratedDurableContextResupplyCoordinator:
         if not isinstance(owner_id, str) or not owner_id.strip():
             raise ValueError("owner_id must be a non-empty string")
         _require_timezone_aware(now)
+        if clock is not None and not callable(clock):
+            raise TypeError("clock must be callable or None")
+        selected_clock = (lambda: now) if clock is None else clock
 
         lease = await self._lease_manager.acquire(
             run_id,
@@ -136,10 +139,10 @@ class IntegratedDurableContextResupplyCoordinator:
                 run_id,
                 lease=lease,
                 now=now,
-                clock=clock,
+                clock=selected_clock,
             )
         finally:
-            release_now = clock()
+            release_now = selected_clock()
             _require_timezone_aware(release_now)
             await self._lease_manager.release(lease, now=release_now)
 
@@ -149,7 +152,7 @@ class IntegratedDurableContextResupplyCoordinator:
         *,
         lease: DurableLease,
         now: datetime,
-        clock: Callable[[], datetime] = _utc_now,
+        clock: Callable[[], datetime] | None = None,
     ) -> CheckpointEnvelope:
         """Persist the resupply pause using one caller-owned current fenced lease."""
 
@@ -160,9 +163,10 @@ class IntegratedDurableContextResupplyCoordinator:
             raise TypeError("lease must be DurableLease")
         if lease.run_id != run_id:
             raise AgentStateConflictError()
-        if not callable(clock):
-            raise TypeError("clock must be callable")
+        if clock is not None and not callable(clock):
+            raise TypeError("clock must be callable or None")
         _require_timezone_aware(now)
+        selected_clock = (lambda: now) if clock is None else clock
 
         authoritative_lease = await self._lease_manager.require_current(lease, now=now)
         self._ensure_open()
@@ -211,7 +215,7 @@ class IntegratedDurableContextResupplyCoordinator:
             if resume_state is not IntegratedDurableResumeState.CONTEXT_RESUPPLY:
                 raise AgentStateConflictError()
 
-        mutation_now = clock()
+        mutation_now = selected_clock()
         _require_timezone_aware(mutation_now)
         if mutation_now < now:
             raise AgentStateConflictError()
