@@ -491,6 +491,7 @@ def _require_timezone_aware(value: datetime) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
 
+
 async def _release_prepared_scope(
     *,
     lease_manager: DurableLeaseManager,
@@ -522,4 +523,3 @@ def _clock_now(clock: Callable[[], datetime], *, not_before: datetime) -> dateti
     if value < not_before:
         raise TaskResumePreparationError()
     return value
-
