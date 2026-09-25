@@ -24,16 +24,16 @@ from phoenix_os.agent.durable_contracts import (
     RecoveryPoint,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
+from phoenix_os.agent.durable_metadata import validate_durable_checkpoint_history
 from phoenix_os.agent.durable_mutation import append_durable_checkpoint_confirmed
 from phoenix_os.agent.durable_reconciliation import DurableReconciliationDispositionRecord
-from phoenix_os.agent.durable_status_lookup import (
-    DurableAttemptExternalStatus,
-    DurableAttemptStatusLookupOutcome,
-)
-from phoenix_os.agent.durable_metadata import validate_durable_checkpoint_history
 from phoenix_os.agent.durable_recovery import (
     classify_recovery_checkpoint,
     validate_authoritative_checkpoint_history,
+)
+from phoenix_os.agent.durable_status_lookup import (
+    DurableAttemptExternalStatus,
+    DurableAttemptStatusLookupOutcome,
 )
 from phoenix_os.agent.errors import AgentStateConflictError
 from phoenix_os.integrated_agent.contracts import (
