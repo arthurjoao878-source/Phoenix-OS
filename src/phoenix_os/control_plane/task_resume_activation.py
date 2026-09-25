@@ -128,7 +128,7 @@ async def activate_prepared_same_lease_durable_task_resume(
     prepared: PreparedSameLeaseDurableTaskResume,
     authority: TaskExecutionAuthority,
     now: datetime,
-    clock: Callable[[], datetime] = _utc_now,
+    clock: Callable[[], datetime] | None = None,
     checkpoint_id_factory: Callable[[], CheckpointId] = CheckpointId,
 ) -> SameLeaseDurableTaskResumeActivation:
     """Activate one prepared operator resume without acquiring or releasing a lease."""
@@ -141,11 +141,12 @@ async def activate_prepared_same_lease_durable_task_resume(
         raise TypeError("prepared must be PreparedSameLeaseDurableTaskResume")
     if not isinstance(authority, TaskExecutionAuthority):
         raise TypeError("authority must be TaskExecutionAuthority")
-    if not callable(clock):
-        raise TypeError("clock must be callable")
+    if clock is not None and not callable(clock):
+        raise TypeError("clock must be callable or None")
     if not callable(checkpoint_id_factory):
         raise TypeError("checkpoint_id_factory must be callable")
     _require_timezone_aware(now)
+    selected_clock = (lambda: now) if clock is None else clock
 
     if (
         prepared.released
@@ -190,7 +191,7 @@ async def activate_prepared_same_lease_durable_task_resume(
         raise TaskResumeActivationError()
 
     reconciliation_keys = _reconciliation_keys_to_consume(source)
-    gate_now = _clock_now(clock, not_before=now)
+    gate_now = _clock_now(selected_clock, not_before=now)
     authoritative_lease = await stack.lease_manager.require_current(lease, now=gate_now)
     if authoritative_lease != lease or await stack.store.get_current(lease.run_id) != source:
         raise TaskResumeActivationError()
@@ -210,7 +211,7 @@ async def activate_prepared_same_lease_durable_task_resume(
     )
     if resume_state is not IntegratedDurableResumeState.READY:
         raise TaskResumeActivationError()
-    authorization_now = _clock_now(clock, not_before=gate_now)
+    authorization_now = _clock_now(selected_clock, not_before=gate_now)
     current_authorization = await authorize_operator_durable_task_resume(
         checkpoint=source,
         lease_manager=stack.lease_manager,
@@ -224,7 +225,7 @@ async def activate_prepared_same_lease_durable_task_resume(
         prepared=resume_request,
         now=authorization_now,
     )
-    recovering_now = _clock_now(clock, not_before=authorization_now)
+    recovering_now = _clock_now(selected_clock, not_before=authorization_now)
     authoritative_lease = await stack.lease_manager.require_current(
         authoritative_lease,
         now=recovering_now,
@@ -242,7 +243,7 @@ async def activate_prepared_same_lease_durable_task_resume(
         checkpoint_id_factory=checkpoint_id_factory,
     )
     await _validate_persisted_history(owner, recovering)
-    active_now = _clock_now(clock, not_before=recovering_now)
+    active_now = _clock_now(selected_clock, not_before=recovering_now)
     authoritative_lease = await stack.lease_manager.require_current(
         authoritative_lease,
         now=active_now,
