@@ -150,6 +150,7 @@ def test_builtin_catalog_is_exact_closed_world_authority_inventory() -> None:
         "memory.admin",
         "workspace.list",
         "workspace.read",
+        "workspace.patch",
         "workspace.write",
         "workspace.delete",
         "workspace.import",

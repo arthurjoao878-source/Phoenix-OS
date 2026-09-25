@@ -8,6 +8,7 @@ import pytest
 
 from phoenix_os.agent.checkout_authorization import (
     CheckoutListAuthorizationRequest,
+    CheckoutPatchAuthorizationRequest,
     CheckoutReadAuthorizationRequest,
     PolicyEngineCheckoutWorkspaceAuthorizer,
 )
@@ -20,6 +21,7 @@ from phoenix_os.agent.contracts import AgentRunId
 from phoenix_os.agent.errors import AgentAuthorizationRejectedError
 from phoenix_os.agent.workspace_authorization import (
     WORKSPACE_LIST_ACTION,
+    WORKSPACE_PATCH_ACTION,
     WORKSPACE_READ_ACTION,
 )
 from phoenix_os.policy import (
@@ -42,6 +44,7 @@ def _registration(*, generation: int = 7) -> RegisteredDevelopmentCheckout:
         generation=generation,
         root_identity="sha256:" + ("0" * 64),
         read_prefixes=("src", "tests"),
+        patch_prefixes=("src",),
     )
 
 
@@ -50,7 +53,9 @@ def _context(*, authenticated: bool = True) -> SecurityContext:
         principal="operator-1",
         principal_type=PrincipalType.USER,
         authenticated=authenticated,
-        permissions=frozenset({WORKSPACE_LIST_ACTION, WORKSPACE_READ_ACTION}),
+        permissions=frozenset(
+            {WORKSPACE_LIST_ACTION, WORKSPACE_PATCH_ACTION, WORKSPACE_READ_ACTION}
+        ),
     )
 
 
@@ -87,6 +92,20 @@ def _read_request(
     )
 
 
+def _patch_request(
+    *,
+    run_id: AgentRunId = _RUN_ID,
+    generation: int = 7,
+    logical_path: str = "src/example.py",
+) -> CheckoutPatchAuthorizationRequest:
+    return CheckoutPatchAuthorizationRequest(
+        run_id=run_id,
+        registration=_registration(generation=generation),
+        logical_path=logical_path,
+        created_at=_NOW,
+    )
+
+
 @pytest.mark.asyncio
 async def test_checkout_authorizer_is_default_deny() -> None:
     policy = PolicyEngine()
@@ -96,6 +115,8 @@ async def test_checkout_authorizer_is_default_deny() -> None:
             await authorizer.authorize_list(_list_request(), _context())
         with pytest.raises(AgentAuthorizationRejectedError):
             await authorizer.authorize_read(_read_request(), _context())
+        with pytest.raises(AgentAuthorizationRejectedError):
+            await authorizer.authorize_patch(_patch_request(), _context())
     finally:
         await policy.close()
 
@@ -139,6 +160,22 @@ async def test_exact_list_and_read_policy_are_enforced() -> None:
                     "logical_path_digest": _digest("src/example.py"),
                 },
             ),
+            PolicyRule(
+                rule_id="checkout-patch",
+                effect=PolicyEffect.ALLOW,
+                actions=frozenset({WORKSPACE_PATCH_ACTION}),
+                resources=frozenset({checkout_path_resource(registration, "src/example.py")}),
+                principals=frozenset({context.principal}),
+                principal_types=frozenset({PrincipalType.USER}),
+                required_permissions=frozenset({WORKSPACE_PATCH_ACTION}),
+                authenticated=True,
+                attribute_equals={
+                    "checkout_workspace_id": str(_WORKSPACE_ID),
+                    "checkout_registration_generation": "7",
+                    "run_id": str(_RUN_ID),
+                    "logical_path_digest": _digest("src/example.py"),
+                },
+            ),
         )
     )
     authorizer = PolicyEngineCheckoutWorkspaceAuthorizer(policy)
@@ -146,6 +183,7 @@ async def test_exact_list_and_read_policy_are_enforced() -> None:
     try:
         await authorizer.authorize_list(_list_request(), context)
         await authorizer.authorize_read(_read_request(), context)
+        await authorizer.authorize_patch(_patch_request(), context)
     finally:
         await policy.close()
 
@@ -210,6 +248,14 @@ async def test_run_generation_and_logical_resource_substitution_fail_closed() ->
         ):
             with pytest.raises(AgentAuthorizationRejectedError):
                 await authorizer.authorize_read(read_request, context)
+
+        for patch_request in (
+            _patch_request(run_id=wrong_run),
+            _patch_request(generation=8),
+            _patch_request(logical_path="src/other.py"),
+        ):
+            with pytest.raises(AgentAuthorizationRejectedError):
+                await authorizer.authorize_patch(patch_request, context)
     finally:
         await policy.close()
 
@@ -227,6 +273,11 @@ async def test_unauthenticated_context_rejected_before_policy() -> None:
         with pytest.raises(AgentAuthorizationRejectedError):
             await authorizer.authorize_read(
                 _read_request(),
+                _context(authenticated=False),
+            )
+        with pytest.raises(AgentAuthorizationRejectedError):
+            await authorizer.authorize_patch(
+                _patch_request(),
                 _context(authenticated=False),
             )
     finally:
@@ -252,6 +303,20 @@ def test_authorization_requests_validate_bounds_and_timezone() -> None:
         )
     with pytest.raises(ValueError):
         CheckoutReadAuthorizationRequest(
+            run_id=_RUN_ID,
+            registration=_registration(),
+            logical_path="src/example.py",
+            created_at=datetime(2026, 9, 6, 12, 0),
+        )
+    with pytest.raises(ValueError, match="outside patch_prefixes"):
+        CheckoutPatchAuthorizationRequest(
+            run_id=_RUN_ID,
+            registration=_registration(),
+            logical_path="tests/example.py",
+            created_at=_NOW,
+        )
+    with pytest.raises(ValueError):
+        CheckoutPatchAuthorizationRequest(
             run_id=_RUN_ID,
             registration=_registration(),
             logical_path="src/example.py",

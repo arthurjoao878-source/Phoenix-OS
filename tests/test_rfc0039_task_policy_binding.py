@@ -12,6 +12,7 @@ from phoenix_os.agent.authorization import (
 )
 from phoenix_os.agent.checkout_authorization import (
     CheckoutListAuthorizationRequest,
+    CheckoutPatchAuthorizationRequest,
     CheckoutReadAuthorizationRequest,
     PolicyEngineCheckoutWorkspaceAuthorizer,
 )
@@ -24,6 +25,7 @@ from phoenix_os.agent.durable_authorization import (
 from phoenix_os.agent.errors import AgentAuthorizationRejectedError
 from phoenix_os.agent.workspace_authorization import (
     WORKSPACE_LIST_ACTION,
+    WORKSPACE_PATCH_ACTION,
     WORKSPACE_READ_ACTION,
     workspace_scope_resource,
 )
@@ -67,6 +69,7 @@ _CHECKOUT = RegisteredDevelopmentCheckout(
     generation=7,
     root_identity="sha256:" + ("1" * 64),
     read_prefixes=("src", "tests"),
+    patch_prefixes=("src",),
 )
 _TOOL = TaskToolAuthorityTarget(
     tool_id=ToolId("workspace.list"),
@@ -79,7 +82,12 @@ _SCOPE = WorkspaceScope(
 )
 
 
-def _context(*, cancel: bool = True, read: bool = True) -> SecurityContext:
+def _context(
+    *,
+    cancel: bool = True,
+    read: bool = True,
+    patch: bool = True,
+) -> SecurityContext:
     permissions = {
         AGENT_RUN_ACTION,
         INFERENCE_MODEL_ACTION,
@@ -88,6 +96,8 @@ def _context(*, cancel: bool = True, read: bool = True) -> SecurityContext:
     }
     if read:
         permissions.add(WORKSPACE_READ_ACTION)
+    if patch:
+        permissions.add(WORKSPACE_PATCH_ACTION)
     if cancel:
         permissions.add(AGENT_CANCEL_ACTION)
     return SecurityContext(
@@ -437,6 +447,15 @@ async def test_checkout_projection_authorizes_only_current_run_registration_and_
             ),
             context,
         )
+        await authorizer.authorize_patch(
+            CheckoutPatchAuthorizationRequest(
+                run_id=_RUN_ID,
+                registration=_CHECKOUT,
+                logical_path="src/pkg/example.py",
+                created_at=_NOW,
+            ),
+            context,
+        )
 
         with pytest.raises(AgentAuthorizationRejectedError):
             await authorizer.authorize_read(
@@ -460,12 +479,21 @@ async def test_checkout_projection_authorizes_only_current_run_registration_and_
                 context,
             )
 
+        with pytest.raises(ValueError, match="outside patch_prefixes"):
+            CheckoutPatchAuthorizationRequest(
+                run_id=_RUN_ID,
+                registration=_CHECKOUT,
+                logical_path="tests/example.py",
+                created_at=_NOW,
+            )
+
         wrong_generation = RegisteredDevelopmentCheckout(
             workspace_id=_CHECKOUT.workspace_id,
             workspace_name=_CHECKOUT.workspace_name,
             generation=_CHECKOUT.generation + 1,
             root_identity=_CHECKOUT.root_identity,
             read_prefixes=_CHECKOUT.read_prefixes,
+            patch_prefixes=_CHECKOUT.patch_prefixes,
         )
         with pytest.raises(AgentAuthorizationRejectedError):
             await authorizer.authorize_read(
@@ -483,15 +511,19 @@ async def test_checkout_projection_authorizes_only_current_run_registration_and_
 
 
 @pytest.mark.asyncio
-async def test_checkout_projection_requires_explicit_list_and_read_permissions() -> None:
+async def test_checkout_projection_requires_explicit_list_read_and_patch_permissions() -> None:
     policy = PolicyEngine()
     try:
-        with pytest.raises(TaskExecutionPolicyBindingError):
-            await TaskExecutionPolicyBinding.open(
-                TaskExecutionAuthority(policy=policy, context=_context(read=False)),
-                _checkout_targets(),
-            )
-        assert await policy.list_rules() == ()
+        for context in (
+            _context(read=False),
+            _context(patch=False),
+        ):
+            with pytest.raises(TaskExecutionPolicyBindingError):
+                await TaskExecutionPolicyBinding.open(
+                    TaskExecutionAuthority(policy=policy, context=context),
+                    _checkout_targets(),
+                )
+            assert await policy.list_rules() == ()
     finally:
         await policy.close()
 

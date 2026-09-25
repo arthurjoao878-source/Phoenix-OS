@@ -15,6 +15,7 @@ from phoenix_os.agent.checkout_agent_tools import (
 )
 from phoenix_os.agent.checkout_authorization import (
     CheckoutListAuthorizationRequest,
+    CheckoutPatchAuthorizationRequest,
     CheckoutReadAuthorizationRequest,
 )
 from phoenix_os.agent.checkout_durable_evidence import CheckoutReadCumulativeByteBudget
@@ -268,6 +269,14 @@ class _RecordingCheckoutAuthorizer:
     ) -> None:
         assert context.authenticated
         self.read_calls.append(request)
+
+    async def authorize_patch(
+        self,
+        request: CheckoutPatchAuthorizationRequest,
+        context: SecurityContext,
+    ) -> None:
+        del request, context
+        raise AssertionError("patch authorization is not expected")
 
 
 def _security_context() -> SecurityContext:

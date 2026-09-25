@@ -27,6 +27,7 @@ from phoenix_os.policy import PhoenixPolicyError, PolicyEngine, PolicyRequest, S
 
 WORKSPACE_LIST_ACTION = "workspace.list"
 WORKSPACE_READ_ACTION = "workspace.read"
+WORKSPACE_PATCH_ACTION = "workspace.patch"
 WORKSPACE_WRITE_ACTION = "workspace.write"
 WORKSPACE_DELETE_ACTION = "workspace.delete"
 WORKSPACE_IMPORT_ACTION = "workspace.import"

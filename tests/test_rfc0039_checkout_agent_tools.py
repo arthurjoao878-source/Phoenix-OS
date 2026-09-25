@@ -27,6 +27,7 @@ from phoenix_os.agent.checkout_agent_tools import (
 )
 from phoenix_os.agent.checkout_authorization import (
     CheckoutListAuthorizationRequest,
+    CheckoutPatchAuthorizationRequest,
     CheckoutReadAuthorizationRequest,
     CheckoutWorkspaceAuthorizer,
     PolicyEngineCheckoutWorkspaceAuthorizer,
@@ -77,6 +78,7 @@ _NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 class _RecordingCheckoutAuthorizer:
     def __init__(self) -> None:
         self.list_calls: list[tuple[CheckoutListAuthorizationRequest, SecurityContext]] = []
+        self.patch_calls: list[tuple[CheckoutPatchAuthorizationRequest, SecurityContext]] = []
         self.read_calls: list[tuple[CheckoutReadAuthorizationRequest, SecurityContext]] = []
 
     async def authorize_list(
@@ -85,6 +87,13 @@ class _RecordingCheckoutAuthorizer:
         context: SecurityContext,
     ) -> None:
         self.list_calls.append((request, context))
+
+    async def authorize_patch(
+        self,
+        request: CheckoutPatchAuthorizationRequest,
+        context: SecurityContext,
+    ) -> None:
+        self.patch_calls.append((request, context))
 
     async def authorize_read(
         self,

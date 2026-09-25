@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
 
+from phoenix_os.agent.checkout_patch_agent_tool import CHECKOUT_PATCH_TOOL_ID
 from phoenix_os.agent.contracts import AgentId, ToolId
 from phoenix_os.agent.memory_authorization import MEMORY_READ_ACTION, MEMORY_SEARCH_ACTION
 from phoenix_os.agent.workspace_authorization import WORKSPACE_LIST_ACTION, WORKSPACE_READ_ACTION
@@ -67,7 +68,11 @@ _ALLOWED_ACTIONS: Mapping[
         DogfoodTaskClass.DEVELOPMENT: MappingProxyType(
             {
                 IntegratedDownstreamBoundary.WORKSPACE: frozenset(
-                    {WORKSPACE_LIST_ACTION, WORKSPACE_READ_ACTION}
+                    {
+                        WORKSPACE_LIST_ACTION,
+                        WORKSPACE_READ_ACTION,
+                        str(CHECKOUT_PATCH_TOOL_ID),
+                    }
                 )
             }
         ),
@@ -119,9 +124,9 @@ class IntegratedDogfoodProfile:
     """Deployment classification that only narrows an existing integrated profile.
 
     The wrapper contains no provider/model selection and grants no authority itself.
-    Development deliberately starts with bounded workspace list/read operations only;
-    direct repository writers or test-process tools remain absent until dogfood proves
-    a narrow general capability is necessary.
+    Development keeps bounded workspace list/read as its required default; the exact
+    checkout patch action is optional only when an explicit profile includes it. Direct
+    repository writers or test-process tools remain outside this surface.
     """
 
     task_class: DogfoodTaskClass
@@ -230,11 +235,30 @@ def _validate_profile(
         allowed = allowed_by_boundary.get(binding.boundary)
         if allowed is None or binding.action_family not in allowed:
             raise ValueError("dogfood profile contains an action outside its minimal surface")
+        if (
+            task_class is DogfoodTaskClass.DEVELOPMENT
+            and binding.boundary is IntegratedDownstreamBoundary.WORKSPACE
+            and binding.action_family == str(CHECKOUT_PATCH_TOOL_ID)
+            and binding.tool_id != CHECKOUT_PATCH_TOOL_ID
+        ):
+            raise ValueError("dogfood patch action requires the exact workspace.patch tool")
         observed_actions[binding.boundary].append(binding.action_family)
 
-    for boundary, required_actions in allowed_by_boundary.items():
+    for boundary, allowed_actions in allowed_by_boundary.items():
         observed = observed_actions.get(boundary, [])
-        if len(observed) != len(required_actions) or frozenset(observed) != required_actions:
+        observed_set = frozenset(observed)
+        if (
+            task_class is DogfoodTaskClass.DEVELOPMENT
+            and boundary is IntegratedDownstreamBoundary.WORKSPACE
+        ):
+            required_actions = frozenset({WORKSPACE_LIST_ACTION, WORKSPACE_READ_ACTION})
+            if any(observed.count(action) != 1 for action in required_actions):
+                raise ValueError("dogfood profile must contain each minimal action exactly once")
+            patch_action = str(CHECKOUT_PATCH_TOOL_ID)
+            if observed.count(patch_action) > 1:
+                raise ValueError("dogfood profile must not duplicate allowed actions")
+            continue
+        if len(observed) != len(allowed_actions) or observed_set != allowed_actions:
             raise ValueError("dogfood profile must contain each minimal action exactly once")
 
 

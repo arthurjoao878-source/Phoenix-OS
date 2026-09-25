@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.39.0] - Unreleased
+
+### Added
+- Prepared Phoenix OS 0.39.0 release-candidate metadata for RFC-0039 official config/doctor/task operation and controlled development-checkout workspace mutation.
+- Added bounded checkout list/read discovery, controlled `workspace.patch`, trusted diff review, exact approval binding, final commit revalidation, and content-free operator patch results through existing Phoenix authority boundaries.
+- Added the separately invoked official-wheel real-provider dogfood checklist required before RFC-0039 acceptance.
+
+### Security
+- Workspace content and model output remain data, not authority; explicit checkout roots, read/patch prefixes, protected targets, freshness, metadata safety, bounds, approval, cancellation, deadlines, and final revalidation remain authoritative.
+- Stale, unobserved, binary, special/reparse, metadata-unsafe, oversized, protected-target, and indeterminate-effect cases fail closed without blind replay.
+- Git mutation, arbitrary shell, generic filesystem write, cloud routing, desktop-wide control, and connector expansion remain outside RFC-0039 v0.39 scope.
+
+### Compatibility
+- Existing v0.38 provider-neutral behavior remains the default when new configuration is omitted, and package installation alone grants no provider, workspace, tool, or patch authority.
+- The network-egress release artifact gate is extended fail-closed to the exact supported v0.39.0 artifact names while future versions remain rejected.
+- Ordinary CI remains deterministic and network-free; real-provider dogfood stays separately invoked.
+- RFC-0039 remains Proposed. Candidate metadata does not authorize acceptance, commit, push, tag, or publication.
+
 ## [0.38.0] - 2026-09-03
 
 ### Added

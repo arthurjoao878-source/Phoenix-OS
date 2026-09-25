@@ -1,7 +1,7 @@
 # Phoenix OS
 
 Phoenix OS is an experimental orchestration foundation for Python 3.12+ with an optional local administrative dashboard.
-Version `0.38.0` implements thirty-eight accepted specifications:
+Version `0.39.0` release-candidate metadata covers thirty-eight accepted specifications plus proposed RFC-0039:
 
 - **RFC-0001 — Phoenix Kernel:** asynchronous request lifecycle, routing, authorization,
   confirmation, cancellation, deadlines, safe errors, and lifecycle events.
@@ -122,6 +122,11 @@ Version `0.38.0` implements thirty-eight accepted specifications:
   binding, fail-closed structured real agent turns, narrow real-task dogfood profiles,
   content-free provider failure/restart evidence, no automatic cloud fallback, no
   transparent replay of uncertain attempts, and provider-neutral network-free CI.
+- **RFC-0039 - Usable Real-Task Operation and Controlled Workspace Mutation:**
+  release-candidate official config/doctor/task operation, explicit development checkout
+  roots, bounded workspace list/read, controlled `workspace.patch`, trusted diff and exact
+  approval binding, final stale-safe commit revalidation, content-free operator results,
+  and separately invoked official-wheel real-provider dogfood. RFC-0039 remains Proposed.
 
 The core intentionally contains no AI model, remote database driver, external vector database,
 concrete tool, concrete identity provider, password database, cloud vault, cryptographic key, job
@@ -485,6 +490,7 @@ steps with exit code 0 and left no Notepad process running after the graceful cl
 
 ## Release notes
 
+- [Phoenix OS 0.39.0](docs/releases/v0.39.0.md)
 - [Phoenix OS 0.38.0](docs/releases/v0.38.0.md)
 - [Phoenix OS 0.37.0](docs/releases/v0.37.0.md)
 - [Phoenix OS 0.36.0](docs/releases/v0.36.0.md)
@@ -673,6 +679,14 @@ A real model gains no authority that a deterministic model did not have.
 There is no automatic local-to-cloud fallback. Provider process/model inventory remain operator-controlled,
 uncertain external attempts are not transparently replayed, and real-provider canaries remain outside mandatory CI.
 
+Phoenix OS 0.39.0 release-candidate metadata adds the official real-task operator path and
+controlled development-checkout workspace mutation while preserving the existing Phoenix
+authority boundaries:
+
+- [Migrate v0.38.0 deployments to v0.39.0 usable real-task operation and controlled workspace mutation](docs/migrations/v0.38.0-to-v0.39.0-usable-real-task-operation-and-controlled-workspace-mutation.md)
+
+RFC-0039 remains Proposed until the final release gate and separately invoked official-wheel
+real-provider dogfood are green. Ordinary CI remains deterministic and network-free.
 ## Architecture decisions
 
 Accepted architectural decisions are indexed in
