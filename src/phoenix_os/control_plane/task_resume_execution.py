@@ -116,4 +116,3 @@ async def execute_same_lease_durable_task_resume(
     else:
         await prepared.release(now=clock())
         return result
-
