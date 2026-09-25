@@ -204,7 +204,11 @@ async def activate_prepared_same_lease_durable_task_resume(
     compatibility = stack.compatibility_validator.validate(source)
     if compatibility.agent_id != source.metadata.agent_id or not compatibility.compatible:
         raise TaskResumeActivationError()
-    if await support.resume_gate.assess_resume_state(source, now=gate_now) is not IntegratedDurableResumeState.READY:
+    resume_state = await support.resume_gate.assess_resume_state(
+        source,
+        now=gate_now,
+    )
+    if resume_state is not IntegratedDurableResumeState.READY:
         raise TaskResumeActivationError()
     authorization_now = _clock_now(clock, not_before=gate_now)
     current_authorization = await authorize_operator_durable_task_resume(
@@ -215,9 +219,16 @@ async def activate_prepared_same_lease_durable_task_resume(
         actor_id=resume_request.actor_id,
         now=authorization_now,
     )
-    _require_same_resume_authorization(current_authorization, prepared=resume_request, now=authorization_now)
+    _require_same_resume_authorization(
+        current_authorization,
+        prepared=resume_request,
+        now=authorization_now,
+    )
     recovering_now = _clock_now(clock, not_before=authorization_now)
-    authoritative_lease = await stack.lease_manager.require_current(authoritative_lease, now=recovering_now)
+    authoritative_lease = await stack.lease_manager.require_current(
+        authoritative_lease,
+        now=recovering_now,
+    )
     if authoritative_lease != lease or await stack.store.get_current(lease.run_id) != source:
         raise TaskResumeActivationError()
     machine = DurableRunStateMachine.from_checkpoint(source)
@@ -232,7 +243,10 @@ async def activate_prepared_same_lease_durable_task_resume(
     )
     await _validate_persisted_history(owner, recovering)
     active_now = _clock_now(clock, not_before=recovering_now)
-    authoritative_lease = await stack.lease_manager.require_current(authoritative_lease, now=active_now)
+    authoritative_lease = await stack.lease_manager.require_current(
+        authoritative_lease,
+        now=active_now,
+    )
     if authoritative_lease != lease or await stack.store.get_current(lease.run_id) != recovering:
         raise TaskResumeActivationError()
     machine.transition(DurableRunStatus.ACTIVE, now=active_now)
@@ -418,15 +432,28 @@ async def _validate_persisted_history(
         raise TaskResumeActivationError()
 
 
-def _reconciliation_keys_to_consume(checkpoint: CheckpointEnvelope) -> frozenset[str]:
-    prefixed = frozenset(key for key in checkpoint.metadata.metadata if key.startswith("reconciliation."))
+def _reconciliation_keys_to_consume(
+    checkpoint: CheckpointEnvelope,
+) -> frozenset[str]:
+    prefixed = frozenset(
+        key
+        for key in checkpoint.metadata.metadata
+        if key.startswith("reconciliation.")
+    )
     if not prefixed:
         return frozenset()
     try:
-        record = DurableReconciliationDispositionRecord.from_metadata(checkpoint.metadata.metadata)
+        record = DurableReconciliationDispositionRecord.from_metadata(
+            checkpoint.metadata.metadata
+        )
     except (TypeError, ValueError, OverflowError) as exception:
         raise TaskResumeActivationError() from exception
-    if record.decision is not ReconciliationDecision.CONFIRM_NOT_STARTED:
+    if (
+        record.run_id != checkpoint.durable_run_id
+        or record.decision is not ReconciliationDecision.CONFIRM_NOT_STARTED
+        or record.result_status is not DurableRunStatus.PAUSED_OPERATOR
+        or record.applied_at > checkpoint.created_at
+    ):
         raise TaskResumeActivationError()
     return frozenset(record.to_metadata())
 
