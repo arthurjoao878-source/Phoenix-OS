@@ -194,7 +194,7 @@ async def prepare_same_lease_durable_task_resume(
     _require_timezone_aware(now)
     if clock is not None and not callable(clock):
         raise TypeError("clock must be callable or None")
-    selected_clock = (lambda: now) if clock is None else clock
+    selected_clock: Callable[[], datetime] = (lambda: now) if clock is None else clock
 
     planner = owner.planner
     if planner is None:
