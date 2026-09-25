@@ -36,6 +36,8 @@ from phoenix_os.agent.durable_contracts import (
     DurableAgentRunId,
     DurableRunStatus,
     DurableRunVersion,
+    ExecutionAttemptStatus,
+    IndeterminateReason,
     ResumeReason,
 )
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
@@ -51,6 +53,7 @@ from phoenix_os.control_plane.task_policy_binding import (
     TaskToolAuthorityTarget,
 )
 from phoenix_os.control_plane.task_resume_preparation import (
+    TaskResumePreparationError,
     prepare_same_lease_durable_task_resume,
 )
 from phoenix_os.control_plane.task_runtime_bridge import TaskExecutionAuthority
@@ -552,6 +555,129 @@ async def test_same_lease_resume_preparation_materializes_active_context_resuppl
             )
             is None
         )
+        await environment.close()
+
+
+@pytest.mark.asyncio
+async def test_same_lease_resume_preparation_recovers_prepared_without_started_work() -> None:
+    environment = await _environment(pause_for_context_resupply=False)
+    prepared_resume = None
+    try:
+        setup_lease = await environment.durable_stack.lease_manager.acquire(
+            environment.durable_run_id,
+            owner_id="prepare-attempt-setup",
+            now=_NOW,
+        )
+        try:
+            prepared_attempt = await environment.durable_stack.attempt_recorder.prepare_model_attempt(
+                environment.durable_run_id,
+                expected_version=environment.checkpoint.run_version,
+                lease=setup_lease,
+                external_request_digest=_digest("f"),
+                now=_NOW,
+            )
+        finally:
+            await environment.durable_stack.lease_manager.release(setup_lease, now=_NOW)
+
+        original_attempt = prepared_attempt.metadata.active_attempt
+        assert original_attempt is not None
+        assert original_attempt.status is ExecutionAttemptStatus.PREPARED
+        assert original_attempt.started_at is None
+
+        prepared_resume = await prepare_same_lease_durable_task_resume(
+            owner=environment.owner,
+            support=environment.support,
+            durable_run_id=environment.durable_run_id,
+            authority=environment.authority,
+            lease_owner_id="operator-resume-prepared",
+            task=environment.task,
+            request=environment.request,
+            provenance=environment.provenance,
+            budget_usage=IntegratedBudgetUsage(),
+            plan=None,
+            now=_NOW,
+        )
+
+        assert prepared_resume.checkpoint.status is DurableRunStatus.PAUSED_OPERATOR
+        assert prepared_resume.checkpoint.metadata.active_attempt is None
+        history = await environment.durable_stack.store.list_history(
+            environment.durable_run_id,
+            limit=prepared_resume.checkpoint.sequence.value,
+        )
+        cancelled = history[-2]
+        cancelled_attempt = cancelled.metadata.active_attempt
+        assert cancelled.status is DurableRunStatus.PAUSED_OPERATOR
+        assert cancelled_attempt is not None
+        assert cancelled_attempt.attempt_id == original_attempt.attempt_id
+        assert cancelled_attempt.status is ExecutionAttemptStatus.CANCELLED
+        assert cancelled_attempt.started_at is None
+        assert cancelled_attempt.completed_at == _NOW
+    finally:
+        if prepared_resume is not None:
+            await prepared_resume.release(now=_NOW)
+        await environment.close()
+
+
+@pytest.mark.asyncio
+async def test_same_lease_resume_preparation_marks_started_attempt_indeterminate_and_stops() -> None:
+    environment = await _environment(pause_for_context_resupply=False)
+    try:
+        setup_lease = await environment.durable_stack.lease_manager.acquire(
+            environment.durable_run_id,
+            owner_id="started-attempt-setup",
+            now=_NOW,
+        )
+        try:
+            prepared_attempt = await environment.durable_stack.attempt_recorder.prepare_model_attempt(
+                environment.durable_run_id,
+                expected_version=environment.checkpoint.run_version,
+                lease=setup_lease,
+                external_request_digest=_digest("e"),
+                now=_NOW,
+            )
+            attempt = prepared_attempt.metadata.active_attempt
+            assert attempt is not None
+            started = await environment.durable_stack.attempt_recorder.mark_started(
+                environment.durable_run_id,
+                attempt.attempt_id,
+                expected_version=prepared_attempt.run_version,
+                lease=setup_lease,
+                now=_NOW,
+            )
+        finally:
+            await environment.durable_stack.lease_manager.release(setup_lease, now=_NOW)
+
+        with pytest.raises(TaskResumePreparationError):
+            await prepare_same_lease_durable_task_resume(
+                owner=environment.owner,
+                support=environment.support,
+                durable_run_id=environment.durable_run_id,
+                authority=environment.authority,
+                lease_owner_id="operator-resume-started",
+                task=environment.task,
+                request=environment.request,
+                provenance=environment.provenance,
+                budget_usage=IntegratedBudgetUsage(),
+                plan=None,
+                now=_NOW,
+            )
+
+        current = await environment.durable_stack.store.get_current(environment.durable_run_id)
+        assert current is not None
+        current_attempt = current.metadata.active_attempt
+        assert current.status is DurableRunStatus.INDETERMINATE_MODEL
+        assert current.previous_digest == started.digest
+        assert current_attempt is not None
+        assert current_attempt.status is ExecutionAttemptStatus.INDETERMINATE
+        assert current_attempt.indeterminate_reason is IndeterminateReason.PROVIDER_STATUS_UNKNOWN
+        assert (
+            await environment.durable_stack.lease_manager.get_current(
+                environment.durable_run_id,
+                now=_NOW,
+            )
+            is None
+        )
+    finally:
         await environment.close()
 
 
