@@ -408,8 +408,7 @@ async def _environment(
             checkpoint = await support.context_resupply.pause_candidate_with_lease(
                 durable_run_id,
                 lease=setup_lease,
-                    now=_NOW,
-                )
+                now=_NOW,
             )
         finally:
             await durable_stack.lease_manager.release(setup_lease, now=_NOW)
