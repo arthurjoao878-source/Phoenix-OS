@@ -577,14 +577,12 @@ async def test_same_lease_resume_preparation_recovers_prepared_without_started_w
             now=_NOW,
         )
         try:
-            prepared_attempt = (
-                await recorder.prepare_model_attempt(
-                    environment.durable_run_id,
-                    expected_version=environment.checkpoint.run_version,
-                    lease=setup_lease,
-                    external_request_digest=_digest("f"),
-                    now=_NOW,
-                )
+            prepared_attempt = await recorder.prepare_model_attempt(
+                environment.durable_run_id,
+                expected_version=environment.checkpoint.run_version,
+                lease=setup_lease,
+                external_request_digest=_digest("f"),
+                now=_NOW,
             )
         finally:
             await environment.durable_stack.lease_manager.release(setup_lease, now=_NOW)
@@ -642,14 +640,12 @@ async def test_same_lease_resume_preparation_marks_started_attempt_indeterminate
             now=_NOW,
         )
         try:
-            prepared_attempt = (
-                await recorder.prepare_model_attempt(
-                    environment.durable_run_id,
-                    expected_version=environment.checkpoint.run_version,
-                    lease=setup_lease,
-                    external_request_digest=_digest("e"),
-                    now=_NOW,
-                )
+            prepared_attempt = await recorder.prepare_model_attempt(
+                environment.durable_run_id,
+                expected_version=environment.checkpoint.run_version,
+                lease=setup_lease,
+                external_request_digest=_digest("e"),
+                now=_NOW,
             )
             attempt = prepared_attempt.metadata.active_attempt
             assert attempt is not None
@@ -714,14 +710,12 @@ async def test_confirm_not_started_reconciliation_resumes_and_consumes_head_meta
             now=_NOW,
         )
         try:
-            prepared_attempt = (
-                await recorder.prepare_model_attempt(
-                    environment.durable_run_id,
-                    expected_version=environment.checkpoint.run_version,
-                    lease=setup_lease,
-                    external_request_digest=_digest("d"),
-                    now=_NOW,
-                )
+            prepared_attempt = await recorder.prepare_model_attempt(
+                environment.durable_run_id,
+                expected_version=environment.checkpoint.run_version,
+                lease=setup_lease,
+                external_request_digest=_digest("d"),
+                now=_NOW,
             )
             prepared_state = prepared_attempt.metadata.active_attempt
             assert prepared_state is not None
