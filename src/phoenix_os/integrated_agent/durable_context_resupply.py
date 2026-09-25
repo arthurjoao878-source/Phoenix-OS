@@ -127,7 +127,7 @@ class IntegratedDurableContextResupplyCoordinator:
         _require_timezone_aware(now)
         if clock is not None and not callable(clock):
             raise TypeError("clock must be callable or None")
-        selected_clock = (lambda: now) if clock is None else clock
+        selected_clock: Callable[[], datetime] = (lambda: now) if clock is None else clock
 
         lease = await self._lease_manager.acquire(
             run_id,
@@ -166,7 +166,7 @@ class IntegratedDurableContextResupplyCoordinator:
         if clock is not None and not callable(clock):
             raise TypeError("clock must be callable or None")
         _require_timezone_aware(now)
-        selected_clock = (lambda: now) if clock is None else clock
+        selected_clock: Callable[[], datetime] = (lambda: now) if clock is None else clock
 
         authoritative_lease = await self._lease_manager.require_current(lease, now=now)
         self._ensure_open()
