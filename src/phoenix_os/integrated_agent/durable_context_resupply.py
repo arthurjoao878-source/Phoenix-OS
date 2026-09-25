@@ -292,7 +292,6 @@ class IntegratedDurableContextResupplyCoordinator:
             raise RuntimeError("integrated context-resupply coordinator is closed")
 
 
-
 def _is_safe_cancelled_model_attempt(
     checkpoint: CheckpointEnvelope,
     waiting_reason: IntegratedWaitingReason | None,
