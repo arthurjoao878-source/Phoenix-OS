@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -65,7 +66,9 @@ from phoenix_os.integrated_agent.durable_context_resupply import (
     IntegratedDurableContextResupplyCoordinator,
 )
 from phoenix_os.integrated_agent.durable_projection import (
+    RFC0036_DURABLE_METADATA_PREFIX,
     decode_integrated_durable_projection,
+    merge_integrated_durable_projection,
 )
 from phoenix_os.integrated_agent.durable_recovery import (
     IntegratedDurableRecoveryHistoryValidator,
@@ -89,6 +92,9 @@ _DURABLE_RUN_ID = DurableAgentRunId(UUID(int=1002))
 _STEP_ID = AgentStepId(UUID(int=1003))
 _ROOT_ID = CheckpointId(UUID(int=1004))
 _PAUSE_ID = CheckpointId(UUID(int=1005))
+_RECOVERING_ID = CheckpointId(UUID(int=1006))
+_NORMALIZED_ID = CheckpointId(UUID(int=1007))
+_INVALID_RECOVERING_ID = CheckpointId(UUID(int=1008))
 
 
 class _AllowLiveRevalidator:
@@ -289,6 +295,196 @@ async def _setup() -> tuple[
         root,
         coordinator,
     )
+
+
+def _recovering_from_pause(
+    paused: CheckpointEnvelope,
+    *,
+    checkpoint_id: CheckpointId,
+    step_id: AgentStepId | None = None,
+) -> CheckpointEnvelope:
+    projection = decode_integrated_durable_projection(paused)
+    assert projection is not None
+    recovering_projection = replace(
+        projection,
+        orchestration_phase=IntegratedOrchestrationPhase.EXECUTING,
+        waiting_reason=None,
+        current_agent_step_id=None,
+        current_attempt_id=None,
+    )
+    unreserved = {
+        key: value
+        for key, value in paused.metadata.metadata.items()
+        if not key.startswith(RFC0036_DURABLE_METADATA_PREFIX)
+    }
+    return seal_checkpoint_envelope(
+        replace(
+            paused,
+            checkpoint_id=checkpoint_id,
+            sequence=paused.sequence.next(),
+            previous_digest=paused.digest,
+            run_version=paused.run_version.next(),
+            status=DurableRunStatus.RECOVERING,
+            step_id=step_id,
+            metadata=replace(
+                paused.metadata,
+                next_operation=CheckpointNextOperation.MODEL_TURN,
+                active_attempt=None,
+                metadata=merge_integrated_durable_projection(
+                    unreserved,
+                    recovering_projection,
+                ),
+            ),
+            created_at=_NOW + timedelta(seconds=1),
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_exact_rfc0039_recovering_orphan_normalizes_to_context_resupply() -> None:
+    (
+        _profile_value,
+        _task_value,
+        _admission_lease,
+        _provenance,
+        _guard,
+        _planner,
+        gate,
+        store,
+        _root,
+        coordinator,
+    ) = await _setup()
+    paused = await coordinator.pause_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="recovery-pause",
+        now=_NOW,
+    )
+    recovering = _recovering_from_pause(
+        paused,
+        checkpoint_id=_RECOVERING_ID,
+    )
+    writer = await store.lease_manager.acquire(
+        _DURABLE_RUN_ID,
+        owner_id="recovering-writer",
+        now=_NOW + timedelta(seconds=1),
+    )
+    try:
+        await store.append(
+            recovering,
+            expected_version=paused.run_version,
+            lease=writer,
+            now=_NOW + timedelta(seconds=1),
+        )
+    finally:
+        await store.lease_manager.release(
+            writer,
+            now=_NOW + timedelta(seconds=1),
+        )
+
+    normalizer = IntegratedDurableContextResupplyCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility_validator(),
+        resume_gate=gate,
+        checkpoint_id_factory=lambda: _NORMALIZED_ID,
+    )
+    lease = await store.lease_manager.acquire(
+        _DURABLE_RUN_ID,
+        owner_id="recovering-normalizer",
+        now=_NOW + timedelta(seconds=2),
+    )
+    try:
+        normalized = await normalizer.pause_candidate_with_lease(
+            _DURABLE_RUN_ID,
+            lease=lease,
+            now=_NOW + timedelta(seconds=2),
+        )
+    finally:
+        await store.lease_manager.release(
+            lease,
+            now=_NOW + timedelta(seconds=2),
+        )
+
+    projection = decode_integrated_durable_projection(normalized)
+    assert projection is not None
+    assert normalized.status is DurableRunStatus.PAUSED_OPERATOR
+    assert normalized.previous_digest == recovering.digest
+    assert normalized.sequence == recovering.sequence.next()
+    assert normalized.step_id == paused.step_id
+    assert normalized.metadata.active_attempt is None
+    assert projection.orchestration_phase is IntegratedOrchestrationPhase.WAITING
+    assert projection.waiting_reason is IntegratedWaitingReason.CONTEXT_RESUPPLY
+    assert projection.last_safe_boundary == decode_integrated_durable_projection(
+        paused
+    ).last_safe_boundary
+
+
+@pytest.mark.asyncio
+async def test_non_exact_recovering_checkpoint_is_rejected() -> None:
+    (
+        _profile_value,
+        _task_value,
+        _admission_lease,
+        _provenance,
+        _guard,
+        _planner,
+        gate,
+        store,
+        _root,
+        coordinator,
+    ) = await _setup()
+    paused = await coordinator.pause_candidate(
+        _DURABLE_RUN_ID,
+        owner_id="invalid-recovery-pause",
+        now=_NOW,
+    )
+    invalid = _recovering_from_pause(
+        paused,
+        checkpoint_id=_INVALID_RECOVERING_ID,
+        step_id=_STEP_ID,
+    )
+    writer = await store.lease_manager.acquire(
+        _DURABLE_RUN_ID,
+        owner_id="invalid-recovering-writer",
+        now=_NOW + timedelta(seconds=1),
+    )
+    try:
+        await store.append(
+            invalid,
+            expected_version=paused.run_version,
+            lease=writer,
+            now=_NOW + timedelta(seconds=1),
+        )
+    finally:
+        await store.lease_manager.release(
+            writer,
+            now=_NOW + timedelta(seconds=1),
+        )
+
+    normalizer = IntegratedDurableContextResupplyCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility_validator(),
+        resume_gate=gate,
+        checkpoint_id_factory=lambda: _NORMALIZED_ID,
+    )
+    lease = await store.lease_manager.acquire(
+        _DURABLE_RUN_ID,
+        owner_id="invalid-recovering-normalizer",
+        now=_NOW + timedelta(seconds=2),
+    )
+    try:
+        with pytest.raises(AgentStateConflictError):
+            await normalizer.pause_candidate_with_lease(
+                _DURABLE_RUN_ID,
+                lease=lease,
+                now=_NOW + timedelta(seconds=2),
+            )
+    finally:
+        await store.lease_manager.release(
+            lease,
+            now=_NOW + timedelta(seconds=2),
+        )
 
 
 @pytest.mark.asyncio
