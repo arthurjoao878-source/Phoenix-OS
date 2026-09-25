@@ -186,6 +186,23 @@ async def test_restore_live_state_reuses_exact_reviewed_identity_and_releases_as
     assert planner.current_revision(_RUN_ID) is None
     assert planner.current_plan(_RUN_ID) is None
 
+    restored_again = await restore_integrated_durable_recovery_live_state(
+        admission=admission,
+        execution_guard=guard,
+        planner=planner,
+        task=task,
+        request=effective_request,
+        provenance=provenance,
+        budget_usage=IntegratedBudgetUsage(),
+        plan=None,
+    )
+    try:
+        assert restored_again.binding == expected_binding
+        assert guard.current_provenance(_RUN_ID) == provenance
+        assert planner.current_revision(_RUN_ID) == 0
+    finally:
+        await restored_again.release()
+
 
 @pytest.mark.asyncio
 async def test_restore_live_state_restores_exact_reviewed_plan_and_budget() -> None:
@@ -232,7 +249,11 @@ async def test_restore_live_state_rolls_back_admission_when_guard_rejects() -> N
 
     admission = _admission(profile)
     guard = IntegratedAgentExecutionGuard(profile, clock=lambda: _NOW)
-    guard.begin_run(task, effective_request)
+    different_task = IntegratedTaskRequest(
+        task_id=IntegratedTaskId(UUID(int=4091)),
+        objective="Different immutable task identity.",
+    )
+    guard.begin_run(different_task, effective_request)
     guard.release_run(_RUN_ID)
     planner = IntegratedPlanner(profile, provenance_provider=guard)
 
@@ -264,8 +285,15 @@ async def test_restore_live_state_rolls_back_guard_and_admission_when_planner_re
     admission = _admission(profile)
     guard = IntegratedAgentExecutionGuard(profile, clock=lambda: _NOW)
     planner = IntegratedPlanner(profile, provenance_provider=guard)
-    planner.begin_run(binding)
+    different_task = IntegratedTaskRequest(
+        task_id=IntegratedTaskId(UUID(int=4092)),
+        objective="Different immutable planner binding.",
+    )
+    different_admission = _admission(profile)
+    different_lease = await different_admission.admit(different_task, effective_request)
+    planner.begin_run(different_lease.binding)
     planner.release_run(_RUN_ID)
+    await different_lease.release()
 
     with pytest.raises(IntegratedAgentRejectedError):
         await restore_integrated_durable_recovery_live_state(
