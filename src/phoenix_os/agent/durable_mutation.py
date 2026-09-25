@@ -158,7 +158,10 @@ async def _reread_authoritative_deferring_cancellation(
     store: DurableRunStore,
     run_id: DurableAgentRunId,
 ) -> tuple[CheckpointEnvelope | None, asyncio.CancelledError | None]:
-    task = asyncio.create_task(store.get_current(run_id))
+    async def reread() -> CheckpointEnvelope | None:
+        return await store.get_current(run_id)
+
+    task: asyncio.Task[CheckpointEnvelope | None] = asyncio.create_task(reread())
     pending_cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
