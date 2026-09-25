@@ -183,6 +183,7 @@ async def restore_integrated_durable_recovery_live_state(
             raise primary from cleanup_error
         raise
 
+
 async def _release_live_state_components(
     *,
     admission_lease: IntegratedAgentAdmissionLease,
@@ -211,4 +212,3 @@ async def _release_live_state_components(
             failure = exception
     if failure is not None:
         raise failure
-
