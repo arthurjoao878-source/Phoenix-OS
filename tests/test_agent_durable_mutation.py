@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -206,6 +207,79 @@ class _ReadUnavailableStore(_BeforeMutationFailureStore):
         raise RuntimeError("synthetic authoritative reread failure")
 
 
+class _PrecommitCancellationStore(InMemoryDurableRunStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.append_calls = 0
+
+    async def append(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+    ) -> CheckpointEnvelope:
+        del checkpoint, expected_version, lease, now
+        self.append_calls += 1
+        raise asyncio.CancelledError()
+
+
+class _PostcommitCancellationStore(InMemoryDurableRunStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.append_calls = 0
+
+    async def append(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+    ) -> CheckpointEnvelope:
+        self.append_calls += 1
+        await super().append(
+            checkpoint,
+            expected_version=expected_version,
+            lease=lease,
+            now=now,
+        )
+        raise asyncio.CancelledError()
+
+
+class _BlockingRereadStore(InMemoryDurableRunStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.append_calls = 0
+        self.reread_started = asyncio.Event()
+        self.allow_reread = asyncio.Event()
+
+    async def append(
+        self,
+        checkpoint: CheckpointEnvelope,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+    ) -> CheckpointEnvelope:
+        self.append_calls += 1
+        return await super().append(
+            checkpoint,
+            expected_version=expected_version,
+            lease=lease,
+            now=now,
+        )
+
+    async def get_current(
+        self,
+        run_id: DurableAgentRunId,
+    ) -> CheckpointEnvelope | None:
+        self.reread_started.set()
+        await self.allow_reread.wait()
+        return await super().get_current(run_id)
+
+
 class _FaultInjectingSQLiteStore(SQLiteDurableRunStore):
     def __init__(
         self,
@@ -252,6 +326,72 @@ async def test_precommit_failure_is_confirmed_not_committed_without_retry() -> N
     assert resolution.authoritative == current
     assert resolution.append_acknowledged is False
     assert store.append_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_precommit_cancellation_rereads_without_second_append() -> None:
+    store = _PrecommitCancellationStore()
+    current, lease = await _seed(store)
+    intended = _successor(current)
+
+    with pytest.raises(asyncio.CancelledError):
+        await resolve_durable_checkpoint_append(
+            store,
+            current=current,
+            intended=intended,
+            lease=lease,
+            now=MUTATION_TIME,
+        )
+
+    assert store.append_calls == 1
+    assert await store.get_current(RUN_ID) == current
+
+
+@pytest.mark.asyncio
+async def test_postcommit_cancellation_rereads_without_second_append() -> None:
+    store = _PostcommitCancellationStore()
+    current, lease = await _seed(store)
+    intended = _successor(current)
+
+    with pytest.raises(asyncio.CancelledError):
+        await resolve_durable_checkpoint_append(
+            store,
+            current=current,
+            intended=intended,
+            lease=lease,
+            now=MUTATION_TIME,
+        )
+
+    assert store.append_calls == 1
+    assert await store.get_current(RUN_ID) == intended
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_authoritative_reread_waits_for_reread() -> None:
+    store = _BlockingRereadStore()
+    current, lease = await _seed(store)
+    intended = _successor(current)
+
+    task = asyncio.create_task(
+        resolve_durable_checkpoint_append(
+            store,
+            current=current,
+            intended=intended,
+            lease=lease,
+            now=MUTATION_TIME,
+        )
+    )
+    await asyncio.wait_for(store.reread_started.wait(), timeout=1)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert task.done() is False
+
+    store.allow_reread.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert store.append_calls == 1
+    assert await store.get_current(RUN_ID) == intended
 
 
 @pytest.mark.asyncio

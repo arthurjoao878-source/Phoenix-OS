@@ -3,23 +3,27 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from phoenix_os.agent.contracts import AgentRunRequest
+from phoenix_os.agent.durable_attempts import DurablePreparedAttemptRecoveryRecorder
 from phoenix_os.agent.durable_contracts import (
     CheckpointEnvelope,
     CheckpointNextOperation,
     DurableAgentRunId,
     DurableLease,
     DurableRunStatus,
+    ExecutionAttemptKind,
+    ExecutionAttemptStatus,
+    IndeterminateReason,
     RecoveryDisposition,
-    RecoveryPoint,
     ResumeRequest,
 )
 from phoenix_os.agent.durable_lease import DurableLeaseManager
 from phoenix_os.agent.durable_metadata import validate_durable_checkpoint_history
 from phoenix_os.agent.durable_recovery import (
-    classify_recovery_checkpoint,
+    DurableSameLeaseIndeterminateRecoveryCoordinator,
     validate_authoritative_checkpoint_history,
 )
 from phoenix_os.control_plane.task_runtime_bridge import (
@@ -50,6 +54,10 @@ from phoenix_os.integrated_agent.durable_projection import (
 from phoenix_os.integrated_agent.durable_recovery import IntegratedDurableResumeState
 from phoenix_os.integrated_agent.durable_run import integrated_durable_run_id
 from phoenix_os.policy import PrincipalType
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class TaskResumePreparationError(RuntimeError):
@@ -115,15 +123,33 @@ class PreparedSameLeaseDurableTaskResume:
         return self._released
 
     async def release(self, *, now: datetime) -> None:
-        """Release restored live state first and the same durable lease exactly once."""
+        """Release restored live state and only the still-current owned durable lease."""
 
         _require_timezone_aware(now)
         async with self._lock:
             if self._released:
                 return
-            await self._live_state.release()
-            await self._lease_manager.release(self._durable_lease, now=now)
+            cleanup = asyncio.create_task(
+                _release_prepared_scope(
+                    lease_manager=self._lease_manager,
+                    durable_lease=self._durable_lease,
+                    live_state=self._live_state,
+                    now=now,
+                )
+            )
+            pending_cancellation: asyncio.CancelledError | None = None
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError as exception:
+                    if pending_cancellation is None:
+                        pending_cancellation = exception
+                except BaseException:
+                    break
+            cleanup.result()
             self._released = True
+            if pending_cancellation is not None:
+                raise pending_cancellation
 
 
 async def prepare_same_lease_durable_task_resume(
@@ -139,6 +165,7 @@ async def prepare_same_lease_durable_task_resume(
     budget_usage: IntegratedBudgetUsage,
     plan: NormalizedPlan | None,
     now: datetime,
+    clock: Callable[[], datetime] | None = None,
 ) -> PreparedSameLeaseDurableTaskResume:
     """Prepare an existing paused run for continuation without executing it."""
 
@@ -165,6 +192,9 @@ async def prepare_same_lease_durable_task_resume(
     if plan is not None and not isinstance(plan, NormalizedPlan):
         raise TypeError("plan must be NormalizedPlan or None")
     _require_timezone_aware(now)
+    if clock is not None and not callable(clock):
+        raise TypeError("clock must be callable or None")
+    selected_clock: Callable[[], datetime] = (lambda: now) if clock is None else clock
 
     planner = owner.planner
     if planner is None:
@@ -194,47 +224,94 @@ async def prepare_same_lease_durable_task_resume(
     )
     live_state: IntegratedDurableRecoveryLiveStateLease | None = None
     try:
-        authoritative_lease = await lease_manager.require_current(
-            durable_lease,
-            now=now,
-        )
+        authoritative_lease = await lease_manager.require_current(durable_lease, now=now)
         if authoritative_lease != durable_lease:
             raise TaskResumePreparationError()
-
         checkpoint = await owner.durable_stack.store.get_current(durable_run_id)
         if checkpoint is None:
             raise TaskResumePreparationError()
-        _require_resumable_checkpoint(
-            checkpoint,
-            durable_run_id=durable_run_id,
-            request=request,
-        )
-
         history = await owner.durable_stack.store.list_history(
             durable_run_id,
             limit=checkpoint.sequence.value,
         )
         validate_authoritative_checkpoint_history(checkpoint, history)
-        validate_durable_checkpoint_history(
-            support.history_validator,
-            checkpoint,
-            history,
+        validate_durable_checkpoint_history(support.history_validator, checkpoint, history)
+        projection = decode_integrated_durable_projection(checkpoint)
+        if projection is None:
+            raise TaskResumePreparationError()
+        _require_reviewed_binding_inputs(
+            owner=owner,
+            checkpoint=checkpoint,
+            projection=projection,
+            task=task,
+            request=request,
+            provenance=provenance,
+            budget_usage=budget_usage,
+            plan=plan,
         )
-
         compatibility = owner.durable_stack.compatibility_validator.validate(checkpoint)
         if compatibility.agent_id != checkpoint.metadata.agent_id or not compatibility.compatible:
             raise TaskResumePreparationError()
 
-        recovery_point, recovery_disposition = classify_recovery_checkpoint(
-            checkpoint,
-            now=now,
-        )
+        attempt = checkpoint.metadata.active_attempt
         if (
-            recovery_point is not RecoveryPoint.OPERATOR_PAUSE
-            or recovery_disposition is not RecoveryDisposition.PAUSE_OPERATOR
+            checkpoint.status is DurableRunStatus.ACTIVE
+            and checkpoint.metadata.next_operation is CheckpointNextOperation.MODEL_TURN
+            and attempt is not None
+            and attempt.kind is ExecutionAttemptKind.MODEL_TURN
+            and attempt.status is ExecutionAttemptStatus.PREPARED
+            and attempt.started_at is None
         ):
+            recorder = owner.durable_stack.attempt_recorder
+            if not isinstance(recorder, DurablePreparedAttemptRecoveryRecorder):
+                raise TaskResumePreparationError()
+            mutation_now = _clock_now(selected_clock, not_before=now)
+            checkpoint = await recorder.cancel_prepared_not_started(
+                durable_run_id,
+                expected_version=checkpoint.run_version,
+                lease=authoritative_lease,
+                now=mutation_now,
+            )
+            now = mutation_now
+        elif (
+            checkpoint.status is DurableRunStatus.ACTIVE
+            and checkpoint.metadata.next_operation is CheckpointNextOperation.MODEL_TURN
+            and attempt is not None
+            and attempt.kind is ExecutionAttemptKind.MODEL_TURN
+            and attempt.status is ExecutionAttemptStatus.STARTED
+        ):
+            recovery = owner.durable_stack.recovery_coordinator
+            if not isinstance(recovery, DurableSameLeaseIndeterminateRecoveryCoordinator):
+                raise TaskResumePreparationError()
+            assessment = await recovery.persist_indeterminate_candidate_with_lease(
+                durable_run_id,
+                lease=authoritative_lease,
+                now=now,
+                clock=selected_clock,
+                reason=IndeterminateReason.PROVIDER_STATUS_UNKNOWN,
+            )
+            if (
+                assessment.status is not DurableRunStatus.INDETERMINATE_MODEL
+                or assessment.disposition is not RecoveryDisposition.PAUSE_OPERATOR
+            ):
+                raise TaskResumePreparationError()
             raise TaskResumePreparationError()
 
+        normalization_now = _clock_now(selected_clock, not_before=now)
+        checkpoint = await support.context_resupply.pause_candidate_with_lease(
+            durable_run_id,
+            lease=authoritative_lease,
+            now=normalization_now,
+            clock=selected_clock,
+        )
+        now = normalization_now
+        _require_resumable_checkpoint(checkpoint, durable_run_id=durable_run_id, request=request)
+        history = await owner.durable_stack.store.list_history(
+            durable_run_id,
+            limit=checkpoint.sequence.value,
+        )
+        validate_authoritative_checkpoint_history(checkpoint, history)
+        validate_durable_checkpoint_history(support.history_validator, checkpoint, history)
         projection = decode_integrated_durable_projection(checkpoint)
         if projection is None:
             raise TaskResumePreparationError()
@@ -247,7 +324,6 @@ async def prepare_same_lease_durable_task_resume(
             budget_usage=budget_usage,
             plan=plan,
         )
-
         live_state = await restore_integrated_durable_recovery_live_state(
             admission=owner.admission,
             execution_guard=owner.execution_guard,
@@ -258,30 +334,27 @@ async def prepare_same_lease_durable_task_resume(
             budget_usage=budget_usage,
             plan=plan,
         )
-
+        gate_now = _clock_now(selected_clock, not_before=now)
         resume_state = await support.resume_gate.assess_resume_state(
             checkpoint,
-            now=now,
+            now=gate_now,
         )
         if resume_state is not IntegratedDurableResumeState.READY:
             raise TaskResumePreparationError()
-
+        renew_now = _clock_now(selected_clock, not_before=gate_now)
+        durable_lease = await lease_manager.renew(durable_lease, now=renew_now)
+        authorization_now = _clock_now(selected_clock, not_before=renew_now)
         resume_request = await authorize_operator_durable_task_resume(
             checkpoint=checkpoint,
             lease_manager=lease_manager,
             lease=durable_lease,
             authority=authority,
             actor_id=authority.context.principal,
-            now=now,
+            now=authorization_now,
         )
-
-        authoritative_lease = await lease_manager.require_current(
-            durable_lease,
-            now=now,
-        )
-        if authoritative_lease != durable_lease:
+        final_now = _clock_now(selected_clock, not_before=authorization_now)
+        if await lease_manager.require_current(durable_lease, now=final_now) != durable_lease:
             raise TaskResumePreparationError()
-
         return PreparedSameLeaseDurableTaskResume(
             lease_manager=lease_manager,
             durable_lease=durable_lease,
@@ -289,13 +362,70 @@ async def prepare_same_lease_durable_task_resume(
             resume_request=resume_request,
             live_state=live_state,
         )
-    except BaseException:
+    except BaseException as primary:
+        cleanup_now: datetime | None = None
         try:
-            if live_state is not None:
-                await live_state.release()
-        finally:
-            await lease_manager.release(durable_lease, now=now)
+            candidate_now = selected_clock()
+            _require_timezone_aware(candidate_now)
+            if candidate_now >= now:
+                cleanup_now = candidate_now
+        except BaseException:
+            cleanup_now = None
+
+        cleanup = asyncio.create_task(
+            _release_prepared_scope(
+                lease_manager=lease_manager,
+                durable_lease=durable_lease,
+                live_state=live_state,
+                now=cleanup_now,
+            )
+        )
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except BaseException:
+                continue
+        try:
+            cleanup.result()
+        except BaseException as cleanup_error:
+            raise primary from cleanup_error
         raise
+
+
+def _require_reviewed_binding_inputs(
+    *,
+    owner: ServerOwnedDurableIntegratedTaskRuntime,
+    checkpoint: CheckpointEnvelope,
+    projection: IntegratedOrchestrationCheckpointProjection,
+    task: IntegratedTaskRequest,
+    request: AgentRunRequest,
+    provenance: IntegratedDataProvenance,
+    budget_usage: IntegratedBudgetUsage,
+    plan: NormalizedPlan | None,
+) -> None:
+    if (
+        checkpoint.agent_run_id != request.run_id
+        or checkpoint.metadata.agent_id != owner.profile.agent_id
+        or projection.task_id != task.task_id
+        or projection.task_digest != task.digest
+        or projection.execution_profile_id != owner.profile.profile_id
+        or projection.execution_profile_generation != owner.profile.generation
+        or projection.budget_extension_usage != budget_usage
+        or projection.data_flow_context_digest is None
+        or projection.data_flow_context_digest != integrated_data_flow_context_digest(provenance)
+    ):
+        raise TaskResumePreparationError()
+    expected_revision = projection.plan_revision
+    if expected_revision is None:
+        if plan is not None or projection.plan_digest is not None:
+            raise TaskResumePreparationError()
+    elif (
+        plan is None
+        or plan.task_id != task.task_id
+        or plan.revision != expected_revision
+        or plan.digest != projection.plan_digest
+    ):
+        raise TaskResumePreparationError()
 
 
 def _require_resumable_checkpoint(
@@ -361,3 +491,36 @@ def _require_timezone_aware(value: datetime) -> None:
         raise TypeError("now must be a datetime")
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
+
+
+async def _release_prepared_scope(
+    *,
+    lease_manager: DurableLeaseManager,
+    durable_lease: DurableLease,
+    live_state: IntegratedDurableRecoveryLiveStateLease | None,
+    now: datetime | None,
+) -> None:
+    failure: BaseException | None = None
+    if live_state is not None:
+        try:
+            await live_state.release()
+        except BaseException as exception:
+            failure = exception
+    if now is not None:
+        try:
+            current = await lease_manager.get_current(durable_lease.run_id, now=now)
+            if current == durable_lease:
+                await lease_manager.release(durable_lease, now=now)
+        except BaseException as exception:
+            if failure is None:
+                failure = exception
+    if failure is not None:
+        raise failure
+
+
+def _clock_now(clock: Callable[[], datetime], *, not_before: datetime) -> datetime:
+    value = clock()
+    _require_timezone_aware(value)
+    if value < not_before:
+        raise TaskResumePreparationError()
+    return value

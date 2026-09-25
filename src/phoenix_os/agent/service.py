@@ -369,8 +369,14 @@ class AgentService:
         ):
             raise TypeError("_restored_budget must be AgentBudgetSnapshot or None")
 
-        started_at, started_clock = await self._begin(request, context, token)
+        started_at, started_clock, active = await self._begin(request, token)
         try:
+            await self._signal_run(
+                request,
+                context,
+                outcome=AgentRunOutcome.STARTED,
+                active=active,
+            )
             validation_error = _validate_configured_request(request, self._configuration)
             if validation_error is not None:
                 result = AgentRunResult(
@@ -450,9 +456,8 @@ class AgentService:
     async def _begin(
         self,
         request: AgentRunRequest,
-        context: SecurityContext,
         cancellation: AgentCancellationToken,
-    ) -> tuple[datetime, float]:
+    ) -> tuple[datetime, float, int]:
         task = asyncio.current_task()
         if task is None:  # pragma: no cover - asyncio invariant
             raise RuntimeError("agent run requires an asyncio task")
@@ -469,13 +474,7 @@ class AgentService:
             self._started += 1
             self._last_started_at = now
             active = len(self._active)
-        await self._signal_run(
-            request,
-            context,
-            outcome=AgentRunOutcome.STARTED,
-            active=active,
-        )
-        return now, time.perf_counter()
+        return now, time.perf_counter(), active
 
     async def _finish(
         self,

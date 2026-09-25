@@ -62,11 +62,28 @@ class IntegratedDurableRecoveryLiveStateLease:
             if self._released:
                 return
 
-            run_id = self.binding.run_id
-            self._planner.release_run(run_id)
-            self._execution_guard.release_run(run_id)
-            await self._admission_lease.release()
+            cleanup = asyncio.create_task(
+                _release_live_state_components(
+                    admission_lease=self._admission_lease,
+                    execution_guard=self._execution_guard,
+                    planner=self._planner,
+                    release_guard=True,
+                    release_planner=True,
+                )
+            )
+            pending_cancellation: asyncio.CancelledError | None = None
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError as exception:
+                    if pending_cancellation is None:
+                        pending_cancellation = exception
+                except BaseException:
+                    break
+            cleanup.result()
             self._released = True
+            if pending_cancellation is not None:
+                raise pending_cancellation
 
     async def __aenter__(self) -> Self:
         if self._released:
@@ -124,7 +141,6 @@ async def restore_integrated_durable_recovery_live_state(
     admission_lease = await admission.restore_run(task, request)
     guard_restored = False
     planner_restored = False
-    run_id = admission_lease.binding.run_id
 
     try:
         execution_guard.restore_run(
@@ -143,10 +159,56 @@ async def restore_integrated_durable_recovery_live_state(
             execution_guard=execution_guard,
             planner=planner,
         )
-    except Exception:
-        if planner_restored:
-            planner.release_run(run_id)
-        if guard_restored:
-            execution_guard.release_run(run_id)
-        await admission_lease.release()
+    except BaseException as primary:
+        cleanup = asyncio.create_task(
+            _release_live_state_components(
+                admission_lease=admission_lease,
+                execution_guard=execution_guard,
+                planner=planner,
+                release_guard=guard_restored,
+                release_planner=planner_restored,
+            )
+        )
+        try:
+            await asyncio.shield(cleanup)
+        except BaseException:
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except BaseException:
+                    continue
+        try:
+            cleanup.result()
+        except BaseException as cleanup_error:
+            raise primary from cleanup_error
         raise
+
+
+async def _release_live_state_components(
+    *,
+    admission_lease: IntegratedAgentAdmissionLease,
+    execution_guard: IntegratedAgentExecutionGuard,
+    planner: IntegratedPlanner,
+    release_guard: bool,
+    release_planner: bool,
+) -> None:
+    run_id = admission_lease.binding.run_id
+    failure: BaseException | None = None
+    if release_planner:
+        try:
+            planner.release_run(run_id)
+        except BaseException as exception:
+            failure = exception
+    if release_guard:
+        try:
+            execution_guard.release_run(run_id)
+        except BaseException as exception:
+            if failure is None:
+                failure = exception
+    try:
+        await admission_lease.release()
+    except BaseException as exception:
+        if failure is None:
+            failure = exception
+    if failure is not None:
+        raise failure

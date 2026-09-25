@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 
 from phoenix_os.agent.durable_contracts import (
     CheckpointEnvelope,
+    DurableAgentRunId,
     DurableLease,
     DurableRunStore,
 )
@@ -85,6 +87,7 @@ async def resolve_durable_checkpoint_append(
     if lease.run_id != current.durable_run_id:
         raise AgentStateConflictError()
 
+    pending_cancellation: asyncio.CancelledError | None = None
     try:
         await store.append(
             intended,
@@ -92,30 +95,34 @@ async def resolve_durable_checkpoint_append(
             lease=lease,
             now=now,
         )
+    except asyncio.CancelledError as exception:
+        pending_cancellation = exception
+        append_acknowledged = False
     except Exception:
         append_acknowledged = False
     else:
         append_acknowledged = True
 
-    try:
-        authoritative = await store.get_current(current.durable_run_id)
-    except Exception:
-        return DurableCheckpointMutationResolution(
-            outcome=DurableMutationOutcome.COMMIT_OUTCOME_UNKNOWN,
-            authoritative=None,
-            append_acknowledged=append_acknowledged,
-        )
+    authoritative, reread_cancellation = await _reread_authoritative_deferring_cancellation(
+        store,
+        current.durable_run_id,
+    )
+    if pending_cancellation is None:
+        pending_cancellation = reread_cancellation
 
     outcome = classify_durable_checkpoint_mutation(
         current,
         intended,
         authoritative,
     )
-    return DurableCheckpointMutationResolution(
+    resolution = DurableCheckpointMutationResolution(
         outcome=outcome,
         authoritative=authoritative,
         append_acknowledged=append_acknowledged,
     )
+    if pending_cancellation is not None:
+        raise pending_cancellation
+    return resolution
 
 
 async def append_durable_checkpoint_confirmed(
@@ -145,6 +152,34 @@ async def append_durable_checkpoint_confirmed(
     if resolution.authoritative is None:
         raise AgentServiceUnavailableError()
     raise AgentStateConflictError()
+
+
+async def _reread_authoritative_deferring_cancellation(
+    store: DurableRunStore,
+    run_id: DurableAgentRunId,
+) -> tuple[CheckpointEnvelope | None, asyncio.CancelledError | None]:
+    async def reread() -> CheckpointEnvelope | None:
+        return await store.get_current(run_id)
+
+    task: asyncio.Task[CheckpointEnvelope | None] = asyncio.create_task(reread())
+    pending_cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exception:
+            if pending_cancellation is None:
+                pending_cancellation = exception
+        except Exception:
+            break
+    try:
+        authoritative = task.result()
+    except asyncio.CancelledError as exception:
+        if pending_cancellation is None:
+            pending_cancellation = exception
+        authoritative = None
+    except Exception:
+        authoritative = None
+    return authoritative, pending_cancellation
 
 
 def _require_exact_successor(

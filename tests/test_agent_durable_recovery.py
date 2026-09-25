@@ -411,6 +411,46 @@ async def test_coordinator_assesses_bounded_sorted_page_and_releases_leases() ->
     assert await store.lease_manager.get_current(last_run, now=RECOVERY_TIME) is None
 
 
+async def test_same_lease_started_model_is_marked_indeterminate_without_reacquire() -> None:
+    store = InMemoryDurableRunStore()
+    current = _checkpoint(
+        active_attempt=_model_attempt(ExecutionAttemptStatus.STARTED),
+    )
+    await store.create(current)
+    lease = await store.lease_manager.acquire(
+        DURABLE_RUN_ID,
+        owner_id="same-lease-recovery",
+        now=RECOVERY_TIME,
+    )
+    coordinator = StartupDurableRecoveryCoordinator(
+        store=store,
+        lease_manager=store.lease_manager,
+        compatibility_validator=_compatibility_validator(),
+    )
+    mutation_time = RECOVERY_TIME + timedelta(seconds=1)
+
+    assessment = await coordinator.persist_indeterminate_candidate_with_lease(
+        DURABLE_RUN_ID,
+        lease=lease,
+        now=RECOVERY_TIME,
+        clock=lambda: mutation_time,
+        reason=IndeterminateReason.PROVIDER_STATUS_UNKNOWN,
+    )
+
+    authoritative = await store.get_current(DURABLE_RUN_ID)
+    assert authoritative is not None
+    attempt = authoritative.metadata.active_attempt
+    assert attempt is not None
+    assert authoritative.status is DurableRunStatus.INDETERMINATE_MODEL
+    assert authoritative.metadata.next_operation is CheckpointNextOperation.OPERATOR_REVIEW
+    assert attempt.status is ExecutionAttemptStatus.INDETERMINATE
+    assert attempt.indeterminate_reason is IndeterminateReason.PROVIDER_STATUS_UNKNOWN
+    assert assessment.status is DurableRunStatus.INDETERMINATE_MODEL
+    assert assessment.disposition is RecoveryDisposition.PAUSE_OPERATOR
+    assert await store.lease_manager.require_current(lease, now=mutation_time) == lease
+    assert lease.generation.value == 1
+
+
 async def test_coordinator_uses_authoritative_post_acquisition_checkpoint() -> None:
     manager = _AppendOnAcquireLeaseManager()
     store = InMemoryDurableRunStore(lease_manager=manager)

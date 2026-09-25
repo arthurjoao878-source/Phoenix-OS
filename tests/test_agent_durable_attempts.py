@@ -304,6 +304,62 @@ async def test_prepare_model_records_exact_content_free_checkpoint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancel_prepared_not_started_preserves_attempt_identity() -> None:
+    store, lease, recorder, prepared = await _prepared_model()
+    before = prepared.metadata.active_attempt
+    assert before is not None
+
+    cancelled = await recorder.cancel_prepared_not_started(
+        DURABLE_RUN_ID,
+        expected_version=prepared.run_version,
+        lease=lease,
+        now=START_TIME,
+    )
+    attempt = cancelled.metadata.active_attempt
+
+    assert attempt is not None
+    assert cancelled.status is DurableRunStatus.PAUSED_OPERATOR
+    assert cancelled.metadata.next_operation is CheckpointNextOperation.MODEL_TURN
+    assert cancelled.step_id == prepared.step_id
+    assert attempt.attempt_id == before.attempt_id
+    assert attempt.kind is ExecutionAttemptKind.MODEL_TURN
+    assert attempt.status is ExecutionAttemptStatus.CANCELLED
+    assert attempt.prepared_at == before.prepared_at
+    assert attempt.started_at is None
+    assert attempt.completed_at == START_TIME
+    assert attempt.external_request_digest == before.external_request_digest
+    assert await store.get_current(DURABLE_RUN_ID) == cancelled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "run_status"),
+    [
+        (ExecutionAttemptStatus.STARTED, DurableRunStatus.ACTIVE),
+        (ExecutionAttemptStatus.FAILED, DurableRunStatus.ACTIVE),
+        (ExecutionAttemptStatus.PREPARED, DurableRunStatus.PAUSED_OPERATOR),
+    ],
+)
+async def test_cancel_prepared_not_started_rejects_non_exact_state(
+    status: ExecutionAttemptStatus,
+    run_status: DurableRunStatus,
+) -> None:
+    current = _checkpoint(
+        status=run_status,
+        active_attempt=_attempt(status),
+    )
+    _store, lease, recorder, _ = await _created(checkpoint=current)
+
+    with pytest.raises(AgentStateConflictError):
+        await recorder.cancel_prepared_not_started(
+            DURABLE_RUN_ID,
+            expected_version=current.run_version,
+            lease=lease,
+            now=COMPLETE_TIME + timedelta(seconds=1),
+        )
+
+
+@pytest.mark.asyncio
 async def test_prepare_tool_records_exact_call_effect_and_digest() -> None:
     _store, _lease, _recorder_instance, prepared = await _prepared_tool()
     attempt = prepared.metadata.active_attempt

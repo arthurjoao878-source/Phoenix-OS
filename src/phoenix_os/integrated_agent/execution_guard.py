@@ -138,6 +138,8 @@ class IntegratedAgentExecutionGuard:
         self._clock = clock
         self._active: dict[AgentRunId, _IntegratedExecutionRunState] = {}
         self._seen: set[AgentRunId] = set()
+        self._seen_tasks: dict[AgentRunId, IntegratedTaskRequest] = {}
+        self._seen_requests: dict[AgentRunId, AgentRunRequest] = {}
         self._failures: dict[AgentRunId, IntegratedFailureClass] = {}
         self._closed = False
         self._lock = RLock()
@@ -177,6 +179,8 @@ class IntegratedAgentExecutionGuard:
             if request.run_id in self._seen or request.run_id in self._active:
                 raise IntegratedAgentStaleError("integrated execution run id cannot be reused")
             self._seen.add(request.run_id)
+            self._seen_tasks[request.run_id] = task
+            self._seen_requests[request.run_id] = request
             self._active[request.run_id] = state
 
     def restore_run(
@@ -219,9 +223,17 @@ class IntegratedAgentExecutionGuard:
         )
         with self._lock:
             self._require_open()
-            if request.run_id in self._seen or request.run_id in self._active:
-                raise IntegratedAgentStaleError("integrated execution run id cannot be reused")
+            if request.run_id in self._active:
+                raise IntegratedAgentStaleError("integrated execution run id is already active")
+            seen_task = self._seen_tasks.get(request.run_id)
+            seen_request = self._seen_requests.get(request.run_id)
+            if seen_task is not None and seen_task != task:
+                raise IntegratedAgentStaleError("integrated execution task identity changed")
+            if seen_request is not None and seen_request != request:
+                raise IntegratedAgentStaleError("integrated execution request identity changed")
             self._seen.add(request.run_id)
+            self._seen_tasks.setdefault(request.run_id, task)
+            self._seen_requests.setdefault(request.run_id, request)
             self._active[request.run_id] = state
 
     def release_run(self, run_id: AgentRunId) -> None:

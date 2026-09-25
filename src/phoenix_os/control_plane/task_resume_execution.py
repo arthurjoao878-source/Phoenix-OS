@@ -66,6 +66,7 @@ async def execute_same_lease_durable_task_resume(
         budget_usage=budget_usage,
         plan=plan,
         now=now,
+        clock=clock,
     )
     try:
         activation = await activate_prepared_same_lease_durable_task_resume(
@@ -73,7 +74,8 @@ async def execute_same_lease_durable_task_resume(
             support=support,
             prepared=prepared,
             authority=authority,
-            now=now,
+            now=clock(),
+            clock=clock,
         )
         if (
             activation.prepared is not prepared
@@ -85,7 +87,7 @@ async def execute_same_lease_durable_task_resume(
             raise RuntimeError("same-lease durable resume activation continuity failed")
 
         if support.authority_freshness is None:
-            return await owner.coordinator.continue_same_lease(
+            result = await owner.coordinator.continue_same_lease(
                 request,
                 prepared.live_state.binding,
                 authority.context,
@@ -94,15 +96,23 @@ async def execute_same_lease_durable_task_resume(
                 restored_budget=activation.checkpoint.metadata.budget,
                 cancellation=cancellation,
             )
-        return await owner.coordinator.continue_same_lease(
-            request,
-            prepared.live_state.binding,
-            authority.context,
-            active_checkpoint=activation.checkpoint,
-            lease=prepared.durable_lease,
-            restored_budget=activation.checkpoint.metadata.budget,
-            cancellation=cancellation,
-            _authority_freshness=support.authority_freshness,
-        )
-    finally:
+        else:
+            result = await owner.coordinator.continue_same_lease(
+                request,
+                prepared.live_state.binding,
+                authority.context,
+                active_checkpoint=activation.checkpoint,
+                lease=prepared.durable_lease,
+                restored_budget=activation.checkpoint.metadata.budget,
+                cancellation=cancellation,
+                _authority_freshness=support.authority_freshness,
+            )
+    except BaseException as primary:
+        try:
+            await prepared.release(now=clock())
+        except BaseException as cleanup_error:
+            raise primary from cleanup_error
+        raise
+    else:
         await prepared.release(now=clock())
+        return result

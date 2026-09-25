@@ -122,6 +122,20 @@ class DurableExecutionAttemptRecorder(Protocol):
 
 
 @runtime_checkable
+class DurablePreparedAttemptRecoveryRecorder(Protocol):
+    """Recover only a MODEL_TURN PREPARED attempt proved not to have started."""
+
+    def cancel_prepared_not_started(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+    ) -> Awaitable[CheckpointEnvelope]: ...
+
+
+@runtime_checkable
 class DurableTerminalMetadataProjectingAttemptRecorder(Protocol):
     """Persist one terminal attempt while applying one server-owned transition projector."""
 
@@ -173,6 +187,56 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         self._checkpoint_id_factory = checkpoint_id_factory
         self._metadata_projector = metadata_projector
         self._fault_injector = selected_fault_injector
+
+    async def cancel_prepared_not_started(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        expected_version: DurableRunVersion,
+        lease: DurableLease,
+        now: datetime,
+    ) -> CheckpointEnvelope:
+        """Cancel one authoritative MODEL_TURN PREPARED attempt that never STARTED."""
+
+        current = await self._load_current(
+            run_id,
+            expected_version=expected_version,
+            lease=lease,
+            now=now,
+            require_budget_open=False,
+        )
+        attempt = current.metadata.active_attempt
+        if (
+            current.status is not DurableRunStatus.ACTIVE
+            or attempt is None
+            or attempt.kind is not ExecutionAttemptKind.MODEL_TURN
+            or attempt.status is not ExecutionAttemptStatus.PREPARED
+            or attempt.started_at is not None
+            or attempt.completed_at is not None
+            or attempt.agent_run_id != current.agent_run_id
+            or current.step_id is None
+            or attempt.step_id != current.step_id
+            or current.metadata.next_operation is not CheckpointNextOperation.MODEL_TURN
+        ):
+            raise AgentStateConflictError()
+        try:
+            cancelled = replace(
+                attempt,
+                status=ExecutionAttemptStatus.CANCELLED,
+                completed_at=now,
+                indeterminate_reason=None,
+                error_code=None,
+            )
+        except (TypeError, ValueError) as exception:
+            raise AgentStateConflictError() from exception
+        return await self._append(
+            current,
+            lease=lease,
+            now=now,
+            status=DurableRunStatus.PAUSED_OPERATOR,
+            next_operation=CheckpointNextOperation.MODEL_TURN,
+            attempt=cancelled,
+        )
 
     async def prepare_model_attempt(
         self,

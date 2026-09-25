@@ -23,6 +23,7 @@ from phoenix_os.agent import (
 )
 from phoenix_os.agent.errors import AgentServiceUnavailableError
 from phoenix_os.agent.state import AgentBudgetSnapshot
+from phoenix_os.events import Event, EventBus
 from phoenix_os.inference import ModelId, ModelProviderId, inference_model_resource
 from phoenix_os.policy import PolicyEffect, PolicyEngine, PolicyRule, PrincipalType, SecurityContext
 from phoenix_os.runtime import RuntimeContext
@@ -151,6 +152,56 @@ async def test_service_continuation_preserves_same_run_budget_and_health() -> No
     assert snapshot.started == 1
     assert snapshot.completed == 1
     assert snapshot.active == 0
+
+    await stack.service.stop(_runtime_context())
+
+
+@pytest.mark.asyncio
+async def test_service_cancellation_during_started_signal_clears_active_run() -> None:
+    configuration = _configuration()
+    request = _request(configuration)
+    adapter = _BlockingModelAdapter()
+    events = EventBus()
+    started_signal = asyncio.Event()
+
+    async def block_started(event: Event) -> None:
+        assert event.name == "agent.run.started"
+        started_signal.set()
+        await asyncio.Event().wait()
+
+    await events.subscribe("agent.run.started", block_started)
+    stack = create_agent_runtime_stack(
+        configuration=configuration,
+        model_adapter=adapter,
+        tool_resolvers=(),
+        tool_adapters=(),
+        policy=_policy(configuration),
+        events=events,
+    )
+
+    await stack.service.start(_runtime_context())
+    task = asyncio.create_task(
+        stack.service.continue_model_turn(
+            request,
+            _context(),
+            restored_budget=_budget(request, prior_work=False),
+        )
+    )
+    await asyncio.wait_for(started_signal.wait(), timeout=1)
+
+    active = await stack.service.snapshot()
+    assert active.started == 1
+    assert active.active == 1
+    assert adapter.started.is_set() is False
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    finished = await stack.service.snapshot()
+    assert finished.active == 0
+    assert finished.cancelled == 1
+    assert adapter.started.is_set() is False
 
     await stack.service.stop(_runtime_context())
 

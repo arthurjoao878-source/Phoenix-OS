@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from itertools import pairwise
@@ -221,6 +221,21 @@ class DurableIndeterminateRecoveryCoordinator(Protocol):
         owner_id: str,
         now: datetime,
         reason: IndeterminateReason = IndeterminateReason.PROCESS_LOSS,
+    ) -> Awaitable[DurableRecoveryAssessment]: ...
+
+
+@runtime_checkable
+class DurableSameLeaseIndeterminateRecoveryCoordinator(Protocol):
+    """Persist STARTED as indeterminate using one caller-owned current lease."""
+
+    def persist_indeterminate_candidate_with_lease(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        lease: DurableLease,
+        now: datetime,
+        clock: Callable[[], datetime],
+        reason: IndeterminateReason = IndeterminateReason.PROVIDER_STATUS_UNKNOWN,
     ) -> Awaitable[DurableRecoveryAssessment]: ...
 
 
@@ -549,6 +564,101 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             )
         finally:
             await self._lease_manager.release(lease, now=now)
+
+    async def persist_indeterminate_candidate_with_lease(
+        self,
+        run_id: DurableAgentRunId,
+        *,
+        lease: DurableLease,
+        now: datetime,
+        clock: Callable[[], datetime],
+        reason: IndeterminateReason = IndeterminateReason.PROVIDER_STATUS_UNKNOWN,
+    ) -> DurableRecoveryAssessment:
+        """Persist one STARTED model attempt as indeterminate without reacquiring its lease."""
+
+        self._ensure_open()
+        self._require_run_id(run_id)
+        if not isinstance(lease, DurableLease) or lease.run_id != run_id:
+            raise AgentStateConflictError()
+        _require_timezone_aware(now, label="now")
+        if not callable(clock):
+            raise TypeError("clock must be callable")
+        if not isinstance(reason, IndeterminateReason):
+            raise TypeError("reason must be IndeterminateReason")
+
+        authoritative_lease = await self._lease_manager.require_current(lease, now=now)
+        if authoritative_lease != lease:
+            raise AgentStateConflictError()
+        checkpoint = await self._store.get_current(run_id)
+        if checkpoint is None or checkpoint.status.terminal:
+            raise AgentStateConflictError()
+        history = await self._store.list_history(run_id, limit=checkpoint.sequence.value)
+        validate_authoritative_checkpoint_history(checkpoint, history)
+        validate_durable_checkpoint_history(self._history_validator, checkpoint, history)
+        compatibility = self._compatibility_validator.validate(checkpoint)
+        _validate_compatibility_assessment(checkpoint, compatibility)
+        point, disposition = classify_recovery_checkpoint(checkpoint, now=now)
+        attempt = checkpoint.metadata.active_attempt
+        if (
+            not compatibility.compatible
+            or point is not RecoveryPoint.ACTIVE_MODEL_ATTEMPT
+            or disposition is not RecoveryDisposition.MARK_INDETERMINATE_MODEL
+            or checkpoint.metadata.next_operation is not CheckpointNextOperation.MODEL_TURN
+            or attempt is None
+            or attempt.kind is not ExecutionAttemptKind.MODEL_TURN
+            or attempt.status is not ExecutionAttemptStatus.STARTED
+        ):
+            raise AgentStateConflictError()
+
+        mutation_now = clock()
+        _require_timezone_aware(mutation_now, label="clock result")
+        if mutation_now < now:
+            raise AgentStateConflictError()
+        authoritative_lease = await self._lease_manager.require_current(
+            authoritative_lease,
+            now=mutation_now,
+        )
+        if authoritative_lease != lease or await self._store.get_current(run_id) != checkpoint:
+            raise AgentStateConflictError()
+        point, disposition = classify_recovery_checkpoint(checkpoint, now=mutation_now)
+        if (
+            point is not RecoveryPoint.ACTIVE_MODEL_ATTEMPT
+            or disposition is not RecoveryDisposition.MARK_INDETERMINATE_MODEL
+        ):
+            raise AgentStateConflictError()
+
+        transitioned = await self._attempt_recorder.mark_indeterminate(
+            run_id,
+            attempt.attempt_id,
+            expected_version=checkpoint.run_version,
+            lease=authoritative_lease,
+            reason=reason,
+            now=mutation_now,
+        )
+        _validate_indeterminate_transition(
+            checkpoint,
+            transitioned,
+            reason=reason,
+            now=mutation_now,
+            metadata_projector=self._metadata_projector,
+        )
+        if await self._store.get_current(run_id) != transitioned:
+            raise AgentStateConflictError()
+        post_history = await self._store.list_history(run_id, limit=transitioned.sequence.value)
+        validate_authoritative_checkpoint_history(transitioned, post_history)
+        validate_durable_checkpoint_history(self._history_validator, transitioned, post_history)
+        point, disposition = classify_recovery_checkpoint(transitioned, now=mutation_now)
+        if disposition is not RecoveryDisposition.PAUSE_OPERATOR:
+            raise AgentStateConflictError()
+        return _assessment(
+            checkpoint=transitioned,
+            lease=authoritative_lease,
+            point=point,
+            disposition=disposition,
+            compatibility=compatibility,
+            approval_revalidation=None,
+            now=mutation_now,
+        )
 
     async def assess_page(
         self,
