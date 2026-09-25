@@ -436,16 +436,12 @@ def _reconciliation_keys_to_consume(
     checkpoint: CheckpointEnvelope,
 ) -> frozenset[str]:
     prefixed = frozenset(
-        key
-        for key in checkpoint.metadata.metadata
-        if key.startswith("reconciliation.")
+        key for key in checkpoint.metadata.metadata if key.startswith("reconciliation.")
     )
     if not prefixed:
         return frozenset()
     try:
-        record = DurableReconciliationDispositionRecord.from_metadata(
-            checkpoint.metadata.metadata
-        )
+        record = DurableReconciliationDispositionRecord.from_metadata(checkpoint.metadata.metadata)
     except (TypeError, ValueError, OverflowError) as exception:
         raise TaskResumeActivationError() from exception
     if (
