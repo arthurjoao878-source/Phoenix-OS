@@ -207,7 +207,8 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         )
         attempt = current.metadata.active_attempt
         if (
-            attempt is None
+            current.status is not DurableRunStatus.ACTIVE
+            or attempt is None
             or attempt.kind is not ExecutionAttemptKind.MODEL_TURN
             or attempt.status is not ExecutionAttemptStatus.PREPARED
             or attempt.started_at is not None
