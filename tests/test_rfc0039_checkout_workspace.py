@@ -46,6 +46,7 @@ def _try_directory_symlink(link: Path, target: Path) -> Path | None:
 def _adapter(
     root: Path,
     *,
+    patch_prefixes: tuple[str, ...] = (),
     protected_paths: tuple[Path, ...] = (),
     protected_roots: tuple[Path, ...] = (),
 ) -> RegisteredDevelopmentCheckoutAdapter:
@@ -55,6 +56,7 @@ def _adapter(
         generation=7,
         root=root,
         read_prefixes=("src", "tests"),
+        patch_prefixes=patch_prefixes,
         protected_paths=protected_paths,
         protected_roots=protected_roots,
     )
@@ -72,6 +74,7 @@ async def test_registration_is_content_free_and_resources_use_only_logical_ident
     assert registration.workspace_name == "project"
     assert registration.generation == 7
     assert registration.read_prefixes == ("src", "tests")
+    assert registration.patch_prefixes == ()
     assert registration.root_identity.startswith("sha256:")
     assert str(root) not in repr(registration)
 
@@ -86,6 +89,27 @@ async def test_registration_is_content_free_and_resources_use_only_logical_ident
     assert adapter.closed
     with pytest.raises(AgentServiceUnavailableError):
         await adapter.list("src")
+
+
+def test_registration_patch_prefixes_are_canonical_and_within_read_prefixes(
+    tmp_path: Path,
+) -> None:
+    root = _root(tmp_path)
+
+    registration = _adapter(
+        root,
+        patch_prefixes=("tests", "src/pkg"),
+    ).registration
+    assert registration.patch_prefixes == ("src/pkg", "tests")
+
+    with pytest.raises(ValueError, match="patch_prefixes contain duplicates"):
+        _adapter(root, patch_prefixes=("src", "src"))
+
+    with pytest.raises(ValueError, match="patch_prefixes must be within read_prefixes"):
+        _adapter(root, patch_prefixes=("private",))
+
+    with pytest.raises(ValueError):
+        _adapter(root, patch_prefixes=("Src",))
 
 
 def test_checkout_logical_resource_grammar_is_policy_safe(tmp_path: Path) -> None:

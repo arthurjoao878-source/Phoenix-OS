@@ -14,6 +14,12 @@ from phoenix_os.agent.checkout_agent_tools import (
     checkout_tool_descriptors,
 )
 from phoenix_os.agent.checkout_authorization import CheckoutWorkspaceAuthorizer
+from phoenix_os.agent.checkout_patch_agent_tool import (
+    CHECKOUT_PATCH_TOOL_ID,
+    CheckoutPatchToolAdapter,
+    CheckoutPatchToolResourceResolver,
+    checkout_patch_tool_descriptor,
+)
 from phoenix_os.agent.checkout_workspace import (
     RegisteredDevelopmentCheckout,
     RegisteredDevelopmentCheckoutAdapter,
@@ -735,6 +741,43 @@ def integrated_checkout_tool_registrations(
     )
 
 
+def integrated_checkout_patch_tool_registration(
+    binding: IntegratedDownstreamBridgeBinding,
+    checkout: RegisteredDevelopmentCheckoutAdapter,
+    authorizer: CheckoutWorkspaceAuthorizer,
+) -> IntegratedToolRegistration:
+    """Register zero-effect workspace.patch admission for specialized durable dispatch."""
+
+    if not isinstance(checkout, RegisteredDevelopmentCheckoutAdapter):
+        raise TypeError("checkout must be RegisteredDevelopmentCheckoutAdapter")
+    if not isinstance(authorizer, CheckoutWorkspaceAuthorizer):
+        raise TypeError("authorizer must implement CheckoutWorkspaceAuthorizer")
+
+    registration = checkout.registration
+    _require_downstream_bridge(
+        binding,
+        boundary=IntegratedDownstreamBoundary.WORKSPACE,
+        binding_id=checkout_integrated_binding_id(registration),
+        generation=registration.generation,
+        tool_id=CHECKOUT_PATCH_TOOL_ID,
+        action_family=str(CHECKOUT_PATCH_TOOL_ID),
+    )
+    resolver = CheckoutPatchToolResourceResolver(registration)
+    adapter = CheckoutPatchToolAdapter(checkout, authorizer)
+    if (
+        resolver.registration is not registration
+        or adapter.registration is not registration
+        or adapter.authorizer is not authorizer
+    ):
+        raise IntegratedAgentConfigurationError()
+    return _issue_integrated_tool_registration(
+        binding=binding,
+        descriptor=checkout_patch_tool_descriptor(),
+        resolver=resolver,
+        adapter=adapter,
+    )
+
+
 def integrated_memory_tool_registration(
     binding: IntegratedDownstreamBridgeBinding,
     service: AgentMemoryService,
@@ -820,33 +863,45 @@ def integrated_development_checkout_dogfood_profile(
     limits: AgentLimits | None = None,
     budget_extension: IntegratedBudgetExtension | None = None,
     durability_profile: str | None = None,
+    allow_workspace_patch: bool = False,
 ) -> IntegratedDogfoodProfile:
     """Compose the development profile over one exact server-registered checkout."""
 
     if not isinstance(registration, RegisteredDevelopmentCheckout):
         raise TypeError("registration must be RegisteredDevelopmentCheckout")
+    if not isinstance(allow_workspace_patch, bool):
+        raise TypeError("allow_workspace_patch must be bool")
     workspace = IntegratedCapabilityProfileBinding(
         boundary=IntegratedDownstreamBoundary.WORKSPACE,
         binding_id=checkout_integrated_binding_id(registration),
         generation=registration.generation,
     )
+    tool_bindings: list[IntegratedToolBinding] = [
+        _dogfood_plan_binding(),
+        _dogfood_bridge(
+            CHECKOUT_LIST_TOOL_ID,
+            workspace,
+            WORKSPACE_LIST_ACTION,
+        ),
+        _dogfood_bridge(
+            CHECKOUT_READ_TOOL_ID,
+            workspace,
+            WORKSPACE_READ_ACTION,
+        ),
+    ]
+    if allow_workspace_patch:
+        tool_bindings.append(
+            _dogfood_bridge(
+                CHECKOUT_PATCH_TOOL_ID,
+                workspace,
+                str(CHECKOUT_PATCH_TOOL_ID),
+            )
+        )
     execution = IntegratedExecutionProfile(
         profile_id=profile_id,
         generation=generation,
         agent_id=agent_id,
-        tool_bindings=(
-            _dogfood_plan_binding(),
-            _dogfood_bridge(
-                CHECKOUT_LIST_TOOL_ID,
-                workspace,
-                WORKSPACE_LIST_ACTION,
-            ),
-            _dogfood_bridge(
-                CHECKOUT_READ_TOOL_ID,
-                workspace,
-                WORKSPACE_READ_ACTION,
-            ),
-        ),
+        tool_bindings=tuple(tool_bindings),
         data_flow_policy=data_flow_policy,
         limits=AgentLimits() if limits is None else limits,
         budget_extension=(

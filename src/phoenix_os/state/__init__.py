@@ -27,6 +27,7 @@ from phoenix_os.state.errors import (
 )
 from phoenix_os.state.memory import MemoryStateStore, MemoryStateTransaction
 from phoenix_os.state.registry import StateStoreRegistration, StateStoreRegistry
+from phoenix_os.state.sqlite import SQLiteStateStore
 
 __all__ = [
     "ABSENT_VERSION",
@@ -36,6 +37,7 @@ __all__ = [
     "MemoryStateTransaction",
     "PhoenixStateError",
     "RestoreMode",
+    "SQLiteStateStore",
     "StateCodec",
     "StateConflictError",
     "StateKey",

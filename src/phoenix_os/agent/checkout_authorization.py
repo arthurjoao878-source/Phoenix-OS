@@ -17,6 +17,7 @@ from phoenix_os.agent.contracts import AgentRunId
 from phoenix_os.agent.errors import AgentAuthorizationRejectedError
 from phoenix_os.agent.workspace_authorization import (
     WORKSPACE_LIST_ACTION,
+    WORKSPACE_PATCH_ACTION,
     WORKSPACE_READ_ACTION,
 )
 from phoenix_os.policy import PhoenixPolicyError, PolicyEngine, PolicyRequest, SecurityContext
@@ -65,6 +66,29 @@ class CheckoutReadAuthorizationRequest:
         _require_timestamp(self.created_at)
 
 
+@dataclass(frozen=True, slots=True)
+class CheckoutPatchAuthorizationRequest:
+    """Exact current-run patch authorization request without file content."""
+
+    run_id: AgentRunId
+    registration: RegisteredDevelopmentCheckout
+    logical_path: str
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_id, AgentRunId):
+            raise TypeError("run_id must be AgentRunId")
+        if not isinstance(self.registration, RegisteredDevelopmentCheckout):
+            raise TypeError("registration must be RegisteredDevelopmentCheckout")
+        checkout_path_resource(self.registration, self.logical_path)
+        if not any(
+            _within_logical_prefix(self.logical_path, prefix)
+            for prefix in self.registration.patch_prefixes
+        ):
+            raise ValueError("logical_path is outside patch_prefixes")
+        _require_timestamp(self.created_at)
+
+
 @runtime_checkable
 class CheckoutWorkspaceAuthorizer(Protocol):
     """Authorize exact checkout list/read operations without touching native paths or bytes."""
@@ -78,6 +102,12 @@ class CheckoutWorkspaceAuthorizer(Protocol):
     async def authorize_read(
         self,
         request: CheckoutReadAuthorizationRequest,
+        context: SecurityContext,
+    ) -> None: ...
+
+    async def authorize_patch(
+        self,
+        request: CheckoutPatchAuthorizationRequest,
         context: SecurityContext,
     ) -> None: ...
 
@@ -138,6 +168,29 @@ class PolicyEngineCheckoutWorkspaceAuthorizer:
             created_at=request.created_at,
         )
 
+    async def authorize_patch(
+        self,
+        request: CheckoutPatchAuthorizationRequest,
+        context: SecurityContext,
+    ) -> None:
+        if not isinstance(request, CheckoutPatchAuthorizationRequest):
+            raise TypeError("request must be CheckoutPatchAuthorizationRequest")
+        _require_authenticated_context(context)
+        await self._enforce(
+            action=WORKSPACE_PATCH_ACTION,
+            resource=checkout_path_resource(
+                request.registration,
+                request.logical_path,
+            ),
+            context=context,
+            attributes={
+                **_registration_attributes(request.registration),
+                "run_id": str(request.run_id),
+                "logical_path_digest": _logical_identity_digest(request.logical_path),
+            },
+            created_at=request.created_at,
+        )
+
     async def _enforce(
         self,
         *,
@@ -176,6 +229,10 @@ def _logical_identity_digest(value: str) -> str:
     if not isinstance(value, str):
         raise TypeError("logical identity must be a string")
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _within_logical_prefix(logical_path: str, prefix: str) -> bool:
+    return logical_path == prefix or logical_path.startswith(prefix + "/")
 
 
 def _require_authenticated_context(context: SecurityContext) -> None:

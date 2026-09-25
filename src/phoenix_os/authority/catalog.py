@@ -27,6 +27,9 @@ _SHA256 = r"sha256:[0-9a-f]{64}"
 _RESOLVED_TOOL_RESOURCE = r"[a-z0-9](?:[a-z0-9._:/-]{0,1023})"
 _MEMORY_SCOPE = rf"agent-memory:{_ID}/scope:(?:run|agent|principal):{_SCOPE_ID}"
 _WORKSPACE_SCOPE = rf"agent-workspace:{_ID}/scope:(?:run|agent|principal):{_SCOPE_ID}"
+_CHECKOUT_SEGMENT = r"(?!(?:\.{1,2}|\.git|\.hg|\.svn)(?:/|$))[a-z0-9._-]{1,255}"
+_CHECKOUT_LOGICAL_PATH = rf"{_CHECKOUT_SEGMENT}(?:/{_CHECKOUT_SEGMENT})*"
+_DEVELOPMENT_CHECKOUT_PATH = rf"development-checkout:{_UUID}/path:{_CHECKOUT_LOGICAL_PATH}"
 _HOST_ROOT = rf"host-automation:host:{_ID}"
 _POSITIVE_INT32 = (
     r"(?:[1-9][0-9]{0,8}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|"
@@ -113,6 +116,11 @@ _BUILTIN_ENTRIES = (
         "workspace.write",
         "workspace.write",
         rf"{_WORKSPACE_SCOPE}/artifact:{_UUID}",
+    ),
+    AuthorityCatalogEntry(
+        "workspace.patch",
+        "workspace.patch",
+        _DEVELOPMENT_CHECKOUT_PATH,
     ),
     AuthorityCatalogEntry(
         "workspace.delete",
@@ -222,6 +230,7 @@ _BUILTIN_MEDIATED_TRANSITIONS: Final[frozenset[tuple[str, str]]] = frozenset(
         ("agent.run", "workspace.read"),
         ("tool.invoke", "memory.write"),
         ("tool.invoke", "workspace.write"),
+        ("tool.invoke", "workspace.patch"),
         ("tool.invoke", "host.process.list"),
         ("tool.invoke", "host.window.list"),
         ("tool.invoke", "host.app.launch"),

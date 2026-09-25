@@ -192,6 +192,7 @@ def create_agent_runtime_stack(
             model_adapter=model_adapter,
             tool_adapters=ordered_adapters,
             approval_service=approval_service,
+            approval_resolver=approval_resolver,
             audit=audit,
             observability=observability,
         )

@@ -1371,6 +1371,11 @@ class RuntimeAssembler:
                 from phoenix_os.agent.checkout_authorization import (
                     PolicyEngineCheckoutWorkspaceAuthorizer,
                 )
+                from phoenix_os.agent.checkout_patch_agent_tool import (
+                    CHECKOUT_PATCH_TOOL_ID,
+                    CheckoutPatchToolAdapter,
+                    CheckoutPatchToolResourceResolver,
+                )
 
                 by_tool_id = {
                     registration.tool_id: registration
@@ -1410,6 +1415,41 @@ class RuntimeAssembler:
                     raise ValueError(
                         "integrated task runtime checkout authorizer must use shared policy"
                     )
+
+                operator_profile = self._agent_integrated_operator_profile
+                if operator_profile is None:
+                    raise AssertionError("integrated task runtime lost operator profile")
+                patch_registration = by_tool_id.get(CHECKOUT_PATCH_TOOL_ID)
+                if operator_profile.allow_workspace_patch and patch_registration is None:
+                    raise ValueError(
+                        "integrated task runtime patch-enabled operator profile requires "
+                        "workspace.patch registration"
+                    )
+                if not operator_profile.allow_workspace_patch and patch_registration is not None:
+                    raise ValueError(
+                        "integrated task runtime workspace.patch registration requires "
+                        "patch-enabled operator profile"
+                    )
+                if patch_registration is not None:
+                    patch_adapter = patch_registration.adapter
+                    patch_resolver = patch_registration.resolver
+                    if not isinstance(patch_adapter, CheckoutPatchToolAdapter) or not isinstance(
+                        patch_resolver, CheckoutPatchToolResourceResolver
+                    ):
+                        raise ValueError(
+                            "integrated task runtime requires exact checkout patch adapter/resolver"
+                        )
+                    if (
+                        patch_adapter.registration is not list_adapter.registration
+                        or patch_resolver.registration is not list_adapter.registration
+                    ):
+                        raise ValueError(
+                            "integrated task runtime patch surface must share checkout registration"
+                        )
+                    if patch_adapter.authorizer is not checkout_authorizer:
+                        raise ValueError(
+                            "integrated task runtime patch surface must share checkout authorizer"
+                        )
             for value, label in (
                 (agent_integrated_actor_id, "actor id"),
                 (agent_integrated_owner_id, "owner id"),

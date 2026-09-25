@@ -29,6 +29,7 @@ from phoenix_os.agent.checkout_agent_tools import (
 )
 from phoenix_os.agent.checkout_authorization import (
     CheckoutListAuthorizationRequest,
+    CheckoutPatchAuthorizationRequest,
     CheckoutReadAuthorizationRequest,
 )
 from phoenix_os.agent.checkout_workspace import (
@@ -70,6 +71,14 @@ class _CheckoutAuthorizer:
         context: SecurityContext,
     ) -> None:
         del request, context
+
+    async def authorize_patch(
+        self,
+        request: CheckoutPatchAuthorizationRequest,
+        context: SecurityContext,
+    ) -> None:
+        del request, context
+        raise AssertionError("patch authorization is not expected")
 
 
 def _request() -> AgentRunRequest:

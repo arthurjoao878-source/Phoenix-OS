@@ -37,6 +37,7 @@ from phoenix_os.agent.loop import (
     AgentLoop,
     AgentModelTurnExecutionDriver,
     AgentToolExecutionDriver,
+    ToolApprovalResolver,
 )
 from phoenix_os.agent.registry import ToolRegistry
 from phoenix_os.agent.state import AgentBudgetSnapshot, AgentCancellationToken
@@ -148,6 +149,7 @@ class AgentService:
         model_adapter: AgentModelTurnAdapter,
         tool_adapters: tuple[ToolAdapter, ...] = (),
         approval_service: ToolApprovalService | None = None,
+        approval_resolver: ToolApprovalResolver | None = None,
         audit: AuditLedger | None = None,
         observability: ObservabilityHub | None = None,
     ) -> None:
@@ -171,6 +173,11 @@ class AgentService:
             ToolApprovalService,
         ):
             raise TypeError("approval_service must implement ToolApprovalService")
+        if approval_resolver is not None and not isinstance(
+            approval_resolver,
+            ToolApprovalResolver,
+        ):
+            raise TypeError("approval_resolver must implement ToolApprovalResolver")
         if audit is not None and not isinstance(audit, AuditLedger):
             raise TypeError("audit must be AuditLedger")
         if observability is not None and not isinstance(observability, ObservabilityHub):
@@ -184,6 +191,7 @@ class AgentService:
         self._model_adapter = model_adapter
         self._tool_adapters = normalized_adapters
         self._approval_service = approval_service
+        self._approval_resolver = approval_resolver
         self._audit = audit
         self._observability = observability
         self._state = AgentServiceState.CREATED
@@ -214,6 +222,14 @@ class AgentService:
     @property
     def configuration(self) -> AgentServiceConfiguration:
         return self._configuration
+
+    @property
+    def approval_service(self) -> ToolApprovalService | None:
+        return self._approval_service
+
+    @property
+    def approval_resolver(self) -> ToolApprovalResolver | None:
+        return self._approval_resolver
 
     @property
     def state(self) -> AgentServiceState:
