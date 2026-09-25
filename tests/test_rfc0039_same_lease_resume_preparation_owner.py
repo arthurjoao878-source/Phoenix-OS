@@ -43,13 +43,13 @@ from phoenix_os.agent.durable_contracts import (
 )
 from phoenix_os.agent.durable_memory import InMemoryDurableRunStore
 from phoenix_os.agent.durable_reconciliation import DurableReconciliationDispositionRecord
-from phoenix_os.agent.durable_status_lookup import (
-    DurableAttemptExternalStatus,
-    DurableAttemptStatusLookupOutcome,
-)
 from phoenix_os.agent.durable_runtime import (
     DurableAgentRuntimeStack,
     create_durable_agent_runtime_stack,
+)
+from phoenix_os.agent.durable_status_lookup import (
+    DurableAttemptExternalStatus,
+    DurableAttemptStatusLookupOutcome,
 )
 from phoenix_os.agent.fake import DeterministicFinalTurn, DeterministicModelTurnAdapter
 from phoenix_os.agent.state import AgentBudgetSnapshot
@@ -408,7 +408,8 @@ async def _environment(
             checkpoint = await support.context_resupply.pause_candidate_with_lease(
                 durable_run_id,
                 lease=setup_lease,
-                now=_NOW,
+                    now=_NOW,
+                )
             )
         finally:
             await durable_stack.lease_manager.release(setup_lease, now=_NOW)
@@ -575,7 +576,8 @@ async def test_same_lease_resume_preparation_recovers_prepared_without_started_w
             now=_NOW,
         )
         try:
-            prepared_attempt = await environment.durable_stack.attempt_recorder.prepare_model_attempt(
+            prepared_attempt = (
+                await environment.durable_stack.attempt_recorder.prepare_model_attempt(
                 environment.durable_run_id,
                 expected_version=environment.checkpoint.run_version,
                 lease=setup_lease,
@@ -625,7 +627,9 @@ async def test_same_lease_resume_preparation_recovers_prepared_without_started_w
 
 
 @pytest.mark.asyncio
-async def test_same_lease_resume_preparation_marks_started_attempt_indeterminate_and_stops() -> None:
+async def test_same_lease_resume_preparation_marks_started_attempt_indeterminate_and_stops() -> (
+    None
+):
     environment = await _environment(pause_for_context_resupply=False)
     try:
         setup_lease = await environment.durable_stack.lease_manager.acquire(
