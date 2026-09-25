@@ -414,10 +414,9 @@ async def test_exact_rfc0039_recovering_orphan_normalizes_to_context_resupply() 
     assert normalized.metadata.active_attempt is None
     assert projection.orchestration_phase is IntegratedOrchestrationPhase.WAITING
     assert projection.waiting_reason is IntegratedWaitingReason.CONTEXT_RESUPPLY
-    assert (
-        projection.last_safe_boundary
-        == decode_integrated_durable_projection(paused).last_safe_boundary
-    )
+    paused_projection = decode_integrated_durable_projection(paused)
+    assert paused_projection is not None
+    assert projection.last_safe_boundary == paused_projection.last_safe_boundary
 
 
 @pytest.mark.asyncio
