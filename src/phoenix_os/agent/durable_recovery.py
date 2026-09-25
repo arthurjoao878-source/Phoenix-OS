@@ -614,11 +614,17 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
         _require_timezone_aware(mutation_now, label="clock result")
         if mutation_now < now:
             raise AgentStateConflictError()
-        authoritative_lease = await self._lease_manager.require_current(authoritative_lease, now=mutation_now)
+        authoritative_lease = await self._lease_manager.require_current(
+            authoritative_lease,
+            now=mutation_now,
+        )
         if authoritative_lease != lease or await self._store.get_current(run_id) != checkpoint:
             raise AgentStateConflictError()
         point, disposition = classify_recovery_checkpoint(checkpoint, now=mutation_now)
-        if point is not RecoveryPoint.ACTIVE_MODEL_ATTEMPT or disposition is not RecoveryDisposition.MARK_INDETERMINATE_MODEL:
+        if (
+            point is not RecoveryPoint.ACTIVE_MODEL_ATTEMPT
+            or disposition is not RecoveryDisposition.MARK_INDETERMINATE_MODEL
+        ):
             raise AgentStateConflictError()
 
         transitioned = await self._attempt_recorder.mark_indeterminate(
@@ -629,7 +635,13 @@ class StartupDurableRecoveryCoordinator(DurableRecoveryCoordinator):
             reason=reason,
             now=mutation_now,
         )
-        _validate_indeterminate_transition(checkpoint, transitioned, reason=reason, now=mutation_now, metadata_projector=self._metadata_projector)
+        _validate_indeterminate_transition(
+            checkpoint,
+            transitioned,
+            reason=reason,
+            now=mutation_now,
+            metadata_projector=self._metadata_projector,
+        )
         if await self._store.get_current(run_id) != transitioned:
             raise AgentStateConflictError()
         post_history = await self._store.list_history(run_id, limit=transitioned.sequence.value)
