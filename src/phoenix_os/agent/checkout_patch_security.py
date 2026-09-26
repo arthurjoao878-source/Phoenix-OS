@@ -10,7 +10,9 @@ import re
 import stat
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol, cast
+
+_WINDOWS_CTYPES = cast(Any, ctypes)
 
 _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _MAX_WINDOWS_FILE_ATTRIBUTES = 0xFFFFFFFF
@@ -157,7 +159,7 @@ class _WindowsSecurityMetadataBackend:
         if os.name != "nt":
             raise RuntimeError("workspace patch security metadata observation requires Windows")
 
-        win_dll = ctypes.WinDLL
+        win_dll = _WINDOWS_CTYPES.WinDLL
         self._kernel32 = win_dll("kernel32", use_last_error=True)
         self._advapi32 = win_dll("advapi32", use_last_error=True)
 
@@ -279,11 +281,11 @@ class _WindowsSecurityMetadataBackend:
 
 
 def _clear_last_error() -> None:
-    ctypes.set_last_error(0)
+    _WINDOWS_CTYPES.set_last_error(0)
 
 
 def _last_error() -> int:
-    return int(ctypes.get_last_error())
+    return int(_WINDOWS_CTYPES.get_last_error())
 
 
 def _metadata_fingerprint(

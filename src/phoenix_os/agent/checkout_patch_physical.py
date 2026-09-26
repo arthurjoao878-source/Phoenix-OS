@@ -10,7 +10,7 @@ import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from phoenix_os.agent.checkout_patch_commit import (
@@ -28,6 +28,8 @@ from phoenix_os.agent.checkout_workspace import (
 )
 from phoenix_os.agent.contracts import AgentRunId, AgentStepId, ToolCallId
 from phoenix_os.agent.errors import AgentCodecError, AgentStateConflictError
+
+_WINDOWS_CTYPES = cast(Any, ctypes)
 
 _DIGEST_PREFIX = "sha256:"
 
@@ -322,7 +324,7 @@ class _WindowsPhysicalCommitBackend:
         if os.name != "nt":
             raise RuntimeError("workspace patch physical commit requires Windows")
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = _WINDOWS_CTYPES.WinDLL("kernel32", use_last_error=True)
         self._replace_file = kernel32.ReplaceFileW
         self._replace_file.argtypes = [
             ctypes.c_wchar_p,
@@ -335,7 +337,7 @@ class _WindowsPhysicalCommitBackend:
         self._replace_file.restype = ctypes.c_int
 
     def replace_file(self, target: Path, replacement: Path) -> None:
-        ctypes.set_last_error(0)
+        _WINDOWS_CTYPES.set_last_error(0)
         succeeded = bool(
             self._replace_file(
                 str(target),
@@ -347,7 +349,7 @@ class _WindowsPhysicalCommitBackend:
             )
         )
         if not succeeded:
-            error = int(ctypes.get_last_error())
+            error = int(_WINDOWS_CTYPES.get_last_error())
             raise OSError(error, "ReplaceFileW failed", str(target))
 
     def flush_file(self, path: Path) -> None:
