@@ -132,6 +132,7 @@ v0.39.0 must solve the blockers actually observed before adding unrelated author
 The release scope is:
 
 - **P0:** official task entrypoint;
+- **P0:** one-shot hidden-input bootstrap for the first standalone local task operator;
 - **P0:** operational configuration and `doctor`;
 - **P0:** content-free task/budget status;
 - **P1, release-required after P0:** controlled `workspace.patch` for explicitly registered
@@ -316,6 +317,8 @@ phoenix
 ├─ config init
 ├─ config validate
 ├─ config show
+├─ operator
+│  └─ bootstrap
 ├─ doctor
 └─ task
    ├─ run
@@ -325,6 +328,26 @@ phoenix
 ```
 
 No generic plugin-defined arbitrary CLI command namespace is introduced by this RFC.
+
+### Local operator bootstrap
+
+`phoenix operator bootstrap --config <path>` is the one-shot standalone bootstrap for the
+first local task operator when the selected durable state contains no operator record.
+
+The command:
+
+- requires explicit validated configuration with an explicit durable-state path;
+- refuses to proceed once any local operator already exists;
+- reads and confirms the initial credential through hidden terminal input, never argv or TOML;
+- persists only the existing `ControlPlaneOperatorToken` digest representation;
+- creates the existing local `MAINTAINER` role plus only the explicit task-action permissions
+  required by the configured RFC-0039 profiles;
+- includes `workspace.patch` only when at least one configured profile explicitly enables it;
+- does not discover, start, stop, install, select, or authorize a provider or model;
+- does not grant run/model/tool/workspace resource authority by itself.
+
+Exact task resources remain derived and bound during normal task admission, so bootstrap action
+permissions do not replace the existing exact policy binding.
 
 ### Task input
 
@@ -1085,8 +1108,8 @@ The final v0.39 release gate must include:
 - package build and structural inspection;
 - wheel rebuild from validated sdist;
 - isolated offline install of original and rebuilt wheels;
-- packaged `phoenix --help`, `phoenix config --help`, `phoenix doctor --help`, and
-  `phoenix task --help` smoke tests without source imports;
+- packaged `phoenix --help`, `phoenix config --help`, `phoenix operator --help`,
+  `phoenix doctor --help`, and `phoenix task --help` smoke tests without source imports;
 - explicit separately invoked real-provider dogfood checklist;
 - proof that the normal-path dogfood did not use a custom Python composition helper.
 
@@ -1155,6 +1178,7 @@ RFC-0039 may move from Proposed to Accepted only when the implementation and evi
 all of the following:
 
 - the official package exposes normal config/doctor/task entrypoints;
+- standalone task authentication can bootstrap its first local operator through the official hidden-input CLI without storing plaintext credentials;
 - no custom composition helper is needed for the normal task path;
 - provider/model discovery remains non-authoritative;
 - a real configured model runs through RFC-0026/RFC-0027/RFC-0036;

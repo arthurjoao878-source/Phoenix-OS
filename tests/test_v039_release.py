@@ -99,7 +99,7 @@ def test_rfc0039_is_still_proposed_until_final_gate_and_dogfood() -> None:
 def test_v039_real_provider_dogfood_remains_open() -> None:
     dogfood = _DOGFOOD.read_text(encoding="utf-8")
     states = _dogfood_states(dogfood)
-    assert states == [" "] * 20
+    assert states == [" "] * 21
     assert "official v0.39 candidate wheel" in dogfood
     assert "Do not use a custom Python composition helper." in dogfood
     assert "No shell or Git authority is used." in dogfood
