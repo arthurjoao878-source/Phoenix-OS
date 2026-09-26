@@ -26,6 +26,7 @@ contents, credentials, or other secrets.
 
 - [ ] Candidate wheel installs with no source-tree import.
 - [ ] `phoenix config validate` succeeds for explicit reviewed local provider/model/profile configuration.
+- [ ] `phoenix operator bootstrap` creates the first local task operator through hidden input and stores no plaintext credential.
 - [ ] With Ollama stopped, `phoenix doctor` reports `provider_unreachable` without mutation.
 - [ ] Operator starts Ollama manually.
 - [ ] `phoenix doctor` reports the configured model as available.

@@ -56,6 +56,17 @@ def add_operator_commands(commands: Any) -> None:
         command = config_commands.add_parser(name, help=help_text)
         command.add_argument("--config", required=True, help="explicit TOML configuration path")
 
+    operator = commands.add_parser("operator", help="manage local operator bootstrap")
+    operator_commands = operator.add_subparsers(dest="operator_command", required=True)
+    bootstrap = operator_commands.add_parser(
+        "bootstrap",
+        help="bootstrap the first local task operator",
+    )
+    bootstrap.add_argument(
+        "--config",
+        required=True,
+        help="explicit TOML configuration path",
+    )
     doctor = commands.add_parser("doctor", help="run bounded read-only diagnostics")
     doctor.add_argument("--config", required=True, help="explicit TOML configuration path")
 
@@ -67,6 +78,10 @@ def add_operator_commands(commands: Any) -> None:
 def run_operator_command(arguments: argparse.Namespace) -> int:
     if arguments.command == "config":
         return _run_config(arguments)
+    if arguments.command == "operator":
+        from phoenix_os.control_plane.operator_bootstrap import run_operator_bootstrap
+
+        return run_operator_bootstrap(Path(arguments.config))
     if arguments.command == "doctor":
         return _run_doctor(Path(arguments.config))
     if arguments.command == "task":
