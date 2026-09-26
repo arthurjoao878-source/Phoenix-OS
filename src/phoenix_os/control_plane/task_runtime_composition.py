@@ -117,7 +117,7 @@ class ServerOwnedDurableIntegratedTaskRuntime:
             raise IntegratedAgentConfigurationError() from exception
         if request.operator_model is not operator_model or request.workspace is not workspace:
             raise IntegratedAgentConfigurationError()
-        if request.operator_profile.context_paths or request.operator_profile.allow_workspace_patch:
+        if request.operator_profile.context_paths:
             raise IntegratedAgentConfigurationError()
         if workspace.kind != "development-checkout":
             raise IntegratedAgentConfigurationError()
@@ -149,6 +149,8 @@ class ServerOwnedDurableIntegratedTaskRuntime:
         if read_registration.adapter.registration is not checkout_registration:
             raise IntegratedAgentConfigurationError()
         if tuple(checkout_registration.read_prefixes) != tuple(workspace.read_prefixes):
+            raise IntegratedAgentConfigurationError()
+        if tuple(checkout_registration.patch_prefixes) != tuple(workspace.patch_prefixes):
             raise IntegratedAgentConfigurationError()
 
         tools = tuple(

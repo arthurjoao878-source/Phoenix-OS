@@ -12,6 +12,7 @@ import asyncio
 import getpass
 import hashlib
 import json
+import sys
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,9 +30,15 @@ from phoenix_os import (
     Router,
     RuntimeAssembler,
 )
+from phoenix_os.agent.approval import (
+    InMemoryToolApprovalService,
+    ToolApprovalChallenge,
+    ToolApprovalEvidence,
+)
 from phoenix_os.agent.checkout_agent_tools import CHECKOUT_LIST_TOOL_ID, CHECKOUT_READ_TOOL_ID
 from phoenix_os.agent.checkout_authorization import PolicyEngineCheckoutWorkspaceAuthorizer
 from phoenix_os.agent.checkout_patch_agent_tool import CHECKOUT_PATCH_TOOL_ID
+from phoenix_os.agent.checkout_patch_preparation import MAX_CHECKOUT_PATCH_DIFF_BYTES
 from phoenix_os.agent.checkout_workspace import RegisteredDevelopmentCheckoutAdapter
 from phoenix_os.agent.configuration import AgentServiceConfiguration, AgentToolConfiguration
 from phoenix_os.agent.contracts import AgentId, AgentRunId, ToolId
@@ -40,11 +47,17 @@ from phoenix_os.agent.durable_compatibility import (
     create_ollama_metadata_only_durable_compatibility_policy,
 )
 from phoenix_os.agent.durable_sqlite import CheckoutRegistrationIdentity, SQLiteDurableRunStore
+from phoenix_os.agent.errors import AgentApprovalRejectedError
 from phoenix_os.agent.registry import ToolRegistry
+from phoenix_os.agent.workspace_authorization import WORKSPACE_PATCH_ACTION
 from phoenix_os.control_plane.authority_integration import (
     ControlPlaneDurableAuthorityFreshnessValidator,
+    control_plane_authority_security_context,
 )
-from phoenix_os.control_plane.durable_session_access import ControlPlaneDurableSessionAccessService
+from phoenix_os.control_plane.durable_session_access import (
+    ControlPlaneDurableSessionAccessService,
+    ControlPlaneDurableSessionAuthentication,
+)
 from phoenix_os.control_plane.durable_session_contracts import ControlPlaneDurableSessionRepository
 from phoenix_os.control_plane.operator_authentication import ControlPlaneOperatorAuthenticator
 from phoenix_os.control_plane.operator_configuration import (
@@ -91,7 +104,7 @@ from phoenix_os.integrated_agent.profiles import (
     IntegratedExecutionProfile,
     IntegratedLocalTransformBinding,
 )
-from phoenix_os.policy import PolicyEngine
+from phoenix_os.policy import PolicyEngine, SecurityContext
 from phoenix_os.state.sqlite import SQLiteStateStore
 
 if TYPE_CHECKING:
@@ -103,11 +116,149 @@ _DURABILITY_PROFILE = "rfc0039-development-checkout"
 _CREDENTIAL_PROMPT = "Operator credential: "
 
 
+def _read_operator_confirmation(prompt: str, expected: str) -> bool:
+    if not isinstance(prompt, str) or not prompt:
+        raise ValueError("approval prompt must be a non-empty string")
+    if not isinstance(expected, str) or not expected or expected != expected.strip():
+        raise ValueError("approval confirmation token must be canonical")
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    supplied = sys.stdin.readline()
+    if not supplied or len(supplied) > 64:
+        return False
+    return supplied.rstrip("\r\n") == expected
+
+
+def _terminal_safe_review_text(value: str) -> str:
+    """Escape terminal controls while retaining a complete bounded review rendering."""
+
+    if not isinstance(value, str):
+        raise TypeError("review text must be a string")
+    rendered: list[str] = []
+    for character in value:
+        if character == "\n":
+            rendered.append(character)
+            continue
+        if character.isprintable():
+            rendered.append(character)
+            continue
+        codepoint = ord(character)
+        if codepoint <= 0xFF:
+            rendered.append(f"\\x{codepoint:02x}")
+        elif codepoint <= 0xFFFF:
+            rendered.append(f"\\u{codepoint:04x}")
+        else:
+            rendered.append(f"\\U{codepoint:08x}")
+    return "".join(rendered)
+
+
+class _StandalonePatchApprovalResolver:
+    """Operator-driven two-phase approval for the standalone RFC-0039 patch path."""
+
+    def __init__(self, approval_service: InMemoryToolApprovalService) -> None:
+        if not isinstance(approval_service, InMemoryToolApprovalService):
+            raise TypeError("approval_service must be InMemoryToolApprovalService")
+        self._approval_service = approval_service
+        self._approver: SecurityContext | None = None
+
+    @property
+    def approval_service(self) -> InMemoryToolApprovalService:
+        return self._approval_service
+
+    def bind(self, authentication: ControlPlaneDurableSessionAuthentication) -> None:
+        if self._approver is not None:
+            raise RuntimeError("standalone patch approval resolver is already bound")
+        context = control_plane_authority_security_context(authentication)
+        if WORKSPACE_PATCH_ACTION not in context.permissions:
+            raise AgentApprovalRejectedError()
+        self._approver = context
+
+    def unbind(self) -> None:
+        self._approver = None
+
+    async def resolve(self, challenge: ToolApprovalChallenge) -> ToolApprovalEvidence:
+        """Approve only zero-effect patch preparation after explicit operator confirmation."""
+
+        context = self._bound_context(challenge)
+        if challenge.tool_id != CHECKOUT_PATCH_TOOL_ID:
+            raise AgentApprovalRejectedError()
+        if not _read_operator_confirmation(
+            "\nPhoenix workspace.patch preparation gate. "
+            "Type PREPARE to build the trusted bounded diff: ",
+            "PREPARE",
+        ):
+            raise AgentApprovalRejectedError()
+        return await self._approval_service.approve(challenge.approval_id, context)
+
+    async def resolve_prepared_patch(
+        self,
+        challenge: ToolApprovalChallenge,
+        *,
+        logical_path: str,
+        preparation_digest: str,
+        unified_diff: str,
+    ) -> ToolApprovalEvidence:
+        """Render the trusted prepared diff and require exact APPLY confirmation."""
+
+        context = self._bound_context(challenge)
+        if challenge.tool_id != CHECKOUT_PATCH_TOOL_ID:
+            raise AgentApprovalRejectedError()
+        if not logical_path or logical_path != logical_path.strip():
+            raise AgentApprovalRejectedError()
+        if (
+            len(preparation_digest) != 71
+            or not preparation_digest.startswith("sha256:")
+            or any(character not in "0123456789abcdef" for character in preparation_digest[7:])
+        ):
+            raise AgentApprovalRejectedError()
+        encoded_diff = unified_diff.encode("utf-8")
+        if not encoded_diff or len(encoded_diff) > MAX_CHECKOUT_PATCH_DIFF_BYTES:
+            raise AgentApprovalRejectedError()
+
+        review_digest = hashlib.sha256(encoded_diff).hexdigest()
+        safe_diff = _terminal_safe_review_text(unified_diff)
+        sys.stderr.write(
+            "\nPhoenix trusted bounded patch review\n"
+            f"logical_path={logical_path}\n"
+            f"preparation_digest={preparation_digest}\n"
+            f"review_diff_sha256={review_digest}\n"
+            "--- BEGIN TRUSTED BOUNDED DIFF ---\n"
+        )
+        sys.stderr.write(safe_diff)
+        if not safe_diff.endswith("\n"):
+            sys.stderr.write("\n")
+        sys.stderr.write("--- END TRUSTED BOUNDED DIFF ---\n")
+        sys.stderr.flush()
+
+        if not _read_operator_confirmation(
+            "Type APPLY to approve exactly this prepared patch: ",
+            "APPLY",
+        ):
+            raise AgentApprovalRejectedError()
+        return await self._approval_service.approve(challenge.approval_id, context)
+
+    def _bound_context(self, challenge: ToolApprovalChallenge) -> SecurityContext:
+        if not isinstance(challenge, ToolApprovalChallenge):
+            raise TypeError("challenge must be ToolApprovalChallenge")
+        context = self._approver
+        if context is None:
+            raise AgentApprovalRejectedError()
+        if (
+            challenge.schema_version != 2
+            or challenge.principal_type is not context.principal_type
+            or challenge.principal != context.principal
+            or challenge.session_id != context.session_id
+        ):
+            raise AgentApprovalRejectedError()
+        return context
+
+
 @dataclass(frozen=True, slots=True)
 class _RuntimeSurface:
     runtime: Any
     policy: PolicyEngine
     profile: OperatorProfileConfiguration
+    approval_resolver: _StandalonePatchApprovalResolver | None = None
 
 
 class StandaloneTaskRuntimeBridge:
@@ -236,6 +387,7 @@ class StandaloneTaskRuntimeBridge:
         await runtime.start()
         access: ControlPlaneDurableSessionAccessService | None = None
         session_token: str | None = None
+        approval_resolver = surface.approval_resolver
         try:
             registry = cast(
                 ControlPlaneOperatorRegistry, runtime.service("control_plane.operator-registry")
@@ -262,6 +414,8 @@ class StandaloneTaskRuntimeBridge:
             authentication = await access.authenticate(session_token)
             if authentication is None:
                 raise PermissionError("durable operator session rejected")
+            if approval_resolver is not None:
+                approval_resolver.bind(authentication)
 
             freshness = ControlPlaneDurableAuthorityFreshnessValidator(
                 repository=sessions,
@@ -303,6 +457,8 @@ class StandaloneTaskRuntimeBridge:
             raise RuntimeError("unknown task action")
         finally:
             credential = ""
+            if approval_resolver is not None:
+                approval_resolver.unbind()
             if access is not None and session_token is not None:
                 try:
                     await access.logout(session_token)
@@ -380,6 +536,8 @@ async def _compose_runtime(
         generation=identity.generation,
         root=Path(workspace.root),
         read_prefixes=workspace.read_prefixes,
+        patch_prefixes=workspace.patch_prefixes,
+        protected_paths=(configuration.source, runtime_configuration.durable_state_path),
     )
 
     policy = PolicyEngine()
@@ -446,6 +604,11 @@ async def _compose_runtime(
     )
     operator_registry = StateControlPlaneOperatorRegistry(state_store)
     providers = _ollama_providers(configuration)
+    approval_service: InMemoryToolApprovalService | None = None
+    approval_resolver: _StandalonePatchApprovalResolver | None = None
+    if operator_profile.allow_workspace_patch:
+        approval_service = InMemoryToolApprovalService()
+        approval_resolver = _StandalonePatchApprovalResolver(approval_service)
 
     runtime = await RuntimeAssembler(
         kernel=kernel,
@@ -462,6 +625,8 @@ async def _compose_runtime(
         agent_execution_interceptor=guard,
         agent_tool_resolvers=composition.runtime_resolvers,
         agent_tool_adapters=composition.adapters,
+        agent_approval_service=approval_service,
+        agent_approval_resolver=approval_resolver,
         agent_durable_enabled=True,
         agent_durable_sqlite_path=runtime_configuration.durable_state_path,
         agent_durable_compatibility_validator=compatibility_validator,
@@ -480,7 +645,12 @@ async def _compose_runtime(
         agent_integrated_operator_profile=operator_profile,
         control_plane_operator_registry=operator_registry,
     ).assemble()
-    return _RuntimeSurface(runtime=runtime, policy=policy, profile=operator_profile)
+    return _RuntimeSurface(
+        runtime=runtime,
+        policy=policy,
+        profile=operator_profile,
+        approval_resolver=approval_resolver,
+    )
 
 
 def _tool_composition(
