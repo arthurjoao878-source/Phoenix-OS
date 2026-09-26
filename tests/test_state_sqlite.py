@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -12,9 +13,9 @@ from phoenix_os.state.sqlite import SQLiteStateStore
 
 
 @pytest.mark.asyncio
-async def test_sqlite_state_store_persists_versions_and_values(tmp_path) -> None:
+async def test_sqlite_state_store_persists_versions_and_values(tmp_path: Path) -> None:
     path = tmp_path / "durable.sqlite3"
-    key = StateKey("runtime", "operator")
+    key: StateKey[dict[str, bool]] = StateKey("runtime", "operator")
     first_store = SQLiteStateStore(path)
     first = await first_store.put(key, {"ready": True}, expected_version=ABSENT_VERSION)
     await first_store.close()
@@ -32,9 +33,9 @@ async def test_sqlite_state_store_persists_versions_and_values(tmp_path) -> None
 
 
 @pytest.mark.asyncio
-async def test_sqlite_state_store_rejects_stale_expected_version(tmp_path) -> None:
+async def test_sqlite_state_store_rejects_stale_expected_version(tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "durable.sqlite3")
-    key = StateKey("runtime", "versioned")
+    key: StateKey[int] = StateKey("runtime", "versioned")
     try:
         current = await store.put(key, 1, expected_version=ABSENT_VERSION)
         with pytest.raises(StateConflictError):
@@ -44,10 +45,10 @@ async def test_sqlite_state_store_rejects_stale_expected_version(tmp_path) -> No
 
 
 @pytest.mark.asyncio
-async def test_sqlite_state_store_transaction_is_atomic(tmp_path) -> None:
+async def test_sqlite_state_store_transaction_is_atomic(tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "durable.sqlite3")
-    one = StateKey("tx", "one")
-    two = StateKey("tx", "two")
+    one: StateKey[str] = StateKey("tx", "one")
+    two: StateKey[str] = StateKey("tx", "two")
     try:
         async with store.transaction() as transaction:
             await transaction.put(one, "a", expected_version=ABSENT_VERSION)
@@ -65,14 +66,14 @@ async def test_sqlite_state_store_transaction_is_atomic(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sqlite_state_store_ttl_purge(tmp_path) -> None:
+async def test_sqlite_state_store_ttl_purge(tmp_path: Path) -> None:
     now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
     clock_value = [now]
     store = SQLiteStateStore(
         tmp_path / "durable.sqlite3",
         clock=lambda: clock_value[0],
     )
-    key = StateKey("ttl", "temporary")
+    key: StateKey[str] = StateKey("ttl", "temporary")
     try:
         await store.put(key, "value", ttl=timedelta(seconds=5))
         clock_value[0] = now + timedelta(seconds=6)
@@ -85,10 +86,10 @@ async def test_sqlite_state_store_ttl_purge(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sqlite_state_store_snapshot_restore(tmp_path) -> None:
+async def test_sqlite_state_store_snapshot_restore(tmp_path: Path) -> None:
     store = SQLiteStateStore(tmp_path / "durable.sqlite3")
-    first = StateKey("snapshot", "first")
-    second = StateKey("snapshot", "second")
+    first: StateKey[dict[str, int]] = StateKey("snapshot", "first")
+    second: StateKey[dict[str, int]] = StateKey("snapshot", "second")
     try:
         await store.put(first, {"value": 1})
         snapshot = await store.snapshot()
@@ -103,7 +104,7 @@ async def test_sqlite_state_store_snapshot_restore(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_generic_state_coexists_with_durable_agent_sqlite_without_user_version_ownership(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     path = tmp_path / "durable.sqlite3"
     durable = SQLiteDurableRunStore(path)

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
 from phoenix_os.control_plane import task_runtime_bootstrap as bootstrap
+from phoenix_os.control_plane.operator_configuration import (
+    OperatorConfiguration,
+    OperatorProfileConfiguration,
+    OperatorWorkspaceConfiguration,
+)
 from phoenix_os.control_plane.task_cli import TaskRunSummary
 from phoenix_os.policy import PolicyEngine
 
@@ -29,9 +35,9 @@ class _FakeRuntime:
 
 class _FakeAccess:
     def __init__(self) -> None:
-        self.issued = []
-        self.authenticated = []
-        self.logged_out = []
+        self.issued: list[object] = []
+        self.authenticated: list[str] = []
+        self.logged_out: list[str] = []
 
     async def issue(self, evidence: object) -> object:
         self.issued.append(evidence)
@@ -65,23 +71,30 @@ class _FakeAdministration:
     calls: ClassVar[list[tuple[str, object, dict[str, object]]]] = []
     policies: ClassVar[list[PolicyEngine]] = []
 
-    def __init__(self, *, owner, policy, lease_owner_id, authority_freshness) -> None:
+    def __init__(
+        self,
+        *,
+        owner: object,
+        policy: PolicyEngine,
+        lease_owner_id: object,
+        authority_freshness: object,
+    ) -> None:
         del owner, lease_owner_id, authority_freshness
         type(self).policies.append(policy)
 
-    async def run(self, authentication, **kwargs):
+    async def run(self, authentication: object, **kwargs: object) -> object:
         type(self).calls.append(("run", authentication, kwargs))
         return _summary("running")
 
-    async def status(self, authentication, **kwargs):
+    async def status(self, authentication: object, **kwargs: object) -> object:
         type(self).calls.append(("status", authentication, kwargs))
         return _summary("running")
 
-    async def cancel(self, authentication, **kwargs):
+    async def cancel(self, authentication: object, **kwargs: object) -> object:
         type(self).calls.append(("cancel", authentication, kwargs))
         return _summary("cancelled")
 
-    async def resume(self, authentication, **kwargs):
+    async def resume(self, authentication: object, **kwargs: object) -> object:
         type(self).calls.append(("resume", authentication, kwargs))
         return _summary("running")
 
@@ -95,6 +108,27 @@ def _summary(state: str) -> object:
     )
 
 
+def _configuration() -> OperatorConfiguration:
+    return OperatorConfiguration(
+        source=Path("operator.toml"),
+        runtime=None,
+        inference=None,
+        models=(),
+        workspaces=(),
+        profiles=(),
+    )
+
+
+def _workspace() -> OperatorWorkspaceConfiguration:
+    return OperatorWorkspaceConfiguration(
+        workspace_name="project",
+        kind="development-checkout",
+        root="C:/project",
+        read_prefixes=(),
+        patch_prefixes=(),
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_fakes() -> None:
     _FakeAuthenticator.seen.clear()
@@ -103,7 +137,7 @@ def _reset_fakes() -> None:
 
 
 @pytest.fixture
-def _surface(monkeypatch):
+def _surface(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     policy = PolicyEngine()
     access = _FakeAccess()
     registry = object()
@@ -117,13 +151,29 @@ def _surface(monkeypatch):
             "control_plane.task-runtime": owner,
         }
     )
-    profile = SimpleNamespace(profile_name="dev", workspace_name="project")
+    profile = OperatorProfileConfiguration(
+        profile_name="dev",
+        model_name="dev",
+        workspace_name="project",
+        context_paths=(),
+        allow_workspace_patch=False,
+    )
 
-    async def compose(_configuration, _profile):
+    async def compose(
+        _configuration: OperatorConfiguration,
+        _profile: OperatorProfileConfiguration,
+    ) -> bootstrap._RuntimeSurface:
         assert _profile is profile
-        return bootstrap._RuntimeSurface(runtime=runtime, policy=policy, profile=profile)
+        return bootstrap._RuntimeSurface(
+            runtime=cast(Any, runtime),
+            policy=policy,
+            profile=profile,
+        )
 
-    async def existing_profile(_configuration, _run_id):
+    async def existing_profile(
+        _configuration: OperatorConfiguration,
+        _run_id: object,
+    ) -> OperatorProfileConfiguration:
         return profile
 
     monkeypatch.setattr(bootstrap, "_compose_runtime", compose)
@@ -151,11 +201,13 @@ def _surface(monkeypatch):
     )
 
 
-def test_bootstrap_uses_existing_operator_credential_only_for_authentication(_surface) -> None:
+def test_bootstrap_uses_existing_operator_credential_only_for_authentication(
+    _surface: SimpleNamespace,
+) -> None:
     bridge = bootstrap.StandaloneTaskRuntimeBridge()
-    workspace = SimpleNamespace(workspace_name="project")
+    workspace = _workspace()
     result = bridge.run(
-        configuration=object(),
+        configuration=_configuration(),
         profile=_surface.profile,
         workspace=workspace,
         task_text="inspect repository",
@@ -170,20 +222,24 @@ def test_bootstrap_uses_existing_operator_credential_only_for_authentication(_su
     assert _surface.runtime.stopped
 
 
-def test_bootstrap_reuses_exact_shared_policy_for_task_administration(_surface) -> None:
+def test_bootstrap_reuses_exact_shared_policy_for_task_administration(
+    _surface: SimpleNamespace,
+) -> None:
     bridge = bootstrap.StandaloneTaskRuntimeBridge()
     bridge.status(
-        configuration=object(),
+        configuration=_configuration(),
         run_id="11111111-1111-1111-1111-111111111111",
     )
     assert _FakeAdministration.policies == [_surface.policy]
     assert _FakeAdministration.calls[0][0] == "status"
 
 
-def test_bootstrap_cancel_uses_durable_session_and_logs_out(_surface) -> None:
+def test_bootstrap_cancel_uses_durable_session_and_logs_out(
+    _surface: SimpleNamespace,
+) -> None:
     bridge = bootstrap.StandaloneTaskRuntimeBridge()
     result = bridge.cancel(
-        configuration=object(),
+        configuration=_configuration(),
         run_id="11111111-1111-1111-1111-111111111111",
     )
     assert isinstance(result, TaskRunSummary)
@@ -192,11 +248,13 @@ def test_bootstrap_cancel_uses_durable_session_and_logs_out(_surface) -> None:
     assert _surface.access.logged_out == ["temporary-session-token"]
 
 
-def test_bootstrap_resume_forwards_exact_resupply_object(_surface) -> None:
+def test_bootstrap_resume_forwards_exact_resupply_object(
+    _surface: SimpleNamespace,
+) -> None:
     bridge = bootstrap.StandaloneTaskRuntimeBridge()
     resupply = object()
     result = bridge.resume(
-        configuration=object(),
+        configuration=_configuration(),
         run_id="11111111-1111-1111-1111-111111111111",
         context_resupply=resupply,  # type: ignore[arg-type]
     )
@@ -206,11 +264,13 @@ def test_bootstrap_resume_forwards_exact_resupply_object(_surface) -> None:
     assert kwargs["context_resupply"] is resupply
 
 
-def test_bootstrap_requires_resume_context_resupply(_surface) -> None:
+def test_bootstrap_requires_resume_context_resupply(
+    _surface: SimpleNamespace,
+) -> None:
     bridge = bootstrap.StandaloneTaskRuntimeBridge()
     with pytest.raises(ValueError, match="resume context resupply is required"):
         bridge.resume(
-            configuration=object(),
+            configuration=_configuration(),
             run_id="11111111-1111-1111-1111-111111111111",
         )
 

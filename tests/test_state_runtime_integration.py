@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from phoenix_os import (
@@ -51,7 +53,7 @@ async def test_runtime_assembler_exposes_and_owns_state_store() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_assembler_exposes_and_owns_direct_sqlite_state_store(tmp_path) -> None:
+async def test_runtime_assembler_exposes_and_owns_direct_sqlite_state_store(tmp_path: Path) -> None:
     events = EventBus()
     kernel = Kernel(router=Router(), authorizer=AllowAllAuthorizer(), events=events)
     capabilities = CapabilityRegistry(events=events)
