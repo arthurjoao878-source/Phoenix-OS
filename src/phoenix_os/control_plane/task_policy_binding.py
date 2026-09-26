@@ -22,6 +22,7 @@ from phoenix_os.agent.durable_authorization import (
 )
 from phoenix_os.agent.workspace_authorization import (
     WORKSPACE_LIST_ACTION,
+    WORKSPACE_PATCH_ACTION,
     WORKSPACE_READ_ACTION,
     workspace_scope_resource,
 )
@@ -237,6 +238,8 @@ def _task_policy_rules(
                 WORKSPACE_READ_ACTION,
             }
         )
+    if targets.checkout is not None and targets.checkout.registration.patch_prefixes:
+        required_permissions.add(WORKSPACE_PATCH_ACTION)
     if not required_permissions <= context.permissions:
         raise TaskExecutionPolicyBindingError()
 
@@ -351,6 +354,29 @@ def _task_policy_rules(
                         action=WORKSPACE_READ_ACTION,
                         resource=f"{read_resource}/*",
                         permission=WORKSPACE_READ_ACTION,
+                        context=context,
+                        attributes=checkout_attributes,
+                    ),
+                )
+            )
+
+        for index, patch_prefix in enumerate(registration.patch_prefixes):
+            patch_resource = checkout_path_resource(registration, patch_prefix)
+            rules.extend(
+                (
+                    _allow_rule(
+                        rule_id=f"{prefix}.checkout-patch-exact-{index}",
+                        action=WORKSPACE_PATCH_ACTION,
+                        resource=patch_resource,
+                        permission=WORKSPACE_PATCH_ACTION,
+                        context=context,
+                        attributes=checkout_attributes,
+                    ),
+                    _allow_rule(
+                        rule_id=f"{prefix}.checkout-patch-descendants-{index}",
+                        action=WORKSPACE_PATCH_ACTION,
+                        resource=f"{patch_resource}/*",
+                        permission=WORKSPACE_PATCH_ACTION,
                         context=context,
                         attributes=checkout_attributes,
                     ),

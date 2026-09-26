@@ -48,9 +48,10 @@ async def test_integrated_durable_tool_driver_binds_checkout_read_evidence_facto
         )
 
         after = await store.lease_manager.get_current(lease.run_id, now=NOW)
-        bound_driver = cast(Any, driver)
-        assert bound_driver._read_budget is read_budget
-        durable_driver = bound_driver._driver
+        patch_driver = cast(Any, driver)
+        read_driver = patch_driver._fallback
+        assert read_driver._read_budget is read_budget
+        durable_driver = read_driver._driver
         assert isinstance(durable_driver, DurableAgentToolExecutionDriver)
         assert isinstance(
             durable_driver._result_metadata_projector_factory,

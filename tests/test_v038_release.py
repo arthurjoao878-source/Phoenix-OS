@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PYPROJECT = _ROOT / "pyproject.toml"
+
 _README = _ROOT / "README.md"
 _CHANGELOG = _ROOT / "CHANGELOG.md"
 _RELEASE = _ROOT / "docs" / "releases" / "v0.38.0.md"
@@ -39,13 +38,10 @@ def _required_dogfood_states(text: str) -> list[str]:
     ]
 
 
-def test_v038_package_and_docs_contract() -> None:
-    project = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]
-    assert project["version"] == "0.38.0"
-    assert project["dependencies"] == []
+def test_v038_preserves_release_history_and_docs_contract() -> None:
 
     readme = _README.read_text(encoding="utf-8")
-    assert "Version `0.38.0` implements thirty-eight accepted specifications:" in readme
+
     assert "Secure Real-Model Provider Execution and Integrated Agent Dogfood" in readme
     assert "[Phoenix OS 0.38.0](docs/releases/v0.38.0.md)" in readme
     assert "There is no automatic local-to-cloud fallback." in readme

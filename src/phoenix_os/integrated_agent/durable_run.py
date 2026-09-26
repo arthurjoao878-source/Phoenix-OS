@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
+from phoenix_os.agent.approval import ToolApprovalService
 from phoenix_os.agent.authorization import AgentRunAuthorityBinding
 from phoenix_os.agent.checkout_agent_tools import (
     CHECKOUT_READ_TOOL_ID,
@@ -20,6 +21,9 @@ from phoenix_os.agent.checkout_durable_evidence import (
     CheckoutReadCumulativeByteBudget,
     CheckoutReadDurableEvidenceHistoryValidator,
     CheckoutReadDurableResultMetadataProjectorFactory,
+)
+from phoenix_os.agent.checkout_patch_durable_driver import (
+    CheckoutPatchDurableToolExecutionDriver,
 )
 from phoenix_os.agent.contracts import (
     AgentRunId,
@@ -52,6 +56,12 @@ from phoenix_os.agent.durable_contracts import (
     ExecutionAttemptKind,
     ExecutionAttemptStatus,
 )
+from phoenix_os.agent.durable_lease_keepalive import (
+    StoreBackedDurableLeaseKeepaliveFactory,
+)
+from phoenix_os.agent.durable_live_binding import (
+    StoreBackedDurableToolInvocationBindingProvider,
+)
 from phoenix_os.agent.durable_live_model_turn import DurableAgentModelTurnExecutionDriver
 from phoenix_os.agent.durable_metadata import (
     ChainedDurableCheckpointHistoryValidator,
@@ -65,7 +75,11 @@ from phoenix_os.agent.durable_runtime import DurableAgentRuntimeStack
 from phoenix_os.agent.durable_state import DurableCheckpointBoundary, DurableRunStateMachine
 from phoenix_os.agent.errors import AgentStateConflictError
 from phoenix_os.agent.execution import BoundedAgentExecutor
-from phoenix_os.agent.loop import AgentModelTurnExecutionDriver, AgentToolExecutionDriver
+from phoenix_os.agent.loop import (
+    AgentModelTurnExecutionDriver,
+    AgentToolExecutionDriver,
+    ToolApprovalResolver,
+)
 from phoenix_os.agent.state import AgentBudgetSnapshot, AgentCancellationToken
 from phoenix_os.agent.tools import ToolAdapter, ToolDescriptor, ToolFinalAdmissionValidator
 from phoenix_os.authority import AuthorityFreshnessValidator
@@ -253,17 +267,51 @@ def _create_checkout_read_durable_tool_execution_driver(
     lease_renewal_interval: timedelta,
     read_budget: CheckoutReadCumulativeByteBudget,
     clock: Callable[[], datetime],
+    approval_service: ToolApprovalService | None = None,
+    approval_resolver: ToolApprovalResolver | None = None,
 ) -> AgentToolExecutionDriver:
     if not isinstance(read_budget, CheckoutReadCumulativeByteBudget):
         raise TypeError("read_budget must be CheckoutReadCumulativeByteBudget")
-    driver = durable_stack.create_tool_execution_driver(
+    if approval_service is not None and not isinstance(approval_service, ToolApprovalService):
+        raise TypeError("approval_service must implement ToolApprovalService")
+    if approval_resolver is not None and not isinstance(approval_resolver, ToolApprovalResolver):
+        raise TypeError("approval_resolver must implement ToolApprovalResolver")
+    if (approval_service is None) != (approval_resolver is None):
+        raise ValueError("approval_service and approval_resolver must be configured together")
+
+    generic_driver = durable_stack.create_tool_execution_driver(
         lease=lease,
         lease_renewal_interval=lease_renewal_interval,
         pre_submit_validator=read_budget,
         result_metadata_projector_factory=CheckoutReadDurableResultMetadataProjectorFactory(),
         clock=clock,
     )
-    return _CheckoutReadBudgetBoundToolExecutionDriver(driver, read_budget)
+    fallback = _CheckoutReadBudgetBoundToolExecutionDriver(generic_driver, read_budget)
+
+    recorder = durable_stack.attempt_recorder
+    if recorder is None:
+        raise RuntimeError("durable attempt recorder is unavailable")
+    binding_provider = StoreBackedDurableToolInvocationBindingProvider(
+        store=durable_stack.store,
+        lease_manager=durable_stack.lease_manager,
+        lease=lease,
+        metadata_projector=durable_stack.metadata_projector,
+    )
+    keepalive_factory = StoreBackedDurableLeaseKeepaliveFactory(
+        lease_manager=durable_stack.lease_manager,
+        renewal_interval=lease_renewal_interval,
+        clock=clock,
+    )
+    keepalive_factory.require_compatible(lease)
+    return CheckoutPatchDurableToolExecutionDriver(
+        fallback=fallback,
+        binding_provider=binding_provider,
+        recorder=recorder,
+        approval_service=approval_service,
+        approval_resolver=approval_resolver,
+        lease_keepalive_factory=keepalive_factory,
+        clock=clock,
+    )
 
 
 def integrated_durable_run_id(run_id: AgentRunId) -> DurableAgentRunId:
@@ -310,6 +358,20 @@ class IntegratedDurableAgentContinuationServiceDelegate(
         _model_turn_execution_driver: AgentModelTurnExecutionDriver | None = None,
         _tool_execution_driver: AgentToolExecutionDriver | None = None,
     ) -> AgentRunResult: ...
+
+
+def _patch_approval_dependencies(
+    service: IntegratedDurableAgentServiceDelegate,
+) -> tuple[ToolApprovalService | None, ToolApprovalResolver | None]:
+    approval_service = getattr(service, "approval_service", None)
+    approval_resolver = getattr(service, "approval_resolver", None)
+    if approval_service is not None and not isinstance(approval_service, ToolApprovalService):
+        raise TypeError("service approval_service must implement ToolApprovalService")
+    if approval_resolver is not None and not isinstance(approval_resolver, ToolApprovalResolver):
+        raise TypeError("service approval_resolver must implement ToolApprovalResolver")
+    if (approval_service is None) != (approval_resolver is None):
+        raise ValueError("service approval dependencies must be configured together")
+    return approval_service, approval_resolver
 
 
 @runtime_checkable
@@ -593,6 +655,7 @@ class IntegratedDurableRunCoordinator:
                 lease_renewal_interval=self._lease_renewal_interval,
                 clock=self._clock,
             )
+            approval_service, approval_resolver = _patch_approval_dependencies(self._service)
             read_budget = _create_checkout_read_cumulative_byte_budget(binding)
             tool_driver = _create_checkout_read_durable_tool_execution_driver(
                 self._durable_stack,
@@ -600,6 +663,8 @@ class IntegratedDurableRunCoordinator:
                 lease_renewal_interval=self._lease_renewal_interval,
                 read_budget=read_budget,
                 clock=self._clock,
+                approval_service=approval_service,
+                approval_resolver=approval_resolver,
             )
             if _authority_freshness is None:
                 result = await self._service.run(

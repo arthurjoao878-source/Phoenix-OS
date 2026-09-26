@@ -547,3 +547,25 @@ async def test_runtime_assembler_composes_explicit_sqlite_durable_state(
 
     assert store.closed
     assert store.lease_manager.closed
+
+
+@pytest.mark.asyncio
+async def test_agent_durable_sqlite_coexists_with_generic_state_on_same_file(
+    tmp_path: Path,
+) -> None:
+    from phoenix_os.state import SQLiteStateStore, StateKey
+
+    path = tmp_path / "shared-durable.sqlite3"
+    durable = SQLiteDurableRunStore(path)
+    state = SQLiteStateStore(path)
+    try:
+        identity = await durable.resolve_checkout_registration_identity(
+            registration_key="a" * 64,
+            registration_digest="b" * 64,
+        )
+        stored = await state.put(StateKey("agent", "coexistence"), {"ready": True})
+        assert identity.generation == 1
+        assert stored.value == {"ready": True}
+    finally:
+        await state.close()
+        await durable.close()

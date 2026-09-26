@@ -26,6 +26,12 @@ from phoenix_os.control_plane.operator_configuration import (
     OperatorWorkspaceConfiguration,
     load_operator_configuration,
 )
+from phoenix_os.control_plane.task_resume_context_resupply import (
+    MAX_TASK_RESUME_CONTEXT_DOCUMENT_BYTES,
+    TaskResumeContextCodecError,
+    TaskResumeContextResupply,
+    decode_task_resume_context_resupply,
+)
 from phoenix_os.control_plane.task_runtime_bridge import TaskStatusSummary
 
 MAX_TASK_INPUT_BYTES = 65_536
@@ -82,6 +88,7 @@ class TaskRuntimeBridge(Protocol):
         *,
         configuration: OperatorConfiguration,
         run_id: str,
+        context_resupply: TaskResumeContextResupply | None = None,
     ) -> TaskRunSummary: ...
 
 
@@ -122,15 +129,23 @@ class _UnavailableTaskRuntimeBridge:
         *,
         configuration: OperatorConfiguration,
         run_id: str,
+        context_resupply: TaskResumeContextResupply | None = None,
     ) -> TaskRunSummary:
-        del configuration, run_id
+        del configuration, run_id, context_resupply
         raise TaskRuntimeUnavailableError()
 
 
-_TASK_RUNTIME_BRIDGE: TaskRuntimeBridge = _UnavailableTaskRuntimeBridge()
+_TASK_RUNTIME_BRIDGE: TaskRuntimeBridge | None = None
 
 
 def _task_runtime_bridge() -> TaskRuntimeBridge:
+    global _TASK_RUNTIME_BRIDGE
+    if _TASK_RUNTIME_BRIDGE is None:
+        from phoenix_os.control_plane.task_runtime_bootstrap import (
+            StandaloneTaskRuntimeBridge,
+        )
+
+        _TASK_RUNTIME_BRIDGE = cast(TaskRuntimeBridge, StandaloneTaskRuntimeBridge())
     return _TASK_RUNTIME_BRIDGE
 
 
@@ -196,12 +211,20 @@ def run_task_command(arguments: argparse.Namespace) -> int:
             )
             return 0
         if arguments.task_command == "resume":
-            _print_summary(
-                _task_runtime_bridge().resume(
+            bridge = _task_runtime_bridge()
+            if getattr(bridge, "requires_resume_context_resupply", False):
+                context_resupply = _read_resume_context_resupply()
+                summary = bridge.resume(
+                    configuration=configuration,
+                    run_id=run_id,
+                    context_resupply=context_resupply,
+                )
+            else:
+                summary = bridge.resume(
                     configuration=configuration,
                     run_id=run_id,
                 )
-            )
+            _print_summary(summary)
             return 0
 
     except TaskRuntimeUnavailableError:
@@ -213,7 +236,7 @@ def run_task_command(arguments: argparse.Namespace) -> int:
     except OperatorConfigurationError:
         print("phoenix: configuration invalid", file=sys.stderr)
         return 3
-    except (KeyError, TaskCliError, UnicodeError):
+    except (KeyError, TaskCliError, TaskResumeContextCodecError, UnicodeError):
         print("phoenix: task request invalid", file=sys.stderr)
         return 3
     except (EOFError, KeyboardInterrupt):
@@ -282,6 +305,21 @@ def _read_bounded_text(stream: TextIO) -> str:
     if len(text.encode("utf-8")) > MAX_TASK_INPUT_BYTES:
         raise TaskCliError()
     return text
+
+
+def _read_resume_context_resupply() -> TaskResumeContextResupply:
+    stream = sys.stdin
+    if stream.isatty():
+        raise TaskCliError()
+    binary = getattr(stream, "buffer", None)
+    if binary is not None:
+        payload = cast(BinaryIO, binary).read(MAX_TASK_RESUME_CONTEXT_DOCUMENT_BYTES + 1)
+    else:
+        text = stream.read(MAX_TASK_RESUME_CONTEXT_DOCUMENT_BYTES + 1)
+        payload = text.encode("utf-8")
+    if len(payload) > MAX_TASK_RESUME_CONTEXT_DOCUMENT_BYTES:
+        raise TaskCliError()
+    return decode_task_resume_context_resupply(payload)
 
 
 def _print_summary(summary: TaskRunSummary | TaskStatusSummary) -> None:

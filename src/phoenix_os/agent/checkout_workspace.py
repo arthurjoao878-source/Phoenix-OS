@@ -56,6 +56,7 @@ class RegisteredDevelopmentCheckout:
     generation: int
     root_identity: str
     read_prefixes: tuple[str, ...]
+    patch_prefixes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace_id, UUID):
@@ -78,7 +79,22 @@ class RegisteredDevelopmentCheckout:
             raise ValueError("read_prefixes must not be empty")
         if len(set(prefixes)) != len(prefixes):
             raise ValueError("read_prefixes contain duplicates")
-        object.__setattr__(self, "read_prefixes", tuple(sorted(prefixes)))
+        canonical_read_prefixes = tuple(sorted(prefixes))
+        object.__setattr__(self, "read_prefixes", canonical_read_prefixes)
+
+        patch_prefixes = tuple(
+            _canonical_logical_path(value, label="patch prefix") for value in self.patch_prefixes
+        )
+        if len(set(patch_prefixes)) != len(patch_prefixes):
+            raise ValueError("patch_prefixes contain duplicates")
+        if any(
+            not any(
+                _within_prefix(patch_prefix, read_prefix) for read_prefix in canonical_read_prefixes
+            )
+            for patch_prefix in patch_prefixes
+        ):
+            raise ValueError("patch_prefixes must be within read_prefixes")
+        object.__setattr__(self, "patch_prefixes", tuple(sorted(patch_prefixes)))
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -229,6 +245,7 @@ class RegisteredDevelopmentCheckoutAdapter:
         generation: int,
         root: Path | str,
         read_prefixes: tuple[str, ...],
+        patch_prefixes: tuple[str, ...] = (),
         protected_paths: tuple[Path | str, ...] = (),
         protected_roots: tuple[Path | str, ...] = (),
     ) -> None:
@@ -242,6 +259,7 @@ class RegisteredDevelopmentCheckoutAdapter:
             generation=generation,
             root_identity=root_identity,
             read_prefixes=read_prefixes,
+            patch_prefixes=patch_prefixes,
         )
 
         self._root = configured
@@ -449,6 +467,27 @@ class RegisteredDevelopmentCheckoutAdapter:
             _within_prefix(logical_path, prefix) for prefix in self._registration.read_prefixes
         ):
             raise AgentCodecError("checkout target is outside admitted read prefixes")
+
+    def _require_patch_eligible(self, logical_path: str) -> None:
+        if not any(
+            _within_prefix(logical_path, prefix) for prefix in self._registration.patch_prefixes
+        ):
+            raise AgentCodecError("checkout target is outside admitted patch prefixes")
+
+    def _patch_target_for_commit(self, logical_path: str) -> Path:
+        self._ensure_open()
+        canonical = _canonical_logical_path(logical_path, label="checkout patch path")
+        self._require_patch_eligible(canonical)
+        if _is_reserved_logical_path(canonical):
+            raise AgentCodecError("checkout patch target is protected")
+
+        self._require_current_root()
+        target = self._confined_target(canonical)
+        self._require_not_native_protected(target)
+        self._require_safe_parent_chain(target.parent)
+        _require_safe_regular_file(target)
+        self._require_current_root()
+        return target
 
     def _confined_target(self, logical_path: str) -> Path:
         candidate = self._root.joinpath(*logical_path.split("/"))

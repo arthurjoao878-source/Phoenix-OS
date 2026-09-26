@@ -135,3 +135,32 @@ def test_network_http_request_catalog_entry_is_generation_bound_and_tool_mediate
             effect=AuthorityEffect.ALLOWED,
         )
     )
+
+
+def test_workspace_patch_catalog_entry_is_checkout_path_and_tool_mediated() -> None:
+    action = "workspace.patch"
+    resource = "development-checkout:30000000-0000-4000-8000-000000000003/path:src/pkg/example.py"
+    entry = BUILTIN_AUTHORITY_CATALOG.require(action)
+
+    assert entry.canonical_boundary == action
+    assert entry.accepts_resource(resource)
+    assert not entry.accepts_resource(
+        "development-checkout:30000000-0000-4000-8000-000000000003/prefix:src"
+    )
+    assert not entry.accepts_resource(
+        "development-checkout:30000000-0000-4000-8000-000000000003/path:../secret"
+    )
+    assert ("tool.invoke", action) in BUILTIN_AUTHORITY_CATALOG.mediated_transitions
+
+    intent = AuthorityIntent(
+        action=action,
+        canonical_resource=resource,
+        parameter_digest=_DIGEST_A,
+    )
+    BUILTIN_AUTHORITY_CATALOG.validate_observation(
+        AuthorityPathObservation(
+            intent=intent,
+            boundaries=("tool.invoke", action),
+            effect=AuthorityEffect.ALLOWED,
+        )
+    )

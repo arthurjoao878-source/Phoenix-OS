@@ -16,6 +16,7 @@ from phoenix_os.agent.checkout_agent_tools import (
 )
 from phoenix_os.agent.checkout_authorization import (
     CheckoutListAuthorizationRequest,
+    CheckoutPatchAuthorizationRequest,
     CheckoutReadAuthorizationRequest,
 )
 from phoenix_os.agent.checkout_workspace import RegisteredDevelopmentCheckoutAdapter
@@ -61,6 +62,13 @@ class _CheckoutAuthorizer:
     async def authorize_read(
         self,
         request: CheckoutReadAuthorizationRequest,
+        context: SecurityContext,
+    ) -> None:
+        del request, context
+
+    async def authorize_patch(
+        self,
+        request: CheckoutPatchAuthorizationRequest,
         context: SecurityContext,
     ) -> None:
         del request, context
