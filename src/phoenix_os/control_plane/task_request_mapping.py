@@ -124,8 +124,8 @@ class ServerOwnedTaskRequestMapper:
             raise TaskRequestMappingError()
         if configuration.runtime is None:
             raise TaskRequestMappingError()
-        if operator_profile.context_paths or operator_profile.allow_workspace_patch:
-            # Context-path resolution and write composition are separate reviewed gates.
+        if operator_profile.context_paths:
+            # Context-path resolution remains a separate reviewed gate.
             raise TaskRequestMappingError()
 
         models = tuple(

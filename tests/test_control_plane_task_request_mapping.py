@@ -154,7 +154,6 @@ def test_mapper_rejects_workspace_substitution_before_request_creation() -> None
     ("profile", "runtime"),
     (
         (_profile(context_paths=("src/example.py",)), True),
-        (_profile(allow_workspace_patch=True), True),
         (_profile(), False),
     ),
 )
@@ -169,6 +168,22 @@ def test_mapper_fails_closed_for_not_yet_composed_surfaces(
             workspace_name="project",
             task_text="task",
         )
+
+
+def test_mapper_allows_workspace_patch_when_runtime_surface_is_composed() -> None:
+    profile = _profile(allow_workspace_patch=True)
+    configuration = _configuration(profiles=(profile,))
+
+    mapped = _mapper().map(
+        configuration,
+        profile_name="development",
+        workspace_name="project",
+        task_text="task",
+    )
+
+    assert mapped.operator_profile is profile
+    assert mapped.operator_profile.allow_workspace_patch
+    assert mapped.operator_profile.context_paths == ()
 
 
 def test_mapper_rejects_model_substitution_against_runtime_owned_agent() -> None:
