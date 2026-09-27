@@ -35,7 +35,11 @@ from phoenix_os.agent.approval import (
     ToolApprovalChallenge,
     ToolApprovalEvidence,
 )
-from phoenix_os.agent.checkout_agent_tools import CHECKOUT_LIST_TOOL_ID, CHECKOUT_READ_TOOL_ID
+from phoenix_os.agent.checkout_agent_tools import (
+    CHECKOUT_LIST_TOOL_ID,
+    CHECKOUT_READ_TOOL_ID,
+    checkout_integrated_binding_id,
+)
 from phoenix_os.agent.checkout_authorization import PolicyEngineCheckoutWorkspaceAuthorizer
 from phoenix_os.agent.checkout_patch_agent_tool import CHECKOUT_PATCH_TOOL_ID
 from phoenix_os.agent.checkout_patch_preparation import MAX_CHECKOUT_PATCH_DIFF_BYTES
@@ -88,7 +92,11 @@ from phoenix_os.integrated_agent.composition import (
     integrated_plan_update_registration,
 )
 from phoenix_os.integrated_agent.contracts import (
+    IntegratedDataFlowDisposition,
     IntegratedDataFlowPolicy,
+    IntegratedDataFlowRoute,
+    IntegratedDataSink,
+    IntegratedDataSourceKind,
     IntegratedExecutionProfileGeneration,
     IntegratedExecutionProfileId,
 )
@@ -516,6 +524,53 @@ async def _profile_for_existing_run(
     return matches[0]
 
 
+def _standalone_development_data_flow_policy(
+    checkout: RegisteredDevelopmentCheckoutAdapter,
+) -> IntegratedDataFlowPolicy:
+    """Allow only the provenance routes required by the bounded development task."""
+
+    if not isinstance(checkout, RegisteredDevelopmentCheckoutAdapter):
+        raise TypeError("checkout must be RegisteredDevelopmentCheckoutAdapter")
+
+    registration = checkout.registration
+    workspace_scope = checkout_integrated_binding_id(registration)
+    workspace_freshness = (f"registration-generation:{registration.generation}",)
+
+    source_specs = (
+        ("user", IntegratedDataSourceKind.USER_TASK, None, ()),
+        ("model", IntegratedDataSourceKind.MODEL_OUTPUT, None, ()),
+        (
+            "workspace",
+            IntegratedDataSourceKind.WORKSPACE,
+            workspace_scope,
+            workspace_freshness,
+        ),
+        ("tool", IntegratedDataSourceKind.TOOL_RESULT, None, ()),
+    )
+    sink_specs = (
+        ("model", IntegratedDataSink.MODEL, False),
+        ("workspace", IntegratedDataSink.WORKSPACE, False),
+        ("orchestration", IntegratedDataSink.ORCHESTRATION_STATE, False),
+        ("result", IntegratedDataSink.USER_RESULT, True),
+    )
+
+    return IntegratedDataFlowPolicy(
+        tuple(
+            IntegratedDataFlowRoute(
+                route_id=f"rfc0039-{source_label}-{sink_label}",
+                source_kind=source_kind,
+                sink=sink,
+                disposition=IntegratedDataFlowDisposition.ALLOW,
+                source_scope=source_scope,
+                required_freshness_bindings=freshness,
+                requires_audience_match=requires_audience_match,
+            )
+            for source_label, source_kind, source_scope, freshness in source_specs
+            for sink_label, sink, requires_audience_match in sink_specs
+        )
+    )
+
+
 async def _compose_runtime(
     configuration: OperatorConfiguration,
     operator_profile: OperatorProfileConfiguration,
@@ -548,7 +603,7 @@ async def _compose_runtime(
         profile_id=execution_profile_id,
         generation=IntegratedExecutionProfileGeneration(identity.generation),
         agent_id=_agent_id(operator_profile),
-        data_flow_policy=IntegratedDataFlowPolicy(),
+        data_flow_policy=_standalone_development_data_flow_policy(checkout),
         registration=checkout.registration,
         durability_profile=_DURABILITY_PROFILE,
         allow_workspace_patch=operator_profile.allow_workspace_patch,

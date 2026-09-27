@@ -4,9 +4,11 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
+from uuid import UUID
 
 import pytest
 
+from phoenix_os.agent.checkout_workspace import RegisteredDevelopmentCheckoutAdapter
 from phoenix_os.control_plane import task_runtime_bootstrap as bootstrap
 from phoenix_os.control_plane.operator_configuration import (
     OperatorConfiguration,
@@ -14,7 +16,15 @@ from phoenix_os.control_plane.operator_configuration import (
     OperatorWorkspaceConfiguration,
 )
 from phoenix_os.control_plane.task_cli import TaskRunSummary
-from phoenix_os.policy import PolicyEngine
+from phoenix_os.integrated_agent import (
+    IntegratedAgentDataFlowDeniedError,
+    IntegratedDataFlowGuard,
+    IntegratedDataProvenance,
+    IntegratedDataProvenanceAtom,
+    IntegratedDataSink,
+    IntegratedDataSourceKind,
+)
+from phoenix_os.policy import PolicyEngine, PrincipalType, SecurityContext
 
 
 class _FakeRuntime:
@@ -273,6 +283,136 @@ def test_bootstrap_requires_resume_context_resupply(
             configuration=_configuration(),
             run_id="11111111-1111-1111-1111-111111111111",
         )
+
+
+def test_standalone_development_data_flow_policy_admits_reviewed_task_loop(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    checkout = RegisteredDevelopmentCheckoutAdapter(
+        workspace_id=UUID("11111111-1111-1111-1111-111111111111"),
+        workspace_name="project",
+        generation=7,
+        root=tmp_path,
+        read_prefixes=("src",),
+        patch_prefixes=("src",),
+    )
+    policy = bootstrap._standalone_development_data_flow_policy(checkout)
+    guard = IntegratedDataFlowGuard(policy)
+
+    workspace_scope = f"development-checkout:{checkout.registration.workspace_id}"
+    provenance = IntegratedDataProvenance(
+        (
+            IntegratedDataProvenanceAtom(
+                IntegratedDataSourceKind.USER_TASK,
+                "integrated-task:22222222-2222-2222-2222-222222222222",
+                ("task-digest:sha256:" + "a" * 64,),
+            ),
+            IntegratedDataProvenanceAtom(
+                IntegratedDataSourceKind.MODEL_OUTPUT,
+                (
+                    "agent-run:33333333-3333-3333-3333-333333333333/"
+                    "step:44444444-4444-4444-4444-444444444444"
+                ),
+                ("integrated-profile:rfc0039-dev:7",),
+            ),
+            IntegratedDataProvenanceAtom(
+                IntegratedDataSourceKind.WORKSPACE,
+                f"{workspace_scope}/path:src/example.py",
+                (
+                    "registration-generation:7",
+                    "content-digest:sha256:" + "b" * 64,
+                ),
+            ),
+            IntegratedDataProvenanceAtom(
+                IntegratedDataSourceKind.TOOL_RESULT,
+                (
+                    "agent-run:33333333-3333-3333-3333-333333333333/"
+                    "step:44444444-4444-4444-4444-444444444444/"
+                    "tool:workspace.read/"
+                    "call:55555555-5555-5555-5555-555555555555"
+                ),
+                ("tool:workspace.read",),
+            ),
+        )
+    )
+    context = SecurityContext(
+        principal="local-maintainer",
+        principal_type=PrincipalType.USER,
+        authenticated=True,
+        session_id=UUID("66666666-6666-6666-6666-666666666666"),
+    )
+
+    assert len(policy.routes) == 16
+    for sink in (
+        IntegratedDataSink.MODEL,
+        IntegratedDataSink.WORKSPACE,
+        IntegratedDataSink.ORCHESTRATION_STATE,
+        IntegratedDataSink.USER_RESULT,
+    ):
+        decisions = guard.admit(provenance, sink, context=context)
+        assert len(decisions) == 4
+        assert all(decision.route_id is not None for decision in decisions)
+
+    with pytest.raises(IntegratedAgentDataFlowDeniedError):
+        guard.admit(
+            IntegratedDataProvenance(
+                (
+                    IntegratedDataProvenanceAtom(
+                        IntegratedDataSourceKind.WORKSPACE,
+                        (
+                            "development-checkout:"
+                            "77777777-7777-7777-7777-777777777777/"
+                            "path:src/example.py"
+                        ),
+                        ("registration-generation:7",),
+                    ),
+                )
+            ),
+            IntegratedDataSink.MODEL,
+            context=context,
+        )
+
+    with pytest.raises(IntegratedAgentDataFlowDeniedError):
+        guard.admit(
+            IntegratedDataProvenance(
+                (
+                    IntegratedDataProvenanceAtom(
+                        IntegratedDataSourceKind.WORKSPACE,
+                        f"{workspace_scope}/path:src/example.py",
+                        ("registration-generation:8",),
+                    ),
+                )
+            ),
+            IntegratedDataSink.MODEL,
+            context=context,
+        )
+
+    with pytest.raises(IntegratedAgentDataFlowDeniedError):
+        guard.admit(
+            IntegratedDataProvenance(
+                (
+                    IntegratedDataProvenanceAtom(
+                        IntegratedDataSourceKind.MEMORY,
+                        "memory:unconfigured/record-1",
+                    ),
+                )
+            ),
+            IntegratedDataSink.MODEL,
+            context=context,
+        )
+
+    with pytest.raises(IntegratedAgentDataFlowDeniedError):
+        guard.admit(
+            provenance,
+            IntegratedDataSink.USER_RESULT,
+        )
+
+
+def test_compose_runtime_wires_nonempty_standalone_development_data_flow_policy() -> None:
+    source = inspect.getsource(bootstrap._compose_runtime)
+    assert "data_flow_policy=_standalone_development_data_flow_policy(checkout)" in source
+    assert "data_flow_policy=IntegratedDataFlowPolicy()" not in source
 
 
 def test_bootstrap_never_configures_cli_credential_as_bootstrap_operator_token() -> None:
