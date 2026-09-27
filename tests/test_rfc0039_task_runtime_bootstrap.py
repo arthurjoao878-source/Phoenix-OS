@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 
 from phoenix_os.agent.checkout_workspace import RegisteredDevelopmentCheckoutAdapter
+from phoenix_os.agent.contracts import AgentLimits
 from phoenix_os.control_plane import task_runtime_bootstrap as bootstrap
 from phoenix_os.control_plane.operator_configuration import (
     OperatorConfiguration,
@@ -407,6 +408,35 @@ def test_standalone_development_data_flow_policy_admits_reviewed_task_loop(
             provenance,
             IntegratedDataSink.USER_RESULT,
         )
+
+
+@pytest.mark.parametrize(
+    ("model_output_limit", "expected_output_limit"),
+    ((4_096, 4_096), (65_536, 32_768)),
+)
+def test_standalone_development_agent_limits_are_model_bounded(
+    model_output_limit: int,
+    expected_output_limit: int,
+) -> None:
+    operator_model = cast(
+        Any,
+        SimpleNamespace(
+            descriptor=SimpleNamespace(limits=SimpleNamespace(max_output_tokens=model_output_limit))
+        ),
+    )
+
+    limits = bootstrap._standalone_development_agent_limits(operator_model)
+    defaults = AgentLimits()
+
+    assert limits.max_output_tokens == expected_output_limit
+    assert limits.max_output_tokens <= model_output_limit
+    assert limits.max_model_turns == defaults.max_model_turns
+    assert limits.max_tool_calls == defaults.max_tool_calls
+
+
+def test_compose_runtime_wires_model_bounded_standalone_agent_limits() -> None:
+    source = inspect.getsource(bootstrap._compose_runtime)
+    assert "limits=_standalone_development_agent_limits(operator_model)" in source
 
 
 def test_compose_runtime_wires_nonempty_standalone_development_data_flow_policy() -> None:

@@ -14,7 +14,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -45,7 +45,7 @@ from phoenix_os.agent.checkout_patch_agent_tool import CHECKOUT_PATCH_TOOL_ID
 from phoenix_os.agent.checkout_patch_preparation import MAX_CHECKOUT_PATCH_DIFF_BYTES
 from phoenix_os.agent.checkout_workspace import RegisteredDevelopmentCheckoutAdapter
 from phoenix_os.agent.configuration import AgentServiceConfiguration, AgentToolConfiguration
-from phoenix_os.agent.contracts import AgentId, AgentRunId, ToolId
+from phoenix_os.agent.contracts import AgentId, AgentLimits, AgentRunId, ToolId
 from phoenix_os.agent.durable_compatibility import (
     StaticDurableCompatibilityValidator,
     create_ollama_metadata_only_durable_compatibility_policy,
@@ -571,6 +571,19 @@ def _standalone_development_data_flow_policy(
     )
 
 
+def _standalone_development_agent_limits(
+    operator_model: OperatorModelConfiguration,
+) -> AgentLimits:
+    defaults = AgentLimits()
+    return replace(
+        defaults,
+        max_output_tokens=min(
+            defaults.max_output_tokens,
+            operator_model.descriptor.limits.max_output_tokens,
+        ),
+    )
+
+
 async def _compose_runtime(
     configuration: OperatorConfiguration,
     operator_profile: OperatorProfileConfiguration,
@@ -605,6 +618,7 @@ async def _compose_runtime(
         agent_id=_agent_id(operator_profile),
         data_flow_policy=_standalone_development_data_flow_policy(checkout),
         registration=checkout.registration,
+        limits=_standalone_development_agent_limits(operator_model),
         durability_profile=_DURABILITY_PROFILE,
         allow_workspace_patch=operator_profile.allow_workspace_patch,
     ).execution_profile
