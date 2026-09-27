@@ -17,6 +17,8 @@ from phoenix_os.control_plane.operator_configuration import (
     OperatorWorkspaceConfiguration,
 )
 from phoenix_os.control_plane.task_cli import TaskRunSummary
+from phoenix_os.inference import ModelCapabilities, ModelDescriptor, ModelId
+from phoenix_os.inference.ollama import OLLAMA_PROVIDER_ID, OllamaModelBinding
 from phoenix_os.integrated_agent import (
     IntegratedAgentDataFlowDeniedError,
     IntegratedDataFlowGuard,
@@ -437,6 +439,40 @@ def test_standalone_development_agent_limits_are_model_bounded(
 def test_compose_runtime_wires_model_bounded_standalone_agent_limits() -> None:
     source = inspect.getsource(bootstrap._compose_runtime)
     assert "limits=_standalone_development_agent_limits(operator_model)" in source
+
+
+def test_standalone_task_model_binding_enforces_json_mode_and_preserves_pin() -> None:
+    descriptor = ModelDescriptor(
+        provider_id=OLLAMA_PROVIDER_ID,
+        model_id=ModelId("dev"),
+        provider_model_name="qwen3:4b-instruct",
+        capabilities=ModelCapabilities(complete=True, streaming=True),
+    )
+    original = OllamaModelBinding(
+        descriptor,
+        expected_digest="a" * 64,
+    )
+    operator_model = cast(Any, SimpleNamespace(binding=original))
+
+    binding = bootstrap._standalone_task_model_binding(operator_model)
+
+    assert binding is not original
+    assert binding.descriptor == original.descriptor
+    assert binding.expected_digest == original.expected_digest
+    assert binding.structured_json is True
+    assert binding.structured_json_schema is None
+    assert original.structured_json is False
+
+
+def test_compose_runtime_wires_same_structured_binding_to_policy_and_provider() -> None:
+    source = inspect.getsource(bootstrap._compose_runtime)
+    providers_source = inspect.getsource(bootstrap._ollama_providers)
+
+    assert "task_model_binding = _standalone_task_model_binding(operator_model)" in source
+    assert "binding=task_model_binding" in source
+    assert "providers = _ollama_providers(configuration, task_model_binding)" in source
+    assert "task_model_binding" in providers_source
+    assert "model.descriptor == task_model_binding.descriptor" in providers_source
 
 
 def test_compose_runtime_wires_nonempty_standalone_development_data_flow_policy() -> None:

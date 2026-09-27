@@ -80,7 +80,10 @@ from phoenix_os.control_plane.task_runtime_composition import (
     ServerOwnedDurableIntegratedTaskRuntime,
 )
 from phoenix_os.inference.configuration import InferenceProviderConfiguration
-from phoenix_os.inference.ollama import OllamaModelProvider
+from phoenix_os.inference.ollama import (
+    OllamaModelBinding,
+    OllamaModelProvider,
+)
 from phoenix_os.integrated_agent.checkout_durable_history import (
     create_integrated_checkout_durable_history_validator,
 )
@@ -584,6 +587,15 @@ def _standalone_development_agent_limits(
     )
 
 
+def _standalone_task_model_binding(
+    operator_model: OperatorModelConfiguration,
+) -> OllamaModelBinding:
+    binding = operator_model.binding
+    if binding.structured_json or binding.structured_json_schema is not None:
+        return binding
+    return replace(binding, structured_json=True)
+
+
 async def _compose_runtime(
     configuration: OperatorConfiguration,
     operator_profile: OperatorProfileConfiguration,
@@ -592,6 +604,7 @@ async def _compose_runtime(
     if configuration.inference is None:
         raise ValueError("task runtime requires inference configuration")
     operator_model = configuration.model(operator_profile.model_name)
+    task_model_binding = _standalone_task_model_binding(operator_model)
     workspace = configuration.workspace(operator_profile.workspace_name)
 
     identity = await _checkout_identity(
@@ -652,7 +665,7 @@ async def _compose_runtime(
         configuration=service_configuration,
         registry=compatibility_registry,
         provider_configuration=provider_configuration,
-        binding=operator_model.binding,
+        binding=task_model_binding,
     )
     compatibility_validator = StaticDurableCompatibilityValidator((compatibility_policy,))
 
@@ -672,7 +685,7 @@ async def _compose_runtime(
         events=events,
     )
     operator_registry = StateControlPlaneOperatorRegistry(state_store)
-    providers = _ollama_providers(configuration)
+    providers = _ollama_providers(configuration, task_model_binding)
     approval_service: InMemoryToolApprovalService | None = None
     approval_resolver: _StandalonePatchApprovalResolver | None = None
     if operator_profile.allow_workspace_patch:
@@ -803,13 +816,27 @@ def _provider_configuration(
     raise KeyError(str(model.descriptor.provider_id))
 
 
-def _ollama_providers(configuration: OperatorConfiguration) -> tuple[OllamaModelProvider, ...]:
+def _ollama_providers(
+    configuration: OperatorConfiguration,
+    task_model_binding: OllamaModelBinding,
+) -> tuple[OllamaModelProvider, ...]:
     if configuration.inference is None:
         raise ValueError("inference configuration is absent")
+    if not isinstance(task_model_binding, OllamaModelBinding):
+        raise TypeError("task_model_binding must be OllamaModelBinding")
+    if task_model_binding.descriptor not in tuple(
+        model.descriptor for model in configuration.models
+    ):
+        raise ValueError("task model binding is not configured")
+
     providers: list[OllamaModelProvider] = []
     for provider_configuration in configuration.inference.providers:
         bindings = tuple(
-            model.binding
+            (
+                task_model_binding
+                if model.descriptor == task_model_binding.descriptor
+                else model.binding
+            )
             for model in configuration.models
             if model.descriptor.provider_id == provider_configuration.provider_id
         )
