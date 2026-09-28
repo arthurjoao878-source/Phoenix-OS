@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
@@ -441,7 +442,7 @@ def test_compose_runtime_wires_model_bounded_standalone_agent_limits() -> None:
     assert "limits=_standalone_development_agent_limits(operator_model)" in source
 
 
-def test_standalone_task_model_binding_enforces_json_mode_and_preserves_pin() -> None:
+def test_standalone_task_model_binding_enforces_envelope_schema_and_preserves_pin() -> None:
     descriptor = ModelDescriptor(
         provider_id=OLLAMA_PROVIDER_ID,
         model_id=ModelId("dev"),
@@ -456,12 +457,58 @@ def test_standalone_task_model_binding_enforces_json_mode_and_preserves_pin() ->
 
     binding = bootstrap._standalone_task_model_binding(operator_model)
 
+    expected_schema = {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "version": {"type": "integer", "enum": [1]},
+                    "kind": {"type": "string", "enum": ["final"]},
+                    "content": {"type": "string"},
+                },
+                "required": ["version", "kind", "content"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "version": {"type": "integer", "enum": [1]},
+                    "kind": {"type": "string", "enum": ["tool"]},
+                    "tool": {"type": "string"},
+                    "arguments": {"type": "object"},
+                },
+                "required": ["version", "kind", "tool", "arguments"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+
     assert binding is not original
     assert binding.descriptor == original.descriptor
     assert binding.expected_digest == original.expected_digest
-    assert binding.structured_json is True
-    assert binding.structured_json_schema is None
+    assert binding.structured_json is False
+    assert binding.structured_json_schema is not None
+    assert json.loads(binding.structured_json_schema) == expected_schema
+    assert binding.structured_json_schema == json.dumps(
+        expected_schema,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     assert original.structured_json is False
+    assert original.structured_json_schema is None
+
+    loose_json_binding = OllamaModelBinding(
+        descriptor,
+        expected_digest="a" * 64,
+        structured_json=True,
+    )
+    overridden = bootstrap._standalone_task_model_binding(
+        cast(Any, SimpleNamespace(binding=loose_json_binding))
+    )
+
+    assert overridden.structured_json is False
+    assert overridden.structured_json_schema == binding.structured_json_schema
+    assert overridden.expected_digest == loose_json_binding.expected_digest
 
 
 def test_compose_runtime_wires_same_structured_binding_to_policy_and_provider() -> None:
