@@ -6,7 +6,10 @@ from uuid import UUID
 
 import pytest
 
-from phoenix_os.agent.codec import canonical_tool_invocation_request_bytes
+from phoenix_os.agent.codec import (
+    canonical_tool_invocation_request_bytes,
+    canonical_tool_invocation_result_bytes,
+)
 from phoenix_os.agent.contracts import (
     AgentId,
     AgentMessage,
@@ -330,6 +333,16 @@ async def test_live_tool_cycle_bridges_safe_boundaries_and_records_started_befor
         tool_attempt = executed.checkpoint.metadata.active_attempt
         assert tool_attempt is not None
         assert tool_attempt.status is ExecutionAttemptStatus.SUCCEEDED
+        budget = executed.checkpoint.metadata.budget
+        assert budget.steps == 2
+        assert budget.model_turns == 1
+        assert budget.tool_calls == 1
+        assert budget.model_output_bytes == 64
+        assert budget.tool_result_bytes == len(
+            canonical_tool_invocation_result_bytes(executed.result)
+        )
+        assert budget.input_tokens == 8
+        assert budget.output_tokens == 8
 
         turn = _next_turn()
         model_provider = StoreBackedDurableModelTurnBindingProvider(

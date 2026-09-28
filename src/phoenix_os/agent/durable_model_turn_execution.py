@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
+from phoenix_os.agent.codec import canonical_tool_call_proposal_bytes
 from phoenix_os.agent.durable_attempts import DurableExecutionAttemptRecorder
 from phoenix_os.agent.durable_contracts import (
     CheckpointEnvelope,
@@ -38,7 +39,7 @@ from phoenix_os.agent.fake import (
     AgentModelTurnKind,
     AgentModelTurnResult,
 )
-from phoenix_os.agent.state import AgentCancellationToken
+from phoenix_os.agent.state import AgentBudgetSnapshot, AgentCancellationToken
 from phoenix_os.policy import SecurityContext
 
 
@@ -51,6 +52,49 @@ def _require_timezone_aware(value: datetime, *, label: str) -> None:
         raise TypeError(f"{label} must be a datetime")
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{label} must be timezone-aware")
+
+
+def _model_attempt_budget(
+    budget: AgentBudgetSnapshot,
+    result: AgentModelTurnResult | None = None,
+) -> AgentBudgetSnapshot:
+    accounted_steps = budget.model_turns + budget.tool_calls
+    if budget.steps == accounted_steps:
+        steps = budget.steps + 1
+    elif budget.steps == accounted_steps + 1:
+        steps = budget.steps
+    else:
+        raise AgentStateConflictError()
+
+    model_output_bytes = budget.model_output_bytes
+    input_tokens = budget.input_tokens
+    output_tokens = budget.output_tokens
+    if result is not None:
+        if result.kind is AgentModelTurnKind.FINAL_OUTPUT:
+            if result.final_output is None:
+                raise AgentStateConflictError()
+            encoded_bytes = len(result.final_output.encode("utf-8"))
+        elif result.kind is AgentModelTurnKind.TOOL_PROPOSAL:
+            if result.proposal is None:
+                raise AgentStateConflictError()
+            encoded_bytes = len(canonical_tool_call_proposal_bytes(result.proposal))
+        else:
+            raise AgentStateConflictError()
+        model_output_bytes += encoded_bytes
+        input_tokens += result.input_tokens
+        output_tokens += result.output_tokens
+
+    try:
+        return replace(
+            budget,
+            steps=steps,
+            model_turns=budget.model_turns + 1,
+            model_output_bytes=model_output_bytes,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+    except (TypeError, ValueError) as exception:
+        raise AgentStateConflictError() from exception
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +166,7 @@ async def _record_known_model_failure(
             lease=binding.lease,
             reason=IndeterminateReason.PROVIDER_STATUS_UNKNOWN,
             now=now,
+            budget=_model_attempt_budget(binding.checkpoint.metadata.budget),
         )
 
     if isinstance(exception, AgentCancelledError):
@@ -142,6 +187,9 @@ async def _record_known_model_failure(
         status=status,
         now=now,
         error_code=error_code,
+        budget=(
+            None if started is None else _model_attempt_budget(binding.checkpoint.metadata.budget)
+        ),
     )
 
 
@@ -251,6 +299,10 @@ async def execute_durable_model_turn(
                     lease=binding.lease,
                     reason=IndeterminateReason.PROVIDER_STATUS_UNKNOWN,
                     now=now,
+                    budget=_model_attempt_budget(
+                        binding.checkpoint.metadata.budget,
+                        result,
+                    ),
                 )
                 raise keepalive_failure
 
@@ -267,6 +319,10 @@ async def execute_durable_model_turn(
             status=ExecutionAttemptStatus.SUCCEEDED,
             now=now,
             next_operation=_success_next_operation(result),
+            budget=_model_attempt_budget(
+                binding.checkpoint.metadata.budget,
+                result,
+            ),
         )
         return DurableModelTurnExecutionResult(result=result, checkpoint=terminal)
     finally:

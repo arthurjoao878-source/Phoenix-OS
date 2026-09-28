@@ -308,6 +308,14 @@ async def test_final_output_persists_succeeded_complete_checkpoint() -> None:
         assert attempt is not None
         assert attempt.status is ExecutionAttemptStatus.SUCCEEDED
         assert execution.checkpoint.status is DurableRunStatus.ACTIVE
+        budget = execution.checkpoint.metadata.budget
+        assert budget.steps == 1
+        assert budget.model_turns == 1
+        assert budget.tool_calls == 0
+        assert budget.model_output_bytes == len(b"done")
+        assert budget.tool_result_bytes == 0
+        assert budget.input_tokens == 0
+        assert budget.output_tokens == 0
     finally:
         await store.close()
 

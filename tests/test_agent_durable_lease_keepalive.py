@@ -410,7 +410,11 @@ async def test_live_model_driver_renews_only_while_adapter_is_in_flight() -> Non
 async def test_live_tool_driver_renews_only_while_adapter_is_in_flight() -> None:
     now = datetime.now(UTC)
     store = InMemoryDurableRunStore()
-    await store.create(_checkpoint(now, next_operation=CheckpointNextOperation.TOOL_INVOCATION))
+    initial_checkpoint = _checkpoint(
+        now,
+        next_operation=CheckpointNextOperation.TOOL_INVOCATION,
+    )
+    await store.create(initial_checkpoint)
     lease = await store.lease_manager.acquire(
         _DURABLE_RUN_ID,
         owner_id="tool-keeper",
@@ -456,6 +460,7 @@ async def test_live_tool_driver_renews_only_while_adapter_is_in_flight() -> None
         terminal_attempt = current.metadata.active_attempt
         assert terminal_attempt is not None
         assert terminal_attempt.status is ExecutionAttemptStatus.SUCCEEDED
+        assert current.metadata.budget == initial_checkpoint.metadata.budget
 
         stable = await store.lease_manager.get_current(
             _DURABLE_RUN_ID,
