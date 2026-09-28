@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
+from phoenix_os.agent.codec import canonical_tool_invocation_result_bytes
 from phoenix_os.agent.contracts import ToolInvocationResult, ToolResultStatus
 from phoenix_os.agent.durable_attempts import (
     DurableExecutionAttemptRecorder,
@@ -39,7 +40,7 @@ from phoenix_os.agent.errors import (
     ToolExecutionError,
 )
 from phoenix_os.agent.execution import BoundedAgentExecutor
-from phoenix_os.agent.state import AgentCancellationToken
+from phoenix_os.agent.state import AgentBudgetSnapshot, AgentCancellationToken
 from phoenix_os.agent.tools import (
     ToolAdapter,
     ToolFinalAdmissionValidator,
@@ -56,6 +57,35 @@ def _require_timezone_aware(value: datetime, *, label: str) -> None:
         raise TypeError(f"{label} must be a datetime")
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{label} must be timezone-aware")
+
+
+def _tool_attempt_budget(
+    budget: AgentBudgetSnapshot,
+    result: ToolInvocationResult | None = None,
+) -> AgentBudgetSnapshot | None:
+    if budget.tool_calls >= budget.model_turns:
+        return None
+    accounted_steps = budget.model_turns + budget.tool_calls
+    if budget.steps == accounted_steps:
+        steps = budget.steps + 1
+    elif budget.steps == accounted_steps + 1:
+        steps = budget.steps
+    else:
+        raise AgentStateConflictError()
+
+    tool_result_bytes = budget.tool_result_bytes
+    if result is not None:
+        tool_result_bytes += len(canonical_tool_invocation_result_bytes(result))
+
+    try:
+        return replace(
+            budget,
+            steps=steps,
+            tool_calls=budget.tool_calls + 1,
+            tool_result_bytes=tool_result_bytes,
+        )
+    except (TypeError, ValueError) as exception:
+        raise AgentStateConflictError() from exception
 
 
 @runtime_checkable
@@ -153,6 +183,7 @@ async def _record_tool_exception(
             lease=binding.lease,
             reason=IndeterminateReason.TOOL_STATUS_UNKNOWN,
             now=now,
+            budget=_tool_attempt_budget(binding.checkpoint.metadata.budget),
         )
 
     if isinstance(exception, AgentCancelledError):
@@ -208,6 +239,8 @@ async def _record_tool_result(
     if started is None:
         raise AgentStateConflictError()
 
+    budget = _tool_attempt_budget(binding.checkpoint.metadata.budget, result)
+
     if result.status is ToolResultStatus.SUCCEEDED:
         projector = _successful_result_metadata_projector(
             result_metadata_projector_factory,
@@ -223,6 +256,7 @@ async def _record_tool_result(
                 status=ExecutionAttemptStatus.SUCCEEDED,
                 now=now,
                 next_operation=CheckpointNextOperation.VALIDATE_RESULT,
+                budget=budget,
             )
         if not isinstance(recorder, DurableTerminalMetadataProjectingAttemptRecorder):
             raise AgentStateConflictError()
@@ -235,6 +269,7 @@ async def _record_tool_result(
             now=now,
             metadata_projector=projector,
             next_operation=CheckpointNextOperation.VALIDATE_RESULT,
+            budget=budget,
         )
     if result.status is ToolResultStatus.INDETERMINATE:
         return await recorder.mark_indeterminate(
@@ -244,6 +279,7 @@ async def _record_tool_result(
             lease=binding.lease,
             reason=IndeterminateReason.TOOL_STATUS_UNKNOWN,
             now=now,
+            budget=budget,
         )
     if result.status is ToolResultStatus.FAILED:
         return await recorder.mark_terminal(
@@ -254,6 +290,7 @@ async def _record_tool_result(
             status=ExecutionAttemptStatus.FAILED,
             now=now,
             error_code=result.error_code,
+            budget=budget,
         )
     if result.status is ToolResultStatus.CANCELLED:
         return await recorder.mark_terminal(
@@ -263,6 +300,7 @@ async def _record_tool_result(
             lease=binding.lease,
             status=ExecutionAttemptStatus.CANCELLED,
             now=now,
+            budget=budget,
         )
     raise AgentStateConflictError()
 
@@ -394,6 +432,10 @@ async def execute_durable_tool(
                     lease=binding.lease,
                     reason=IndeterminateReason.TOOL_STATUS_UNKNOWN,
                     now=now,
+                    budget=_tool_attempt_budget(
+                        binding.checkpoint.metadata.budget,
+                        result,
+                    ),
                 )
                 raise keepalive_failure
 

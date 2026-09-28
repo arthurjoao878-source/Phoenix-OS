@@ -1114,6 +1114,12 @@ async def test_live_coordinator_completes_via_checkpointing() -> None:
         assert current.sequence == CheckpointSequence(7)
         assert current.metadata.next_operation is CheckpointNextOperation.NONE
         assert current.metadata.active_attempt is None
+        budget = current.metadata.budget
+        assert budget.steps == 1
+        assert budget.model_turns == 1
+        assert budget.tool_calls == 0
+        assert budget.model_output_bytes == len(b"durable complete")
+        assert budget.tool_result_bytes == 0
 
         history = await store.list_history(DURABLE_RUN_ID, limit=16)
         statuses = tuple(checkpoint.status for checkpoint in history)

@@ -36,6 +36,7 @@ from phoenix_os.agent.durable_reliability import (
     ReliabilityFaultPoint,
 )
 from phoenix_os.agent.errors import AgentStateConflictError
+from phoenix_os.agent.state import AgentBudgetSnapshot
 
 _ALLOWED_TERMINAL_STATUSES = frozenset(
     {
@@ -105,6 +106,7 @@ class DurableExecutionAttemptRecorder(Protocol):
         lease: DurableLease,
         reason: IndeterminateReason,
         now: datetime,
+        budget: AgentBudgetSnapshot | None = None,
     ) -> Awaitable[CheckpointEnvelope]: ...
 
     def mark_terminal(
@@ -118,6 +120,7 @@ class DurableExecutionAttemptRecorder(Protocol):
         now: datetime,
         next_operation: CheckpointNextOperation | None = None,
         error_code: str | None = None,
+        budget: AgentBudgetSnapshot | None = None,
     ) -> Awaitable[CheckpointEnvelope]: ...
 
 
@@ -151,6 +154,7 @@ class DurableTerminalMetadataProjectingAttemptRecorder(Protocol):
         metadata_projector: DurableCheckpointMetadataProjector,
         next_operation: CheckpointNextOperation | None = None,
         error_code: str | None = None,
+        budget: AgentBudgetSnapshot | None = None,
     ) -> Awaitable[CheckpointEnvelope]: ...
 
 
@@ -384,6 +388,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         lease: DurableLease,
         reason: IndeterminateReason,
         now: datetime,
+        budget: AgentBudgetSnapshot | None = None,
     ) -> CheckpointEnvelope:
         """Persist one fail-closed unknown external outcome without retry."""
 
@@ -424,6 +429,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             status=durable_status,
             next_operation=CheckpointNextOperation.OPERATOR_REVIEW,
             attempt=indeterminate,
+            budget=budget,
         )
 
     async def mark_terminal(
@@ -437,6 +443,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         now: datetime,
         next_operation: CheckpointNextOperation | None = None,
         error_code: str | None = None,
+        budget: AgentBudgetSnapshot | None = None,
     ) -> CheckpointEnvelope:
         """Persist one reviewed terminal outcome without transparent repetition."""
 
@@ -449,6 +456,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             now=now,
             next_operation=next_operation,
             error_code=error_code,
+            budget=budget,
             transition_metadata_projector=None,
         )
 
@@ -464,6 +472,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         metadata_projector: DurableCheckpointMetadataProjector,
         next_operation: CheckpointNextOperation | None = None,
         error_code: str | None = None,
+        budget: AgentBudgetSnapshot | None = None,
     ) -> CheckpointEnvelope:
         """Persist one terminal outcome with one non-retained transition metadata projector."""
 
@@ -478,6 +487,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             now=now,
             next_operation=next_operation,
             error_code=error_code,
+            budget=budget,
             transition_metadata_projector=metadata_projector,
         )
 
@@ -492,6 +502,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         now: datetime,
         next_operation: CheckpointNextOperation | None,
         error_code: str | None,
+        budget: AgentBudgetSnapshot | None,
         transition_metadata_projector: DurableCheckpointMetadataProjector | None,
     ) -> CheckpointEnvelope:
         self._require_attempt_id(attempt_id)
@@ -547,6 +558,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
             status=resulting_status,
             next_operation=resulting_operation,
             attempt=terminal,
+            budget=budget,
             transition_metadata_projector=transition_metadata_projector,
         )
 
@@ -700,8 +712,28 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         status: DurableRunStatus,
         next_operation: CheckpointNextOperation,
         attempt: ExecutionAttempt,
+        budget: AgentBudgetSnapshot | None = None,
         transition_metadata_projector: DurableCheckpointMetadataProjector | None = None,
     ) -> CheckpointEnvelope:
+        if budget is not None:
+            if not isinstance(budget, AgentBudgetSnapshot):
+                raise TypeError("budget must be AgentBudgetSnapshot or None")
+            current_budget = current.metadata.budget
+            if (
+                budget.started_at != current_budget.started_at
+                or budget.deadline != current_budget.deadline
+                or budget.steps < current_budget.steps
+                or budget.model_turns < current_budget.model_turns
+                or budget.tool_calls < current_budget.tool_calls
+                or budget.model_output_bytes < current_budget.model_output_bytes
+                or budget.tool_result_bytes < current_budget.tool_result_bytes
+                or budget.input_tokens < current_budget.input_tokens
+                or budget.output_tokens < current_budget.output_tokens
+                or budget.steps > current_budget.steps + 1
+                or budget.model_turns > current_budget.model_turns + 1
+                or budget.tool_calls > current_budget.tool_calls + 1
+            ):
+                raise AgentStateConflictError()
         checkpoint_id = self._checkpoint_id_factory()
         if not isinstance(checkpoint_id, CheckpointId):
             raise TypeError("checkpoint_id_factory must return CheckpointId")
@@ -728,6 +760,7 @@ class StoreBackedDurableExecutionAttemptRecorder(DurableExecutionAttemptRecorder
         metadata = replace(
             current.metadata,
             next_operation=next_operation,
+            budget=current.metadata.budget if budget is None else budget,
             active_attempt=attempt,
             metadata=metadata_values,
         )
