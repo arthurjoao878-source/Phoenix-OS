@@ -587,13 +587,45 @@ def _standalone_development_agent_limits(
     )
 
 
+_STANDALONE_TASK_MODEL_TURN_SCHEMA = json.dumps(
+    {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "version": {"type": "integer", "enum": [1]},
+                    "kind": {"type": "string", "enum": ["final"]},
+                    "content": {"type": "string"},
+                },
+                "required": ["version", "kind", "content"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "version": {"type": "integer", "enum": [1]},
+                    "kind": {"type": "string", "enum": ["tool"]},
+                    "tool": {"type": "string"},
+                    "arguments": {"type": "object"},
+                },
+                "required": ["version", "kind", "tool", "arguments"],
+                "additionalProperties": False,
+            },
+        ]
+    },
+    separators=(",", ":"),
+    sort_keys=True,
+)
+
+
 def _standalone_task_model_binding(
     operator_model: OperatorModelConfiguration,
 ) -> OllamaModelBinding:
-    binding = operator_model.binding
-    if binding.structured_json or binding.structured_json_schema is not None:
-        return binding
-    return replace(binding, structured_json=True)
+    return replace(
+        operator_model.binding,
+        structured_json=False,
+        structured_json_schema=_STANDALONE_TASK_MODEL_TURN_SCHEMA,
+    )
 
 
 async def _compose_runtime(
